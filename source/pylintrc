@@ -1,14 +1,13 @@
 [MASTER]
 profile=no
-ignore=.svn
-ignore=comInterfaces,config
+ignore=.git,comInterfaces,config
 persistent=yes
 cache-size=500
-init-hook=_=lambda x: ''
+init-hook="import sys; sys.path.append("."); import sourceEnv"
 
 [MESSAGES CONTROL]
-disable-check=SIMILARITIES
-disable-msg=c0301,w0142,c0103,c0121,e1101,e0602,e0611,w0603,f0401,w0702,w0704,c0322,c0323,c0324,w0511,
+# Disabled bad-continuation (C0330) due to issue https://github.com/PyCQA/pylint/issues/1148
+disable=bad-continuation
 
 [REPORTS]
 output-format=text
@@ -54,9 +53,10 @@ max-public-methods=20
 deprecated-modules=regsub,string,TERMIOS,Bastion,rexec
 
 [FORMAT]
-max-line-length=80
+max-line-length=100
 max-module-lines=1000
-indent-string='\t'
+indent-string="\t"
+indent-after-paren=1
 
 [MISCELLANEOUS]
 notes=FIXME,XXX,TODO
