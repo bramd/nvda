@@ -1,6 +1,6 @@
 # A part of NonVisual Desktop Access (NVDA)
-# Copyright (C) 2006-2021 NV Access Limited, Yogesh Kumar, Manish Agrawal, Joseph Lee, Davy Kager,
-# Babbage B.V., Leonard de Ruijter
+# Copyright (C) 2006-2024 NV Access Limited, Yogesh Kumar, Manish Agrawal, Joseph Lee, Davy Kager,
+# Babbage B.V., Leonard de Ruijter, Bram Duvigneau
 # This file is covered by the GNU General Public License.
 # See the file COPYING for more details.
 
@@ -22,6 +22,7 @@ import textInfos
 import braille
 import appModuleHandler
 import eventHandler
+import keyboardHandler
 import UIAHandler
 from UIAHandler.utils import createUIAMultiPropertyCondition
 import api
@@ -430,6 +431,13 @@ class CalendarView(IAccessible):
 				ui.message(timeSlotText)
 		else:
 			self.event_valueChange()
+	
+	@script("Test", gestures=["kb:alt+upArrow", "kb:alt+downArrow"])
+	def script_switchWeek(self, gesture):
+		gesture.send()
+		keyboardHandler.KeyboardInputGesture.fromName("downArrow").send()
+		keyboardHandler.KeyboardInputGesture.fromName("upArrow").send()
+
 
 class UIAGridRow(RowWithFakeNavigation,UIA):
 
