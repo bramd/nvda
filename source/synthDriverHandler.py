@@ -461,7 +461,7 @@ def getSynthList() -> List[Tuple[str, str]]:
 			else:
 				log.debugWarning("Synthesizer '%s' doesn't pass the check, excluding from list" % name)
 		except:  # noqa: E722 # Legacy bare except
-			log.error("", exc_info=True)
+			log.error("Error checking synthesizer availability: %s" % name, exc_info=True)
 	synthList.sort(key=lambda s: strxfrm(s[1]))
 	if lastSynth:
 		synthList.append(lastSynth)
