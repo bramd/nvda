@@ -169,6 +169,7 @@ class EditableText(TextContainerObject, ScriptableObject):
 			try:
 				info = self.makeTextInfo(textInfos.POSITION_CARET)
 			except:  # noqa: E722
+				log.debug("Error creating caret position text info", exc_info=True)
 				return
 		# Forget the word currently being typed as the user has moved the caret somewhere else.
 		speech.clearTypedWordBuffer()
