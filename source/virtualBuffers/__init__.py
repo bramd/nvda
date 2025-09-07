@@ -569,7 +569,7 @@ class VirtualBuffer(browseMode.BrowseModeDocumentTreeInterceptor):
 			if not self.VBufHandle:
 				raise RuntimeError("Could not remotely create virtualBuffer")
 		except:  # noqa: E722
-			log.error("", exc_info=True)
+			log.error("Error creating virtual buffer", exc_info=True)
 			queueHandler.queueFunction(queueHandler.eventQueue, self._loadBufferDone, success=False)
 			return
 		if log.isEnabledFor(log.DEBUG):
