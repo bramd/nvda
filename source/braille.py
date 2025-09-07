@@ -503,7 +503,7 @@ def getDisplayList(excludeNegativeChecks=True) -> List[Tuple[str, str]]:
 			else:
 				log.debugWarning(f"Braille display driver {display.name} reports as unavailable, excluding")
 		except:  # noqa: E722
-			log.error("", exc_info=True)
+			log.error("Error checking braille display driver %s" % display.name, exc_info=True)
 	displayList.sort(key=lambda d: strxfrm(d[1]))
 	if lastDisplay:
 		displayList.append(lastDisplay)
@@ -1310,6 +1310,7 @@ class TextInfoRegion(Region):
 		try:
 			return self.obj.makeTextInfo(textInfos.POSITION_SELECTION)
 		except:  # noqa: E722
+			log.debug("Selection position not supported, falling back to first position", exc_info=True)
 			return self.obj.makeTextInfo(textInfos.POSITION_FIRST)
 
 	def _setCursor(self, info: textInfos.TextInfo):
