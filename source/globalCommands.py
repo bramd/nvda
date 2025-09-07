@@ -1270,6 +1270,7 @@ class GlobalCommands(ScriptableObject):
 			try:
 				(left, top, width, height) = navigatorObject.location
 			except:  # noqa: E722
+				log.debug("Navigator object has no location for mouse movement", exc_info=True)
 				# Translators: Reported when the object has no location for the mouse to move to it.
 				ui.message(_("Object has no location"))
 				return
@@ -1748,6 +1749,7 @@ class GlobalCommands(ScriptableObject):
 			try:
 				realActionName = obj.getActionName()
 			except:  # noqa: E722
+				log.debug("Failed to get action name for object", exc_info=True)
 				pass
 			try:
 				obj.doAction()
@@ -2439,6 +2441,7 @@ class GlobalCommands(ScriptableObject):
 				try:
 					obj.treeInterceptorClass
 				except:  # noqa: E722
+					log.debug("Object missing treeInterceptorClass attribute", exc_info=True)
 					continue
 				break
 			else:
@@ -3745,6 +3748,7 @@ class GlobalCommands(ScriptableObject):
 		try:
 			index = values.index(config.conf["braille"]["focusContextPresentation"])
 		except:  # noqa: E722
+			log.debug("Invalid braille focus context presentation setting, using default", exc_info=True)
 			index = 0
 		newIndex = (index + 1) % len(values)
 		config.conf["braille"]["focusContextPresentation"] = values[newIndex]
@@ -3825,6 +3829,7 @@ class GlobalCommands(ScriptableObject):
 		try:
 			index = shapes.index(config.conf["braille"][cursorShape]) + 1
 		except:  # noqa: E722
+			log.debug("Invalid braille cursor shape setting, using default", exc_info=True)
 			index = 1
 		if index >= len(braille.CURSOR_SHAPES):
 			index = 0
@@ -3922,6 +3927,7 @@ class GlobalCommands(ScriptableObject):
 		try:
 			text = api.getClipData()
 		except:  # noqa: E722
+			log.debug("Failed to get clipboard data", exc_info=True)
 			text = None
 		if not text or not isinstance(text, str) or text.isspace():
 			# Translators: Presented when there is no text on the clipboard.
@@ -4569,6 +4575,7 @@ class GlobalCommands(ScriptableObject):
 				(left, top, width, height) = obj.location
 			# Flake8/E722: stems from object location script.
 			except:  # noqa
+				log.debug("Object has no location for mouse movement", exc_info=True)
 				# Translators: Reported when the object has no location for the mouse to move to it.
 				ui.message(_("object has no location"))
 				return
@@ -5159,7 +5166,7 @@ class ConfigProfileActivationCommands(ScriptableObject):
 		try:
 			gestureMap.save()
 		except:  # noqa: E722
-			log.debugWarning("Couldn't save user gesture map after renaming profile script", exc_info=True)
+			log.error("Couldn't save user gesture map after renaming profile script", exc_info=True)
 
 	@classmethod
 	def updateScriptForRenamedProfile(cls, oldName, newName):
