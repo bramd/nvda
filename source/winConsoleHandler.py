@@ -140,7 +140,7 @@ def _checkDead():
 			# We must disconnect NVDA from this console so it can close.
 			disconnectConsole()
 	except:  # noqa: E722
-		log.exception()
+		log.exception("Error handling console close event")
 
 
 def getConsoleVisibleLines():
