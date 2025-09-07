@@ -739,6 +739,7 @@ def processFocusWinEvent(window, objectID, childID, force=False):
 		try:
 			realChildID = obj.IAccessibleObject.accFocus
 		except:  # noqa: E722 Bare except
+			log.debug("Failed to get accFocus property for focus correction", exc_info=True)
 			realChildID = None
 		if isinstance(realChildID, int) and realChildID > 0 and realChildID != childID:
 			realObj = NVDAObjects.IAccessible.IAccessible(
@@ -1139,6 +1140,7 @@ def findGroupboxObject(obj):
 				(left, top, width, height) = obj.location
 				(groupLeft, groupTop, groupWidth, groupHeight) = groupObj.location
 			except:  # noqa: E722 Bare except
+				log.debug("Failed to get location for group parent detection", exc_info=True)
 				return
 			if (
 				groupObj.IAccessibleRole == oleacc.ROLE_SYSTEM_GROUPING
@@ -1169,25 +1171,30 @@ def getRecursiveTextFromIAccessibleTextObject(obj, startOffset=0, endOffset=-1):
 		try:
 			accObject = obj.QueryInterface(IA.IAccessible)
 		except:  # noqa: E722 Bare except
+			log.error("Failed to query IAccessible interface for text extraction", exc_info=True)
 			return ""
 	else:
 		accObject = obj
 	try:
 		text = textObject.text(startOffset, endOffset)
 	except:  # noqa: E722 Bare except
+		log.error("Failed to extract text from IAccessibleText object", exc_info=True)
 		text = None
 	if not text or text.isspace():
 		try:
 			name = accObject.accName(0)
 		except:  # noqa: E722 Bare except
+			log.debug("Failed to get accName property", exc_info=True)
 			name = None
 		try:
 			value = accObject.accValue(0)
 		except:  # noqa: E722 Bare except
+			log.debug("Failed to get accValue property", exc_info=True)
 			value = None
 		try:
 			description = accObject.accDescription(0)
 		except:  # noqa: E722 Bare except
+			log.debug("Failed to get accDescription property", exc_info=True)
 			description = None
 		return " ".join([x for x in [name, value, description] if x and not x.isspace()])
 	try:
