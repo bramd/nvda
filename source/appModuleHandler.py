@@ -960,5 +960,6 @@ def getWmiProcessInfo(processId):
 		for result in results:
 			return result
 	except:  # noqa: E722
+		log.error("Error retrieving WMI process information for processId %d" % processId, exc_info=True)
 		raise LookupError("Couldn't get process information using WMI")
 	raise LookupError("No such process")
