@@ -123,7 +123,7 @@ def internal_mouseEvent(msg, x, y, injected):
 		elif msg in (WM_LBUTTONDOWN, WM_RBUTTONDOWN):
 			queueHandler.queueFunction(queueHandler.eventQueue, speech.cancelSpeech)
 	except:  # noqa: E722
-		log.error("", exc_info=True)
+		log.error("Error in internal_mouseEvent", exc_info=True)
 	return True
 
 

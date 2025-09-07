@@ -202,7 +202,7 @@ def doStartupDialogs():
 					try:
 						config.conf.save()
 					except:  # noqa: E722
-						pass
+						log.error("Error saving configuration after usage stats dialog", exc_info=True)
 
 			# Ask the user if usage stats can be collected.
 			gui.runScriptModalDialog(gui.startupDialogs.AskAllowUsageStatsDialog(None), onResult)
@@ -1066,7 +1066,7 @@ def main():
 	try:
 		speech.cancelSpeech()
 	except:  # noqa: E722
-		pass
+		log.error("Error cancelling speech during termination", exc_info=True)
 
 	import treeInterceptorHandler
 
@@ -1101,7 +1101,7 @@ def main():
 				asynchronous=False,
 			)
 		except:  # noqa: E722
-			pass
+			log.error("Error playing exit sound", exc_info=True)
 	# We cannot terminate nvwave until after we perform nvwave.playWaveFile
 	_terminate(nvwave)
 	_terminate(NVDAHelper)

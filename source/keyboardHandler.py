@@ -372,7 +372,7 @@ def internal_keyUpEvent(vkCode, scanCode, extended, injected):
 			trappedKeys.remove(keyCode)
 			return False
 	except:  # noqa: E722
-		log.error("", exc_info=True)
+		log.error("Error in internal_keyUpEvent", exc_info=True)
 	return True
 
 

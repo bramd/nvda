@@ -978,8 +978,8 @@ def getDisplayTextForGestureIdentifier(identifier):
 	gcls = _getGestureClsForIdentifier(identifier)
 	try:
 		return gcls.getDisplayTextForIdentifier(identifier)
-	except:
-		raise
+	except:  # noqa: E722
+		log.error("Error getting display text for gesture identifier: %s" % identifier, exc_info=True)
 		raise LookupError("Couldn't get display text for identifier: %s" % identifier)
 
 
