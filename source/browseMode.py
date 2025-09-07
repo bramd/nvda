@@ -1399,6 +1399,7 @@ class ElementsListDialog(
 				self._initialElement if newElementType else self.tree.GetItemData(self.tree.GetSelection())
 			)
 		except:  # noqa: E722
+			log.debug("Error getting selected tree item, using initial element", exc_info=True)
 			defaultElement = self._initialElement
 		# Clear the tree.
 		self.tree.DeleteChildren(self.treeRoot)
@@ -1849,6 +1850,7 @@ class BrowseModeDocumentTreeInterceptor(
 		try:
 			focusInfo = self.makeTextInfo(focus)
 		except:  # noqa: E722
+			log.debug("Error creating text info for focus object", exc_info=True)
 			return False
 		# We only want to override the tab order if the caret is not within the focused node.
 		caretInfo = self.makeTextInfo(textInfos.POSITION_CARET)
