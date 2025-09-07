@@ -40,6 +40,7 @@ class EclipseTextArea(EditableTextWithSuggestions, IAccessible):
 			if self.appModule.selectedItem and not self.appModule.selectedItem.name:
 				self.event_suggestionsClosed()
 		except:  # noqa: E722
+			log.debug("Error handling Eclipse autocomplete suggestion close event", exc_info=True)
 			pass
 
 	@script(
@@ -204,4 +205,5 @@ class AppModule(appModuleHandler.AppModule):
 			):
 				clsList.insert(0, AutocompletionListItem)
 		except:  # noqa: E722
+			log.debug("Error inserting Eclipse autocompletion list item", exc_info=True)
 			pass

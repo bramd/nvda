@@ -182,6 +182,7 @@ class BookPageViewTreeInterceptor(
 			try:
 				objHt = obj.iaHypertext
 			except:  # noqa: E722
+				log.debug("Kindle object doesn't support hypertext interface", exc_info=True)
 				# This is a graphic, etc. which doesn't support text.
 				continue
 			log.debug("Object has hypertext. Recursing")
