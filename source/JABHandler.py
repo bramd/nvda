@@ -560,6 +560,7 @@ def internal_getWindowHandleFromAccContext(vmID, accContext):
 		finally:
 			bridgeDll.releaseJavaObject(vmID, topAC)
 	except:  # noqa: E722
+		log.debug("Error getting window handle from Java accessible context", exc_info=True)
 		return None
 
 
