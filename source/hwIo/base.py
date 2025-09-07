@@ -217,7 +217,7 @@ class IoBase(object):
 		try:
 			self._onReceive(data)
 		except:  # noqa: E722
-			log.error("", exc_info=True)
+			log.error("Error in hardware I/O receive handler", exc_info=True)
 
 
 class Serial(IoBase):

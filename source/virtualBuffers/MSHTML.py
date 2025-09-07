@@ -167,6 +167,7 @@ class MSHTMLTextInfo(VirtualBufferTextInfo):
 							).text
 						)
 					except:  # noqa: E722
+						log.debug("Error getting description text from MSHTML node", exc_info=True)
 						pass
 		ariaSort = attrs.get("HTMLAttrib::aria-sort")
 		state = aria.ariaSortValuesToNVDAStates.get(ariaSort)
