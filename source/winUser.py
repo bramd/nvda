@@ -532,6 +532,7 @@ def peekMessage(*args):
 	try:
 		res = user32.PeekMessageW(*args)
 	except:  # noqa: E722
+		log.debug("Error in PeekMessageW call", exc_info=True)
 		res = 0
 	return res
 
