@@ -119,7 +119,7 @@ def saveOnExit():
 		try:
 			conf.save()
 		except:  # noqa: E722
-			pass
+			log.error("Error saving configuration on exit", exc_info=True)
 
 
 def isInstalledCopy() -> bool:
@@ -886,7 +886,8 @@ class ConfigManager(object):
 		log.debug("Activating triggered profile %s" % trigger.profileName)
 		try:
 			profile = trigger._profile = self._getProfile(trigger.profileName)
-		except:
+		except:  # noqa: E722
+			log.error("Error getting profile for trigger %s" % trigger.profileName, exc_info=True)
 			trigger._profile = None
 			raise
 		profile.triggered = True
