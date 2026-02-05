@@ -202,9 +202,13 @@ class MainFrame(wx.Frame):
 	def showGui(self):
 		# The menu pops up at the location of the mouse, which means it pops up at an unpredictable location.
 		# Therefore, move the mouse to the center of the screen so that the menu will always pop up there.
+		# Save the current mouse position so it can be restored after the menu is dismissed.
+		oldMousePos = winUser.getCursorPos()
 		location = api.getDesktopObject().location
 		winUser.setCursorPos(*location.center)
 		self.sysTrayIcon.onActivate(None)
+		# Restore the mouse position to where it was before the menu was shown.
+		winUser.setCursorPos(*oldMousePos)
 
 	def onRevertToSavedConfigurationCommand(self, evt):
 		queueHandler.queueFunction(queueHandler.eventQueue, core.resetConfiguration)
