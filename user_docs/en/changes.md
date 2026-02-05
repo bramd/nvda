@@ -20,6 +20,7 @@ Consult the speech dictionaries section in the User Guide for more details. (#19
 
 ### Changes
 
+* NVDA now announces "Changes applied" when the Apply button is pressed in a settings dialog. (#18029)
 * It is now possible to open the log viewer with `NVDA+f1`, even when the log level is set to "disabled". (#19318, @CyrilleB79)
 
 ### Bug Fixes

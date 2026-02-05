@@ -798,6 +798,9 @@ class MultiCategorySettingsDialog(SettingsDialog):
 			evt.StopPropagation()
 		else:
 			super().onApply(evt)
+			# Translators: Announced when the user presses the Apply button in a settings dialog,
+			# to confirm that changes have been applied.
+			ui.message(_("Changes applied"))
 
 
 class GeneralSettingsPanel(SettingsPanel):
