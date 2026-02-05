@@ -20,6 +20,7 @@ Consult the speech dictionaries section in the User Guide for more details. (#19
 
 ### Changes
 
+* In the Add-on Store, the update action for disabled add-ons is now labeled "Enable and update" to clarify that the add-on will be enabled. (#17624)
 * It is now possible to open the log viewer with `NVDA+f1`, even when the log level is set to "disabled". (#19318, @CyrilleB79)
 
 ### Bug Fixes
