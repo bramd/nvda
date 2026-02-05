@@ -6,6 +6,7 @@
 
 ### New Features
 
+* A new setting has been added to the Audio settings panel to configure the volume of background white noise, which can help keep Bluetooth headsets and other audio devices awake. (#18435)
 * NVDA now includes a built-in Magnifier feature that allows you to zoom and magnify parts of the screen. (#19228, @Boumtchack)
   * The magnifier supports various zoom levels, color filters (normal, grayscale, inverted), and different focus tracking modes.
   * Color filters can help users with visual impairments or light sensitivity by inverting or desaturating screen colors.

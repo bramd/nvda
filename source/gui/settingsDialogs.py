@@ -3559,6 +3559,24 @@ class AudioPanel(SettingsPanel):
 		)
 		self.bindHelpEvent("AudioAwakeTime", self.audioAwakeTimeEdit)
 
+		# Translators: The label for a setting in Audio settings panel
+		# to change the volume of background white noise used to keep the audio device awake.
+		whiteNoiseVolumeLabelText = _("Volume of &white noise (0 to disable)")
+		minWhiteNoiseVol = int(
+			config.conf.getConfigValidation(("audio", "whiteNoiseVolume")).kwargs["min"],
+		)
+		maxWhiteNoiseVol = int(
+			config.conf.getConfigValidation(("audio", "whiteNoiseVolume")).kwargs["max"],
+		)
+		self.whiteNoiseVolumeEdit = sHelper.addLabeledControl(
+			whiteNoiseVolumeLabelText,
+			nvdaControls.SelectOnFocusSpinCtrl,
+			min=minWhiteNoiseVol,
+			max=maxWhiteNoiseVol,
+			initial=config.conf["audio"]["whiteNoiseVolume"],
+		)
+		self.bindHelpEvent("AudioWhiteNoiseVolume", self.whiteNoiseVolumeEdit)
+
 	def _appendSoundSplitModesList(self, settingsSizerHelper: guiHelper.BoxSizerHelper) -> None:
 		self._allSoundSplitModes = list(audio.SoundSplitState)
 		self.soundSplitModesList: nvdaControls.CustomCheckListBox = settingsSizerHelper.addLabeledControl(
@@ -3606,6 +3624,7 @@ class AudioPanel(SettingsPanel):
 			audioDucking.setAudioDuckingMode(index)
 
 		config.conf["audio"]["audioAwakeTime"] = self.audioAwakeTimeEdit.GetValue()
+		config.conf["audio"]["whiteNoiseVolume"] = self.whiteNoiseVolumeEdit.GetValue()
 
 	def onPanelActivated(self):
 		self._onSoundVolChange(None)
