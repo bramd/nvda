@@ -29,6 +29,9 @@ Consult the speech dictionaries section in the User Guide for more details. (#19
 * In Microsoft Word with UIA enabled, page changes are now correctly announced when navigating table rows that span multiple pages. (#19386, @akj)
 * Fixed excessive resource usage and highlight flickering when using Visual Highlight. (#17434, @hwf1324)
 * The `NVDA+k` command now correctly reports the destination of links containing formatted text, such as bold or italics. (#19428, @Cary-rowen)
+* Adobe Acrobat/Reader no longer crashes when the NVDA Visual Highlighter is enabled.
+The highlighter is now automatically disabled while Adobe Acrobat/Reader is focused, as Adobe crashes in response to the accessibility API calls used for highlighting.
+Please report this issue to Adobe if it affects you. (#17834)
 
 ### Changes for Developers
 

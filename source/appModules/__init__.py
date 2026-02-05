@@ -5,6 +5,8 @@
 
 
 EXECUTABLE_NAMES_TO_APP_MODS: dict[str, str] = {
+	# Adobe Reader 32-bit (legacy) should use the module for Adobe Acrobat.
+	"acrord32": "acrobat",
 	# Azardi's 2.0 executable contains both hyphen (-) and dot (.) in its name.
 	# Both these characters are invalid in a name of a Python module.
 	"azardi-2.0": "azardi20",
