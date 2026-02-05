@@ -36,11 +36,17 @@ GestureMapEntries = {
 			"br(eurobraille):switch6Left+switch6Right",
 			"br(eurobraille):l1+l8",
 		),
-		"review_previousLine": ("br(eurobraille):joystick1Up",),
+		"review_previousLine": (
+			"br(eurobraille):joystick1Up",
+			"br(eurobraille.bnote):switch2Left",
+		),
 		"review_nextLine": ("br(eurobraille):joystick1Down",),
 		"review_previousCharacter": ("br(eurobraille):joystick1Left",),
 		"review_nextCharacter": ("br(eurobraille):joystick1Right",),
-		"reviewMode_previous": ("br(eurobraille):joystick1Left+joystick1Up",),
+		"reviewMode_previous": (
+			"br(eurobraille):joystick1Left+joystick1Up",
+			"br(eurobraille.bnote):switch1Left+switch2Left",
+		),
 		"reviewMode_next": ("br(eurobraille):joystick1Right+joystick1Down",),
 		# Esys and esytime have a dedicated key for backspace and combines backspace and space to perform a return.
 		"braille_eraseLastCell": ("br(eurobraille):backSpace",),

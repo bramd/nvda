@@ -29,6 +29,7 @@ Consult the speech dictionaries section in the User Guide for more details. (#19
 * In Microsoft Word with UIA enabled, page changes are now correctly announced when navigating table rows that span multiple pages. (#19386, @akj)
 * Fixed excessive resource usage and highlight flickering when using Visual Highlight. (#17434, @hwf1324)
 * The `NVDA+k` command now correctly reports the destination of links containing formatted text, such as bold or italics. (#19428, @Cary-rowen)
+* On the Eurobraille b.note, alternative gestures have been added for review previous line and previous review mode, as joystick 1 up is intercepted by the device firmware. (#19284)
 
 ### Changes for Developers
 
