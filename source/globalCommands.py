@@ -2219,6 +2219,15 @@ class GlobalCommands(ScriptableObject):
 			speech.speakTextInfo(info, unit=textInfos.UNIT_CHARACTER, reason=controlTypes.OutputReason.CARET)
 		elif scriptCount == 1:
 			speech.spellTextInfo(info, useCharacterDescriptions=True)
+			charDescList = speech.getCharDescListFromText(info.text, languageHandler.getLanguage())
+			descParts = []
+			for char, charDesc in charDescList:
+				if charDesc:
+					descParts.append(", ".join(charDesc))
+				else:
+					descParts.append(char)
+			if descParts:
+				braille.handler.message("; ".join(descParts))
 		else:
 			try:
 				cList = [ord(c) for c in info.text]

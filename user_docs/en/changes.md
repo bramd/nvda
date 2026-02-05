@@ -17,6 +17,7 @@
 * Added an unassigned Quick Navigation Command for jumping to next/previous slider in browse mode. (#17005, @hdzrvcc0X74)
 * New types have been added for Speech Dictionary entries, such as part of word and start of word.
 Consult the speech dictionaries section in the User Guide for more details. (#19506, @LeonarddeR)
+* Character descriptions (shown when pressing the review current character command twice) are now displayed on braille displays as well as spoken. (#17617)
 
 ### Changes
 
