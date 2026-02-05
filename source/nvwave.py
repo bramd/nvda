@@ -224,6 +224,7 @@ class WavePlayer(garbageHandler.TrackedObject):
 		@note: If C{outputDevice} is a name and no such device exists, the default device will be used.
 		@raise WindowsError: If there was an error opening the audio output device.
 		"""
+		self._lastActiveTime: typing.Optional[float] = None
 		self.channels = channels
 		self.samplesPerSec = samplesPerSec
 		self.bitsPerSample = bitsPerSample
@@ -251,7 +252,6 @@ class WavePlayer(garbageHandler.TrackedObject):
 		self._doneCallbacks = {}
 		self._instances[self._player] = self
 		self.open()
-		self._lastActiveTime: typing.Optional[float] = None
 		self._isPaused: bool = False
 		if config.conf["audio"]["audioAwakeTime"] > 0 and WavePlayer._silenceDevice != outputDevice:
 			# The output device has changed. (Re)initialize silence.

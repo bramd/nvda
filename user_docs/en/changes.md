@@ -29,6 +29,7 @@ Consult the speech dictionaries section in the User Guide for more details. (#19
 * In Microsoft Word with UIA enabled, page changes are now correctly announced when navigating table rows that span multiple pages. (#19386, @akj)
 * Fixed excessive resource usage and highlight flickering when using Visual Highlight. (#17434, @hwf1324)
 * The `NVDA+k` command now correctly reports the destination of links containing formatted text, such as bold or italics. (#19428, @Cary-rowen)
+* Fixed a race condition in audio playback that could cause errors during initialization. (#19005)
 
 ### Changes for Developers
 
