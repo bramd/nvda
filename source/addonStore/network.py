@@ -112,7 +112,14 @@ class AddonFileDownloader:
 		if NVDAState.shouldWriteToDisk():
 			# empty temporary downloads
 			if os.path.exists(WritePaths.addonStoreDownloadDir):
-				shutil.rmtree(WritePaths.addonStoreDownloadDir)
+				try:
+					shutil.rmtree(WritePaths.addonStoreDownloadDir)
+				except OSError:
+					log.error(
+						f"Failed to delete add-on store download directory: "
+						f"{WritePaths.addonStoreDownloadDir}",
+						exc_info=True,
+					)
 			# ensure downloads dir exist
 			pathlib.Path(WritePaths.addonStoreDownloadDir).mkdir(parents=True, exist_ok=True)
 
