@@ -354,7 +354,14 @@ class InstallingOverNewerVersionDialog(
 				"than the version currently installed. "
 				"If you really wish to revert to an earlier version, "
 				"you should first cancel this installation "
-				"and completely uninstall NVDA before installing the earlier version.",
+				"and completely uninstall NVDA before installing the earlier version."
+			)
+			+ "\n\n"
+			+ _(
+				# Translators: An additional note in the warning dialog when downgrading NVDA,
+				# informing the user that settings will be temporarily reset during installation.
+				"Note: Your NVDA settings will be temporarily reset to defaults during this "
+				"installation as they may be incompatible with this older version.",
 			),
 		)
 		text.Wrap(self.scaleSize(600))
