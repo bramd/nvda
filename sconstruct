@@ -323,14 +323,13 @@ envArm64EC.SConscript(
 def buildRustModules(target, source, env):
 	"""Build the Rust nvdaRust.pyd module using maturin."""
 	rustDir = os.path.join(os.getcwd(), "rust", "nvda_python")
+	outDir = os.path.abspath(str(target[0].dir))
 	result = subprocess.run(
-		["maturin", "build", "--release", "--out", str(target[0].dir)],
+		["uvx", "maturin", "build", "--release", "--out", outDir],
 		cwd=rustDir,
-		capture_output=True,
-		text=True,
 	)
 	if result.returncode != 0:
-		print(f"Rust build failed:\n{result.stderr}")
+		print("Rust build failed")
 		return result.returncode
 	# Find and copy the .pyd from the wheel
 	import glob as globmod
