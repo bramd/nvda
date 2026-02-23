@@ -8,6 +8,8 @@
 
 import multiprocessing
 import os
+import shutil
+import subprocess
 import platform
 import sys
 from pathlib import Path
@@ -316,6 +318,53 @@ envArm64EC.SConscript(
 	},
 	variant_dir="build/arm64ec",
 )
+
+# Build Rust native modules via maturin
+def buildRustModules(target, source, env):
+	"""Build the Rust nvdaRust.pyd module using maturin."""
+	rustDir = os.path.join(os.getcwd(), "rust", "nvda_python")
+	result = subprocess.run(
+		["maturin", "build", "--release", "--out", str(target[0].dir)],
+		cwd=rustDir,
+		capture_output=True,
+		text=True,
+	)
+	if result.returncode != 0:
+		print(f"Rust build failed:\n{result.stderr}")
+		return result.returncode
+	# Find and copy the .pyd from the wheel
+	import glob as globmod
+	import zipfile
+	wheels = globmod.glob(os.path.join(str(target[0].dir), "nvdaRust*.whl"))
+	if not wheels:
+		print("Error: no nvdaRust wheel found after maturin build")
+		return 1
+	for wheel in wheels:
+		with zipfile.ZipFile(wheel) as zf:
+			for name in zf.namelist():
+				if name.endswith(".pyd"):
+					zf.extract(name, str(target[0].dir))
+					extracted = os.path.join(str(target[0].dir), name)
+					final_path = target[0].abspath
+					if extracted != final_path:
+						shutil.move(extracted, final_path)
+					return 0
+	print("Error: no .pyd found in wheel")
+	return 1
+
+# Glob all Rust source files as dependencies
+rustSources = []
+for rustDir in ["rust/nvda_core/src", "rust/nvda_tones/src", "rust/nvda_python/src"]:
+	rustSources.extend(env.Glob(os.path.join(rustDir, "*.rs")))
+rustSources.extend(env.Glob("rust/*/Cargo.toml"))
+rustSources.append(File("rust/Cargo.toml"))
+
+rustPyd = env.Command(
+	sourceLibDir64.File("nvdaRust.pyd"),
+	rustSources,
+	buildRustModules,
+)
+env.Alias("rust", rustPyd)
 
 # Allow all NVDA's gettext po files to be compiled in source/locale
 for po in env.Glob(sourceDir.path + "/locale/*/lc_messages/*.po"):
