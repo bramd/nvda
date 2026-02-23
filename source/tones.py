@@ -6,7 +6,6 @@
 """Utilities to generate and play tones"""
 
 import atexit
-from ctypes import create_string_buffer
 
 import config
 import extensionPoints
@@ -81,10 +80,8 @@ def beep(
 		return
 	if not player:
 		return
-	from NVDAHelper.localLib import generateBeep
+	import nvdaRust
 
-	bufSize = generateBeep(None, hz, length, left, right)
-	buf = create_string_buffer(bufSize)
-	generateBeep(buf, hz, length, left, right)
+	buf = nvdaRust.tones.generateBeep(hz, length, left, right)
 	player.stop()
-	player.feed(buf.raw)
+	player.feed(buf)
