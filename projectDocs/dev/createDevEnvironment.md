@@ -76,6 +76,13 @@ Install the python version listed in [.python-versions](../../.python-versions)
     * C++ ATL for v143 build tools (x86 & x64)
     * C++ ATL for v143 build tools (ARM64/ARM64EC)
 
+#### Rust Toolchain
+
+[Rust](https://www.rust-lang.org/tools/install), latest stable version.
+The Rust toolchain is used to build native Rust modules (e.g. `nvdaRust.pyd`) that are part of NVDA's audio pipeline.
+Install via [rustup](https://rustup.rs/).
+The build system invokes `uvx maturin` to compile Rust code into Python extension modules, so no additional tools need to be installed beyond the Rust compiler itself.
+
 ### Git Submodules
 
 Some of the dependencies are contained in [Git submodules](https://git-scm.com/docs/gitsubmodules).
