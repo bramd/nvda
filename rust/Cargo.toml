@@ -1,0 +1,3 @@
+[workspace]
+members = ["nvda_core"]
+resolver = "2"
