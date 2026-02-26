@@ -13,16 +13,13 @@ from typing import (
 )
 from enum import Enum, auto
 from ctypes import (
-	c_uint,
-	byref,
 	c_void_p,
 	CFUNCTYPE,
 	c_float,
 	c_char_p,
 	cast,
+	string_at,
 )
-from comtypes import HRESULT
-from comtypes.hresult import E_INVALIDARG
 import atexit
 import weakref
 import time
@@ -32,7 +29,7 @@ import config
 from logHandler import log, getOnErrorSoundRequested
 import os.path
 import extensionPoints
-import wasapi
+import nvdaRust
 import core
 import globalVars
 from speech import SpeechSequence
@@ -67,6 +64,7 @@ Handlers are called with the same arguments as L{playWaveFile} as keyword argume
 
 
 WAVE_FORMAT_PCM = 1
+E_INVALIDARG = -2147024809
 
 
 def _isDebugForNvWave():
@@ -175,9 +173,6 @@ def isInError() -> bool:
 	return WavePlayer.audioDeviceError_static
 
 
-wasPlay_callback = CFUNCTYPE(None, c_void_p, c_uint)
-
-
 class WavePlayer(garbageHandler.TrackedObject):
 	"""Synchronously play a stream of audio using WASAPI.
 	To use, construct an instance and feed it waveform audio using L{feed}.
@@ -188,10 +183,8 @@ class WavePlayer(garbageHandler.TrackedObject):
 	#: Static variable, if any one WavePlayer instance is in error due to a missing / changing audio device
 	# the error applies to all instances
 	audioDeviceError_static: bool = False
-	#: Maps C++ WasapiPlayer instances to Python WasapiWavePlayer instances.
-	#: This allows us to have a single callback in the class rather than on
-	#: each instance, which prevents reference cycles.
-	_instances = weakref.WeakValueDictionary()
+	#: Weak set of all WavePlayer instances for idle checking.
+	_instances = weakref.WeakSet()
 	#: How long (in seconds) to wait before indicating that an audio stream that
 	#: hasn't played is idle.
 	_IDLE_TIMEOUT: int = 10
@@ -243,21 +236,23 @@ class WavePlayer(garbageHandler.TrackedObject):
 		self._purpose = purpose
 		if outputDevice == self.DEFAULT_DEVICE_KEY:
 			outputDevice = ""
-		self._player = wasapi.wasPlay_create(
-			outputDevice,
-			format,
-			WavePlayer._callback,
+		self._player = nvdaRust.wasapi.WasapiPlayer(
+			endpointId=outputDevice,
+			channels=channels,
+			samplesPerSec=samplesPerSec,
+			bitsPerSample=bitsPerSample,
+			callback=self._makeFeedCallback(),
 		)
 		self._doneCallbacks = {}
-		self._instances[self._player] = self
+		self._instances.add(self)
 		self.open()
 		self._isPaused: bool = False
 		if config.conf["audio"]["audioAwakeTime"] > 0 and WavePlayer._silenceDevice != outputDevice:
 			# The output device has changed. (Re)initialize silence.
 			if self._silenceDevice is not None:
-				wasapi.wasSilence_terminate()
+				nvdaRust.wasapi.silenceTerminate()
 			if config.conf["audio"]["audioAwakeTime"] > 0:
-				wasapi.wasSilence_init(outputDevice)
+				nvdaRust.wasapi.silenceInit(outputDevice)
 				WavePlayer._silenceDevice = outputDevice
 		# Enable trimming by default for speech only
 		self.enableTrimmingLeadingSilence(
@@ -268,29 +263,18 @@ class WavePlayer(garbageHandler.TrackedObject):
 		self._isLeadingSilenceInserted: bool = False
 		pre_synthSpeak.register(self._onPreSpeak)
 
-	@wasPlay_callback
-	def _callback(cppPlayer, feedId):
-		pyPlayer = WavePlayer._instances[cppPlayer]
-		onDone = pyPlayer._doneCallbacks.pop(feedId, None)
-		if onDone:
-			onDone()
+	def _makeFeedCallback(self):
+		def _onFeedDone(feedId):
+			onDone = self._doneCallbacks.pop(feedId, None)
+			if onDone:
+				onDone()
+		return _onFeedDone
 
 	def __del__(self):
 		if not hasattr(self, "_player"):
 			# This instance failed to construct properly. Let it die gracefully.
 			return
-		if not wasapi:
-			# This instance is dying after NVDAHelper was terminated. We can't
-			# destroy it in that case, but we're probably exiting anyway.
-			return
-		if self._player:
-			wasapi.wasPlay_destroy(self._player)
-			# Because _instances is a WeakValueDictionary, it will remove the
-			# reference to this instance by itself. We don't need to do it explicitly
-			# here. Furthermore, doing it explicitly might cause an exception because
-			# a weakref callback can run before __del__ in some cases, which would mean
-			# it has already been removed from _instances.
-			self._player = None
+		self._player = None  # Rust Drop handles cleanup
 		pre_synthSpeak.unregister(self._onPreSpeak)
 
 	def open(self):
@@ -299,7 +283,7 @@ class WavePlayer(garbageHandler.TrackedObject):
 		It is not an error if the output device is already open.
 		"""
 		try:
-			wasapi.wasPlay_open(self._player)
+			self._player.open()
 		except WindowsError:
 			log.warning(
 				"Couldn't open specified or default audio device. There may be no audio devices.",
@@ -333,7 +317,6 @@ class WavePlayer(garbageHandler.TrackedObject):
 		self.open()
 		if self._audioDucker:
 			self._audioDucker.enable()
-		feedId = c_uint() if onDone else None
 		# Never treat this instance as idle while we're feeding.
 		self._lastActiveTime = None
 		# If a BreakCommand is used to insert leading silence in this utterance,
@@ -344,12 +327,7 @@ class WavePlayer(garbageHandler.TrackedObject):
 		# Casting bytes to c_char_p is also fine, as long as the original data is not released.
 		dataptr = cast(data, c_char_p)
 		try:
-			wasapi.wasPlay_feed(
-				self._player,
-				dataptr,
-				size if size is not None else len(data),
-				byref(feedId) if onDone else None,
-			)
+			feedId = self._player.feed(data)
 		except WindowsError:
 			# #16722: This might occur on a Remote Desktop server when a client session
 			# disconnects without exiting NVDA. That will cause audio to become
@@ -361,20 +339,20 @@ class WavePlayer(garbageHandler.TrackedObject):
 			log.debugWarning("Error feeding audio", exc_info=True)
 			return
 		if onDone:
-			self._doneCallbacks[feedId.value] = onDone
+			self._doneCallbacks[feedId] = onDone
 		self._lastActiveTime = time.time()
 		self._scheduleIdleCheck()
 		if config.conf["audio"]["audioAwakeTime"] > 0:
-			wasapi.wasSilence_playFor(
+			nvdaRust.wasapi.silencePlayFor(
 				1000 * config.conf["audio"]["audioAwakeTime"],
-				c_float(config.conf["audio"]["whiteNoiseVolume"] / 100.0),
+				config.conf["audio"]["whiteNoiseVolume"] / 100.0,
 			)
 
 	def sync(self):
 		"""Synchronise with playback.
 		This method blocks until the previously fed chunk of audio has finished playing.
 		"""
-		wasapi.wasPlay_sync(self._player)
+		self._player.sync()
 
 	def idle(self):
 		"""Indicate that this player is now idle; i.e. the current continuous segment  of audio is complete."""
@@ -388,7 +366,7 @@ class WavePlayer(garbageHandler.TrackedObject):
 		"""Stop playback."""
 		if self._audioDucker:
 			self._audioDucker.disable()
-		wasapi.wasPlay_stop(self._player)
+		self._player.stop()
 		if self._enableTrimmingLeadingSilence:
 			self.startTrimmingLeadingSilence()
 		self._lastActiveTime = None
@@ -406,9 +384,9 @@ class WavePlayer(garbageHandler.TrackedObject):
 			else:
 				self._audioDucker.enable()
 		if switch:
-			wasapi.wasPlay_pause(self._player)
+			self._player.pause()
 		else:
-			wasapi.wasPlay_resume(self._player)
+			self._player.resume()
 			# If self._lastActiveTime is None, either no audio has been fed yet or audio
 			# is currently being fed. Either way, we shouldn't touch it.
 			if self._lastActiveTime:
@@ -435,9 +413,9 @@ class WavePlayer(garbageHandler.TrackedObject):
 			if left is not None or right is not None:
 				raise ValueError("all specified, so left and right must not be specified")
 			left = right = all
-		wasapi.wasPlay_setChannelVolume(self._player, 0, c_float(left))
+		self._player.setChannelVolume(0, left)
 		try:
-			wasapi.wasPlay_setChannelVolume(self._player, 1, c_float(right))
+			self._player.setChannelVolume(1, right)
 		except WindowsError as e:
 			# E_INVALIDARG indicates that the audio device doesn't support this channel.
 			# If we're trying to set all channels, that's fine; we've already set the
@@ -454,7 +432,7 @@ class WavePlayer(garbageHandler.TrackedObject):
 
 	def startTrimmingLeadingSilence(self, start: bool = True) -> None:
 		"""Start or stop trimming the leading silence from the next audio chunk."""
-		wasapi.wasPlay_startTrimmingLeadingSilence(self._player, start)
+		self._player.startTrimmingLeadingSilence(start)
 
 	def _setVolumeFromConfig(self):
 		if self._purpose is not AudioPurpose.SOUNDS:
@@ -501,14 +479,14 @@ class WavePlayer(garbageHandler.TrackedObject):
 		cls._isIdleCheckPending = False
 		threshold = time.time() - cls._IDLE_TIMEOUT
 		stillActiveStream = False
-		for player in cls._instances.values():
+		for player in list(cls._instances):
 			if not player._lastActiveTime or player._isPaused:
 				# Either no audio has been fed yet, audio is currently being fed or the
 				# player is paused. Don't treat this player as idle.
 				continue
 			if player._lastActiveTime <= threshold:
 				try:
-					wasapi.wasPlay_idle(player._player)
+					player._player.idle()
 					if player._enableTrimmingLeadingSilence:
 						player.startTrimmingLeadingSilence()
 				except OSError:
@@ -543,27 +521,13 @@ fileWavePlayerThread: threading.Thread | None = None
 
 
 def initialize():
-	wasapi.wasPlay_create.restype = c_void_p
-	for func in (
-		wasapi.wasPlay_startup,
-		wasapi.wasPlay_open,
-		wasapi.wasPlay_feed,
-		wasapi.wasPlay_stop,
-		wasapi.wasPlay_sync,
-		wasapi.wasPlay_idle,
-		wasapi.wasPlay_pause,
-		wasapi.wasPlay_resume,
-		wasapi.wasPlay_setChannelVolume,
-		wasapi.wasSilence_init,
-	):
-		func.restype = HRESULT
-	wasapi.wasPlay_startup()
+	nvdaRust.wasapi.wasapiStartup()
 	getOnErrorSoundRequested().register(playErrorSound)
 
 
 def terminate() -> None:
 	if WavePlayer._silenceDevice is not None:
-		wasapi.wasSilence_terminate()
+		nvdaRust.wasapi.silenceTerminate()
 	getOnErrorSoundRequested().unregister(playErrorSound)
 
 
