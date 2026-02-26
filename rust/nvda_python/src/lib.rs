@@ -3,6 +3,8 @@
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
+mod wasapi;
+
 /// Generate a beep tone as raw PCM bytes.
 ///
 /// Parameters:
@@ -33,8 +35,25 @@ mod tones_mod {
 }
 
 #[pymodule]
+#[pyo3(name = "wasapi")]
+mod wasapi_mod {
+    #[pymodule_export]
+    use super::wasapi::WasapiPlayer;
+    #[pymodule_export]
+    use super::wasapi::wasapi_startup;
+    #[pymodule_export]
+    use super::wasapi::silence_init;
+    #[pymodule_export]
+    use super::wasapi::silence_play_for;
+    #[pymodule_export]
+    use super::wasapi::silence_terminate;
+}
+
+#[pymodule]
 #[pyo3(name = "nvdaRust")]
 mod nvda_rust {
     #[pymodule_export]
     use super::tones_mod;
+    #[pymodule_export]
+    use super::wasapi_mod;
 }

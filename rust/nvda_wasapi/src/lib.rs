@@ -12,7 +12,22 @@ pub const BUFFER_SIZE: i64 = BUFFER_MS as i64 * REFTIMES_PER_MILLISEC;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayState {
-    Stopped,
-    Playing,
-    Stopping,
+    Stopped = 0,
+    Playing = 1,
+    Stopping = 2,
+}
+
+impl PlayState {
+    pub const STOPPED_U8: u8 = 0;
+    pub const PLAYING_U8: u8 = 1;
+    pub const STOPPING_U8: u8 = 2;
+
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => PlayState::Stopped,
+            1 => PlayState::Playing,
+            2 => PlayState::Stopping,
+            _ => PlayState::Stopped,
+        }
+    }
 }

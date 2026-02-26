@@ -1,4 +1,4 @@
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
 use windows::Win32::Foundation::HANDLE;
@@ -46,7 +46,7 @@ pub struct WasapiPlayerInner {
     bits_per_sample: u16,
     block_align: u16,
     callback: Option<Box<dyn Fn(u32) + Send>>,
-    play_state: PlayState,
+    play_state: Arc<AtomicU8>,
     /// Maps feed ids to the end of their audio in ms since the start of the
     /// stream. Used to fire the callback at the right time.
     feed_ends: Vec<(u32, u64)>,
@@ -88,7 +88,7 @@ impl WasapiPlayerInner {
             bits_per_sample,
             block_align,
             callback,
-            play_state: PlayState::Stopped,
+            play_state: Arc::new(AtomicU8::new(PlayState::STOPPED_U8)),
             feed_ends: Vec::new(),
             clock_freq: 0,
             sent_frames: 0,
@@ -173,7 +173,7 @@ impl WasapiPlayerInner {
         self.clock = Some(clock);
         self.buffer_frames = buffer_frames;
         self.clock_freq = clock_freq;
-        self.play_state = PlayState::Stopped;
+        self.set_play_state(PlayState::Stopped);
 
         // Disable communication ducking -- non-fatal if it fails.
         if let Err(e) = device::disable_communication_ducking(&dev) {
@@ -193,7 +193,7 @@ impl WasapiPlayerInner {
         data: Option<&[u8]>,
         want_id: bool,
     ) -> windows::core::Result<u32> {
-        if self.play_state == PlayState::Stopping {
+        if self.get_play_state() == PlayState::Stopping {
             self.complete_stop();
         }
 
@@ -317,17 +317,17 @@ impl WasapiPlayerInner {
                 }
             }
 
-            if self.play_state == PlayState::Stopped {
+            if self.get_play_state() == PlayState::Stopped {
                 let client = self.client.as_ref().unwrap();
                 unsafe {
                     client.Start()?;
                 }
-                if self.play_state == PlayState::Stopping {
+                if self.get_play_state() == PlayState::Stopping {
                     // stop() was called while we were calling Start().
                     self.complete_stop();
                     return Ok(0);
                 }
-                self.play_state = PlayState::Playing;
+                self.set_play_state(PlayState::Playing);
             }
 
             self.maybe_fire_callback();
@@ -335,7 +335,7 @@ impl WasapiPlayerInner {
             self.sent_frames += send_frames;
         }
 
-        if self.play_state == PlayState::Playing {
+        if self.get_play_state() == PlayState::Playing {
             self.maybe_fire_callback();
         }
 
@@ -361,7 +361,7 @@ impl WasapiPlayerInner {
             let result = unsafe { client.Stop() };
             // Set state AFTER client.Stop() to avoid the feeder thread
             // calling Reset() before Stop() completes.
-            self.play_state = PlayState::Stopping;
+            self.set_play_state(PlayState::Stopping);
             if let Err(e) = result {
                 if is_error(&e, AUDCLNT_E_DEVICE_INVALIDATED)
                     || is_error(&e, AUDCLNT_E_NOT_INITIALIZED)
@@ -372,7 +372,7 @@ impl WasapiPlayerInner {
                 }
             }
         } else {
-            self.play_state = PlayState::Stopping;
+            self.set_play_state(PlayState::Stopping);
         }
         unsafe {
             let _ = SetEvent(self.wake_event);
@@ -390,7 +390,7 @@ impl WasapiPlayerInner {
         self.next_feed_id = 0;
         self.sent_frames = 0;
         self.feed_ends.clear();
-        self.play_state = PlayState::Stopped;
+        self.set_play_state(PlayState::Stopped);
     }
 
     /// Wait for all buffered audio to finish playing, firing callbacks along
@@ -402,14 +402,14 @@ impl WasapiPlayerInner {
             if play_pos >= sent_ms {
                 break;
             }
-            if self.play_state != PlayState::Playing {
+            if self.get_play_state() != PlayState::Playing {
                 return Ok(());
             }
             self.maybe_fire_callback();
             self.wait_until_needed(sent_ms - play_pos);
         }
         // Fire any callback right at the end of the stream.
-        if self.play_state == PlayState::Playing {
+        if self.get_play_state() == PlayState::Playing {
             self.maybe_fire_callback();
         }
         Ok(())
@@ -425,7 +425,7 @@ impl WasapiPlayerInner {
 
     /// Pause playback without resetting position.
     pub fn pause(&mut self) -> windows::core::Result<()> {
-        if self.play_state != PlayState::Playing {
+        if self.get_play_state() != PlayState::Playing {
             return Ok(());
         }
         if let Some(ref client) = self.client {
@@ -438,7 +438,7 @@ impl WasapiPlayerInner {
 
     /// Resume playback after pause.
     pub fn resume(&mut self) -> windows::core::Result<()> {
-        if self.play_state != PlayState::Playing {
+        if self.get_play_state() != PlayState::Playing {
             return Ok(());
         }
         if let Some(ref client) = self.client {
@@ -480,6 +480,25 @@ impl WasapiPlayerInner {
     /// Enable or disable leading-silence trimming.
     pub fn start_trimming_leading_silence(&mut self, start: bool) {
         self.is_trimming_leading_silence = start;
+    }
+
+    /// Get the current play state.
+    fn get_play_state(&self) -> PlayState {
+        PlayState::from_u8(self.play_state.load(Ordering::Acquire))
+    }
+
+    /// Set the play state.
+    fn set_play_state(&self, state: PlayState) {
+        self.play_state.store(state as u8, Ordering::Release);
+    }
+
+    /// Create a StopHandle that can stop playback from another thread.
+    pub fn stop_handle(&self) -> StopHandle {
+        StopHandle {
+            client: self.client.clone(),
+            play_state: self.play_state.clone(),
+            wake_event: self.wake_event,
+        }
     }
 
     // ---- private helpers ----
@@ -573,7 +592,7 @@ impl WasapiPlayerInner {
     fn get_padding_handling_stop_or_dev_change(
         &mut self,
     ) -> PaddingResult {
-        if self.play_state == PlayState::Stopping {
+        if self.get_play_state() == PlayState::Stopping {
             self.complete_stop();
             return PaddingResult::Stopped;
         }
@@ -626,6 +645,62 @@ enum PaddingResult {
 // HANDLE. COM interfaces used here are free-threaded (MTA), and we only ever
 // access the player through a Mutex, so sending it to another thread is safe.
 unsafe impl Send for WasapiPlayerInner {}
+
+/// A lightweight, thread-safe handle for stopping playback from any thread.
+///
+/// This allows `stop()` to interrupt a blocking `feed()` call without needing
+/// to acquire the mutex that `feed()` holds. It works by:
+/// 1. Calling `client.Stop()` (COM methods are thread-safe in MTA)
+/// 2. Setting the atomic play_state to Stopping
+/// 3. Signaling the wake event (SetEvent is thread-safe)
+///
+/// When `feed()` wakes up and sees `play_state == Stopping`, it calls
+/// `complete_stop()` to reset the stream.
+pub struct StopHandle {
+    client: Option<IAudioClient>,
+    play_state: Arc<AtomicU8>,
+    wake_event: HANDLE,
+}
+
+// SAFETY: IAudioClient is a COM interface used in MTA (multi-threaded apartment),
+// so it is safe to call from any thread. AtomicU8 is inherently thread-safe.
+// HANDLE for SetEvent is documented as thread-safe by Windows.
+unsafe impl Send for StopHandle {}
+unsafe impl Sync for StopHandle {}
+
+impl StopHandle {
+    /// Stop playback from any thread. This is the thread-safe equivalent of
+    /// `WasapiPlayerInner::stop()`.
+    pub fn stop(&self) -> windows::core::Result<()> {
+        if let Some(ref client) = self.client {
+            let result = unsafe { client.Stop() };
+            // Set state AFTER client.Stop() to avoid the feeder thread
+            // calling Reset() before Stop() completes.
+            self.play_state.store(PlayState::STOPPING_U8, Ordering::Release);
+            if let Err(e) = result {
+                if is_error(&e, AUDCLNT_E_DEVICE_INVALIDATED)
+                    || is_error(&e, AUDCLNT_E_NOT_INITIALIZED)
+                {
+                    // Device already stopped/invalidated -- ignore.
+                } else {
+                    return Err(e);
+                }
+            }
+        } else {
+            self.play_state.store(PlayState::STOPPING_U8, Ordering::Release);
+        }
+        unsafe {
+            let _ = SetEvent(self.wake_event);
+        }
+        Ok(())
+    }
+
+    /// Update the client reference (called after device reopen).
+    pub fn update_client(&mut self, client: Option<IAudioClient>) {
+        self.client = client;
+    }
+
+}
 
 impl Drop for WasapiPlayerInner {
     fn drop(&mut self) {
