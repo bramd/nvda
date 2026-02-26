@@ -622,6 +622,11 @@ enum PaddingResult {
     Err(windows::core::Error),
 }
 
+// SAFETY: WasapiPlayerInner contains COM pointers (IAudioClient, etc.) and a
+// HANDLE. COM interfaces used here are free-threaded (MTA), and we only ever
+// access the player through a Mutex, so sending it to another thread is safe.
+unsafe impl Send for WasapiPlayerInner {}
+
 impl Drop for WasapiPlayerInner {
     fn drop(&mut self) {
         if !self.wake_event.is_invalid() {
