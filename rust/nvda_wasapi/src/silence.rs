@@ -181,24 +181,23 @@ impl SilencePlayer {
                 }
 
                 // Build the feed data outside the player lock.
-                let feed_data: Option<Vec<u8>> = {
+                // Always pass actual data (zeros when volume=0) so that
+                // feed() has a non-zero frame count and blocks waiting for
+                // WASAPI buffer space. Passing None would set
+                // remaining_frames=0, causing a tight CPU-spinning loop.
+                let feed_data: Vec<u8> = {
                     let s = state.lock().unwrap();
-                    if s.volume > 0.0 {
-                        // Reinterpret the i16 slice as bytes.
-                        let bytes: &[u8] = unsafe {
-                            std::slice::from_raw_parts(
-                                s.white_noise.as_ptr() as *const u8,
-                                s.white_noise.len() * 2,
-                            )
-                        };
-                        Some(bytes.to_vec())
-                    } else {
-                        None
-                    }
+                    let bytes: &[u8] = unsafe {
+                        std::slice::from_raw_parts(
+                            s.white_noise.as_ptr() as *const u8,
+                            s.white_noise.len() * 2,
+                        )
+                    };
+                    bytes.to_vec()
                 };
 
                 let mut p = player.lock().unwrap();
-                let _ = p.feed(feed_data.as_deref(), false);
+                let _ = p.feed(Some(&feed_data), false);
             }
 
             // Check if we were asked to terminate while feeding.
