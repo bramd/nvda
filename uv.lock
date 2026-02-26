@@ -13,6 +13,7 @@ members = [
     "nvda",
     "nvda-mathcat",
     "nvda-misc-deps",
+    "nvdarust",
 ]
 
 [[package]]
@@ -551,6 +552,7 @@ dependencies = [
 dev = [
     { name = "nvda-mathcat", marker = "sys_platform == 'win32'" },
     { name = "nvda-misc-deps", marker = "sys_platform == 'win32'" },
+    { name = "nvdarust", marker = "sys_platform == 'win32'" },
     { name = "py2exe", marker = "sys_platform == 'win32'" },
     { name = "scons", marker = "sys_platform == 'win32'" },
     { name = "setuptools", marker = "sys_platform == 'win32'" },
@@ -612,6 +614,7 @@ requires-dist = [
 dev = [
     { name = "nvda-mathcat", editable = "include/nvda-mathcat" },
     { name = "nvda-misc-deps", editable = "miscDeps" },
+    { name = "nvdarust", editable = "rust/nvda_python" },
     { name = "py2exe", specifier = "==0.14.1.1" },
     { name = "scons", specifier = "==4.10.1" },
     { name = "setuptools", specifier = "~=80.10.2" },
@@ -646,6 +649,11 @@ source = { editable = "include/nvda-mathcat" }
 name = "nvda-misc-deps"
 version = "20250925"
 source = { editable = "miscDeps" }
+
+[[package]]
+name = "nvdarust"
+version = "0.1.0"
+source = { editable = "rust/nvda_python" }
 
 [[package]]
 name = "opencv-python"

@@ -311,11 +311,13 @@ package-dir = {"" = "source"}
 nvda-misc-deps = { workspace = true }
 configobj = { git = "https://github.com/DiffSK/configobj", rev = "9c8a0a80c767bf8a3d6493ed01df6c351bddca42" }
 nvda-mathcat = { workspace = true }
+nvdaRust = { workspace = true }
 
 [tool.uv.workspace]
 members = [
 	"miscDeps",
 	"include/nvda-mathcat",
+	"rust/nvda_python",
 ]
 
 [dependency-groups]
@@ -327,6 +329,7 @@ dev = [
 	"py2exe==0.14.1.1",
 	"setuptools~=80.10.2",
 	"nvda-mathcat",
+	"nvdaRust",
 	"uv==0.11.7",
 ]
 lint = [

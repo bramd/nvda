@@ -319,48 +319,21 @@ envArm64EC.SConscript(
 	variant_dir="build/arm64ec",
 )
 
-# Build Rust native modules via maturin
-def buildRustModules(target, source, env):
-	"""Build the Rust nvdaRust.pyd module using maturin."""
-	rustDir = os.path.join(os.getcwd(), "rust", "nvda_python")
-	outDir = os.path.abspath(str(target[0].dir))
-	result = subprocess.run(
-		["uvx", "maturin", "build", "--release", "--out", outDir],
-		cwd=rustDir,
-	)
-	if result.returncode != 0:
-		print("Rust build failed")
-		return result.returncode
-	# Find and copy the .pyd from the wheel
+# Copy the Rust nvdaRust.pyd from the venv into the source tree for distribution.
+# The module is built and installed into the venv by `uv sync` (via maturin).
+# This step is only needed for packaging; running from source uses the venv copy.
+def copyRustPyd(target, source, env):
+	"""Copy nvdaRust.pyd from the venv's site-packages into source/lib/x64/."""
 	import glob as globmod
-	import zipfile
-	wheels = globmod.glob(os.path.join(str(target[0].dir), "nvdaRust*.whl"))
-	if not wheels:
-		print("Error: no nvdaRust wheel found after maturin build")
+	venvPyd = globmod.glob(os.path.join(
+		os.getcwd(), ".venv", "Lib", "site-packages", "nvdaRust", "*.pyd",
+	))
+	if not venvPyd:
+		print("Error: nvdaRust.pyd not found in venv. Run `uv sync` first.")
 		return 1
-	for wheel in wheels:
-		with zipfile.ZipFile(wheel) as zf:
-			for name in zf.namelist():
-				if name.endswith(".pyd"):
-					zf.extract(name, str(target[0].dir))
-					extracted = os.path.join(str(target[0].dir), name)
-					final_path = target[0].abspath
-					if extracted != final_path:
-						shutil.move(extracted, final_path)
-						# Clean up the temporary directory created by extract.
-						# If left behind, Python's import system would find
-						# the empty directory instead of the .pyd file.
-						extractedDir = os.path.dirname(extracted)
-						if extractedDir != str(target[0].dir):
-							shutil.rmtree(extractedDir, ignore_errors=True)
-					break
-		# Remove the wheel; only the extracted .pyd is needed.
-		os.remove(wheel)
-		return 0
-	print("Error: no .pyd found in wheel")
-	return 1
+	shutil.copy2(venvPyd[0], target[0].abspath)
+	return 0
 
-# Glob all Rust source files as dependencies
 rustSources = []
 for rustDir in ["rust/nvda_core/src", "rust/nvda_tones/src", "rust/nvda_wasapi/src", "rust/nvda_python/src"]:
 	rustSources.extend(env.Glob(os.path.join(rustDir, "*.rs")))
@@ -370,7 +343,7 @@ rustSources.append(File("rust/Cargo.toml"))
 rustPyd = env.Command(
 	sourceLibDir64.File("nvdaRust.pyd"),
 	rustSources,
-	buildRustModules,
+	copyRustPyd,
 )
 env.Alias("rust", rustPyd)
 
