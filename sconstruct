@@ -347,13 +347,22 @@ def buildRustModules(target, source, env):
 					final_path = target[0].abspath
 					if extracted != final_path:
 						shutil.move(extracted, final_path)
-					return 0
+						# Clean up the temporary directory created by extract.
+						# If left behind, Python's import system would find
+						# the empty directory instead of the .pyd file.
+						extractedDir = os.path.dirname(extracted)
+						if extractedDir != str(target[0].dir):
+							shutil.rmtree(extractedDir, ignore_errors=True)
+					break
+		# Remove the wheel; only the extracted .pyd is needed.
+		os.remove(wheel)
+		return 0
 	print("Error: no .pyd found in wheel")
 	return 1
 
 # Glob all Rust source files as dependencies
 rustSources = []
-for rustDir in ["rust/nvda_core/src", "rust/nvda_tones/src", "rust/nvda_python/src"]:
+for rustDir in ["rust/nvda_core/src", "rust/nvda_tones/src", "rust/nvda_wasapi/src", "rust/nvda_python/src"]:
 	rustSources.extend(env.Glob(os.path.join(rustDir, "*.rs")))
 rustSources.extend(env.Glob("rust/*/Cargo.toml"))
 rustSources.append(File("rust/Cargo.toml"))
