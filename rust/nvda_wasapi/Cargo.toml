@@ -19,4 +19,5 @@ features = [
     "Win32_Foundation",
     "Win32_Devices_FunctionDiscovery",
     "Win32_UI_Shell_PropertiesSystem",
+    "Win32_Security",
 ]
