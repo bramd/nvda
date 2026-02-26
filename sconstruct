@@ -319,34 +319,6 @@ envArm64EC.SConscript(
 	variant_dir="build/arm64ec",
 )
 
-# Copy the Rust nvdaRust.pyd from the venv into the source tree for distribution.
-# The module is built and installed into the venv by `uv sync` (via maturin).
-# This step is only needed for packaging; running from source uses the venv copy.
-def copyRustPyd(target, source, env):
-	"""Copy nvdaRust.pyd from the venv's site-packages into source/lib/x64/."""
-	import glob as globmod
-	venvPyd = globmod.glob(os.path.join(
-		os.getcwd(), ".venv", "Lib", "site-packages", "nvdaRust", "*.pyd",
-	))
-	if not venvPyd:
-		print("Error: nvdaRust.pyd not found in venv. Run `uv sync` first.")
-		return 1
-	shutil.copy2(venvPyd[0], target[0].abspath)
-	return 0
-
-rustSources = []
-for rustDir in ["rust/nvda_core/src", "rust/nvda_tones/src", "rust/nvda_wasapi/src", "rust/nvda_python/src"]:
-	rustSources.extend(env.Glob(os.path.join(rustDir, "*.rs")))
-rustSources.extend(env.Glob("rust/*/Cargo.toml"))
-rustSources.append(File("rust/Cargo.toml"))
-
-rustPyd = env.Command(
-	sourceLibDir64.File("nvdaRust.pyd"),
-	rustSources,
-	copyRustPyd,
-)
-env.Alias("rust", rustPyd)
-
 # Allow all NVDA's gettext po files to be compiled in source/locale
 for po in env.Glob(sourceDir.path + "/locale/*/lc_messages/*.po"):
 	env.gettextMoFile(po)
