@@ -79,9 +79,16 @@ Install the python version listed in [.python-versions](../../.python-versions)
 #### Rust Toolchain
 
 [Rust](https://www.rust-lang.org/tools/install), latest stable version.
-The Rust toolchain is used to build native Rust modules (e.g. `nvdaRust.pyd`) that are part of NVDA's audio pipeline.
+The Rust toolchain is used to build native Rust modules (e.g. `nvdaRust`) that are part of NVDA's audio pipeline.
 Install via [rustup](https://rustup.rs/).
-The build system invokes `uvx maturin` to compile Rust code into Python extension modules, so no additional tools need to be installed beyond the Rust compiler itself.
+The `nvdaRust` package is a uv workspace member (see `rust/nvda_python/`), so `uv sync` automatically compiles the Rust code via [maturin](https://www.maturin.rs/) and installs it into the virtual environment.
+No additional tools need to be installed beyond the Rust compiler itself.
+
+After editing Rust source files, rebuild with:
+
+```cmd
+uv sync --reinstall-package nvdaRust
+```
 
 ### Git Submodules
 

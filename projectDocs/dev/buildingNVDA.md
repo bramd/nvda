@@ -12,6 +12,18 @@ scons source
 ```
 
 You should do this again whenever the version of comtypes changes or language files are added or changed.
+
+### Rebuilding Rust modules
+
+The native Rust modules (`nvdaRust`) are built and installed into the virtual environment by `uv sync`, which runs automatically as part of `scons source`.
+After editing Rust source files under `rust/`, rebuild with:
+
+```cmd
+uv sync --reinstall-package nvdaRust
+```
+
+This recompiles the Rust code via maturin and reinstalls it into the venv.
+No `scons` step is needed — the updated module is picked up immediately when running from source.
 Note that if you want to access user documentation from the help menu while running the source version, you will also need to add `user_docs` to the command line like so:
 
 ```cmd
