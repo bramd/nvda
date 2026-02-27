@@ -317,3 +317,13 @@ pub fn silence_terminate() -> PyResult<()> {
     }
     Ok(())
 }
+
+/// Check whether any audio render device is currently playing audio.
+///
+/// Returns True if audio is detected or on error (conservative).
+/// This is the Rust replacement for the C++ `audioDucking_shouldDelay()`.
+#[pyfunction]
+#[pyo3(name = "audioDucking_shouldDelay")]
+pub fn audio_ducking_should_delay() -> bool {
+    device::is_any_audio_playing()
+}

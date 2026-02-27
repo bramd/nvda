@@ -229,9 +229,9 @@ class AudioDucker(object):
 				log.debug("whenWasDucked %s, deltaMS %s" % (whenWasDucked, deltaMS))
 			if deltaMS <= 0 or _audioDuckingMode == AudioDuckingMode.NONE:
 				return True
-		import NVDAHelper
+		import nvdaRust  # noqa: E402
 
-		if not NVDAHelper.localLib.audioDucking_shouldDelay():
+		if not nvdaRust.wasapi.audioDucking_shouldDelay():
 			if debug:
 				log.debug("No background audio, not delaying")
 			return True

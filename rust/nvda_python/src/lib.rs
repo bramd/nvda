@@ -47,6 +47,8 @@ mod wasapi_mod {
     use super::wasapi::silence_play_for;
     #[pymodule_export]
     use super::wasapi::silence_terminate;
+    #[pymodule_export]
+    use super::wasapi::audio_ducking_should_delay;
 }
 
 #[pymodule]

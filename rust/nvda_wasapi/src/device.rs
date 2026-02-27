@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use windows::core::{Interface, PCWSTR};
+use windows::Win32::Media::Audio::Endpoints::IAudioMeterInformation;
 use windows::Win32::Media::Audio::{
     eConsole, eRender, IAudioSessionControl2, IAudioSessionManager2, IMMDevice,
     IMMDeviceEnumerator, IMMEndpoint, IMMNotificationClient, IMMNotificationClient_Impl,
@@ -138,6 +139,54 @@ pub fn get_default_device() -> windows::core::Result<IMMDevice> {
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_INPROC_SERVER)?;
         enumerator.GetDefaultAudioEndpoint(eRender, eConsole)
+    }
+}
+
+/// Check whether any audio render device is currently playing audio.
+///
+/// Returns `true` if any device has a peak level > 0, or if enumeration
+/// fails (conservative -- assume audio is playing on error).
+/// Returns `false` only when all devices report a peak of 0.
+///
+/// This is the Rust equivalent of C++ `audioDucking_shouldDelay()` from
+/// `nvdaHelper/local/mixer.cpp`.
+pub fn is_any_audio_playing() -> bool {
+    match is_any_audio_playing_inner() {
+        Ok(playing) => playing,
+        Err(_) => true,
+    }
+}
+
+fn is_any_audio_playing_inner() -> windows::core::Result<bool> {
+    unsafe {
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_INPROC_SERVER)?;
+        let collection = enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)?;
+        let count = collection.GetCount()?;
+        let mut found_any = false;
+        for i in 0..count {
+            let device = match collection.Item(i) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let meter: IAudioMeterInformation = match device.Activate(CLSCTX_ALL, None) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let peak = match meter.GetPeakValue() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if peak > 0.0 {
+                return Ok(true);
+            }
+            found_any = true;
+        }
+        if !found_any {
+            // Couldn't read peak from any device -- assume audio is playing.
+            return Ok(true);
+        }
+        Ok(false)
     }
 }
 
