@@ -208,6 +208,7 @@ impl WasapiPlayerInner {
 
             if self.is_trimming_leading_silence && !raw.is_empty() {
                 let silence_size = silence_detect::get_leading_silence_size(
+                    silence_detect::WaveFormatTag::Pcm,
                     self.bits_per_sample,
                     self.block_align,
                     raw,
