@@ -494,9 +494,12 @@ impl WasapiPlayerInner {
     }
 
     /// Create a StopHandle that can stop playback from another thread.
+    ///
+    /// The returned handle is stable across device reopens -- it references
+    /// the same `play_state` Arc and `wake_event` HANDLE that persist for
+    /// the lifetime of this player.
     pub fn stop_handle(&self) -> StopHandle {
         StopHandle {
-            client: self.client.clone(),
             play_state: self.play_state.clone(),
             wake_event: self.wake_event,
         }
@@ -651,56 +654,37 @@ unsafe impl Send for WasapiPlayerInner {}
 ///
 /// This allows `stop()` to interrupt a blocking `feed()` call without needing
 /// to acquire the mutex that `feed()` holds. It works by:
-/// 1. Calling `client.Stop()` (COM methods are thread-safe in MTA)
-/// 2. Setting the atomic play_state to Stopping
-/// 3. Signaling the wake event (SetEvent is thread-safe)
+/// 1. Setting the atomic play_state to Stopping
+/// 2. Signaling the wake event so the feed loop wakes up
 ///
 /// When `feed()` wakes up and sees `play_state == Stopping`, it calls
-/// `complete_stop()` to reset the stream.
+/// `complete_stop()` to reset the stream (using the current client).
+///
+/// Note: we intentionally do NOT store `IAudioClient` here. The client can
+/// be replaced by `reopen_using_new_device()` inside `feed()`, and a stale
+/// client reference here would call `Stop()` on the wrong device. Instead,
+/// `complete_stop()` (which runs on the feeder thread with the current
+/// client) handles stopping the WASAPI stream.
 pub struct StopHandle {
-    client: Option<IAudioClient>,
     play_state: Arc<AtomicU8>,
     wake_event: HANDLE,
 }
 
-// SAFETY: IAudioClient is a COM interface used in MTA (multi-threaded apartment),
-// so it is safe to call from any thread. AtomicU8 is inherently thread-safe.
-// HANDLE for SetEvent is documented as thread-safe by Windows.
+// SAFETY: AtomicU8 is inherently thread-safe. HANDLE for SetEvent is
+// documented as thread-safe by Windows.
 unsafe impl Send for StopHandle {}
 unsafe impl Sync for StopHandle {}
 
 impl StopHandle {
     /// Stop playback from any thread. This is the thread-safe equivalent of
     /// `WasapiPlayerInner::stop()`.
-    pub fn stop(&self) -> windows::core::Result<()> {
-        if let Some(ref client) = self.client {
-            let result = unsafe { client.Stop() };
-            // Set state AFTER client.Stop() to avoid the feeder thread
-            // calling Reset() before Stop() completes.
-            self.play_state.store(PlayState::STOPPING_U8, Ordering::Release);
-            if let Err(e) = result {
-                if is_error(&e, AUDCLNT_E_DEVICE_INVALIDATED)
-                    || is_error(&e, AUDCLNT_E_NOT_INITIALIZED)
-                {
-                    // Device already stopped/invalidated -- ignore.
-                } else {
-                    return Err(e);
-                }
-            }
-        } else {
-            self.play_state.store(PlayState::STOPPING_U8, Ordering::Release);
-        }
+    pub fn stop(&self) {
+        self.play_state
+            .store(PlayState::STOPPING_U8, Ordering::Release);
         unsafe {
             let _ = SetEvent(self.wake_event);
         }
-        Ok(())
     }
-
-    /// Update the client reference (called after device reopen).
-    pub fn update_client(&mut self, client: Option<IAudioClient>) {
-        self.client = client;
-    }
-
 }
 
 impl Drop for WasapiPlayerInner {

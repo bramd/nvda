@@ -7,7 +7,7 @@ use windows::Win32::System::Threading::{
 };
 
 use crate::device::DeviceChangeCounters;
-use crate::player::WasapiPlayerInner;
+use crate::player::{StopHandle, WasapiPlayerInner};
 use crate::BUFFER_MS;
 
 /// Sample rate for silence/white-noise playback (mono 16-bit PCM).
@@ -43,9 +43,10 @@ struct SharedState {
 /// starts.
 pub struct SilencePlayer {
     state: Arc<Mutex<SharedState>>,
-    /// The player is shared so that `terminate()` can call `stop()` to
-    /// interrupt a blocking `feed()` on the background thread.
     player: Arc<Mutex<WasapiPlayerInner>>,
+    /// Lock-free handle to interrupt a blocking `feed()` on the background
+    /// thread without acquiring the player mutex.
+    stop_handle: StopHandle,
     wake_event: HANDLE,
     thread: Option<JoinHandle<()>>,
 }
@@ -73,6 +74,8 @@ impl SilencePlayer {
 
         let wake_event = unsafe { CreateEventW(None, false, false, None)? };
 
+        let stop_handle = player.stop_handle();
+
         let state = Arc::new(Mutex::new(SharedState {
             end_time: 0,
             volume: -1.0,
@@ -82,6 +85,7 @@ impl SilencePlayer {
         Ok(Self {
             state,
             player: Arc::new(Mutex::new(player)),
+            stop_handle,
             wake_event,
             thread: None,
         })
@@ -130,11 +134,10 @@ impl SilencePlayer {
             let mut state = self.state.lock().unwrap();
             state.end_time = 0;
         }
-        // Interrupt any ongoing feed so the thread wakes up promptly.
-        {
-            let mut player = self.player.lock().unwrap();
-            let _ = player.stop();
-        }
+        // Interrupt any ongoing feed using the lock-free StopHandle.
+        // We must NOT lock self.player here -- the background thread may be
+        // holding the player lock inside feed(), which would deadlock.
+        self.stop_handle.stop();
         // Wake the thread if it is waiting on the event.
         unsafe {
             let _ = SetEvent(self.wake_event);

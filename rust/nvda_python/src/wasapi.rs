@@ -79,10 +79,14 @@ impl SendPtr {
 ///
 /// For `stop()`, we use the StopHandle which bypasses the mutex entirely,
 /// using only atomic state and thread-safe Windows APIs.
+///
+/// The StopHandle is stable across device reopens -- it references the
+/// same atomic play_state and wake_event that persist for the lifetime
+/// of the inner player, so no Mutex is needed around it.
 #[pyclass]
 pub struct WasapiPlayer {
     inner: Mutex<WasapiPlayerInner>,
-    stop_handle: Mutex<StopHandle>,
+    stop_handle: StopHandle,
     callback: Py<PyAny>,
     pending_callbacks: Arc<Mutex<Vec<u32>>>,
 }
@@ -139,7 +143,7 @@ impl WasapiPlayer {
 
         Ok(Self {
             inner: Mutex::new(inner),
-            stop_handle: Mutex::new(stop_handle),
+            stop_handle,
             callback,
             pending_callbacks,
         })
@@ -149,15 +153,9 @@ impl WasapiPlayer {
         // Release the GIL before locking inner to prevent deadlock with
         // feed() which holds inner and waits for the GIL.
         let inner = &self.inner;
-        let stop_handle_mutex = &self.stop_handle;
         py.detach(move || {
             let mut player = inner.lock().unwrap();
-            player.open(false)?;
-            // Replace the stop handle with a fresh one that references the
-            // (possibly new) audio client.
-            let mut sh = stop_handle_mutex.lock().unwrap();
-            *sh = player.stop_handle();
-            Ok::<(), windows::core::Error>(())
+            player.open(false)
         })
         .map_err(to_os_error)
     }
@@ -184,8 +182,8 @@ impl WasapiPlayer {
     fn stop(&self) -> PyResult<()> {
         // Use the StopHandle to stop without acquiring the inner mutex.
         // This allows stop() to interrupt a blocking feed() call.
-        let sh = self.stop_handle.lock().unwrap();
-        sh.stop().map_err(to_os_error)
+        self.stop_handle.stop();
+        Ok(())
     }
 
     fn sync(&self, py: Python<'_>) -> PyResult<()> {

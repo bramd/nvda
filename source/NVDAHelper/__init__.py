@@ -929,10 +929,6 @@ __getattr__ = _deprecate.handleDeprecations(
 		"coreArchLibPath",
 	),
 	_deprecate.MovedSymbol(
-		"generateBeep",
-		"NVDAHelper.localLib",
-	),
-	_deprecate.MovedSymbol(
 		"VBuf_getTextInRange",
 		"NVDAHelper.localLib",
 	),

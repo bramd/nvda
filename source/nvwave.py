@@ -268,6 +268,7 @@ class WavePlayer(garbageHandler.TrackedObject):
 			onDone = self._doneCallbacks.pop(feedId, None)
 			if onDone:
 				onDone()
+
 		return _onFeedDone
 
 	def __del__(self):
@@ -275,7 +276,11 @@ class WavePlayer(garbageHandler.TrackedObject):
 			# This instance failed to construct properly. Let it die gracefully.
 			return
 		self._player = None  # Rust Drop handles cleanup
-		pre_synthSpeak.unregister(self._onPreSpeak)
+		try:
+			pre_synthSpeak.unregister(self._onPreSpeak)
+		except Exception:
+			# During interpreter shutdown, modules may already be torn down.
+			pass
 
 	def open(self):
 		"""Open the output device.

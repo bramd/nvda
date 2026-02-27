@@ -5,7 +5,6 @@ EXPORTS
 	_notifySendMessageCancelled DATA
 	nvdaHelperLocal_initialize
 	nvdaHelperLocal_terminate
-	generateBeep
 	nvdaInProcUtils_registerNVDAProcess
 	nvdaInProcUtils_unregisterNVDAProcess
 	nvdaInProcUtils_sysListView32_getGroupInfo
@@ -66,7 +65,6 @@ EXPORTS
 	registerUIAAnnotationType
 	dllImportTableHooks_hookSingle
 	dllImportTableHooks_unhookSingle
-	audioDucking_shouldDelay
 	logMessage
 	getOleClipboardText
 	getOleUserType
@@ -74,21 +72,6 @@ EXPORTS
 	_nvdaControllerInternal_openConfigDirectory DATA
 	rateLimitedUIAEventHandler_create
 	rateLimitedUIAEventHandler_terminate
-	wasPlay_create
-	wasPlay_destroy
-	wasPlay_open
-	wasPlay_feed
-	wasPlay_stop
-	wasPlay_sync
-	wasPlay_idle
-	wasPlay_pause
-	wasPlay_resume
-	wasPlay_setChannelVolume
-	wasPlay_startTrimmingLeadingSilence
-	wasPlay_startup
-	wasSilence_init
-	wasSilence_playFor
-	wasSilence_terminate
 	isScreenFullyBlack
 	localListeningSocketExists
 	writeCrashDump
