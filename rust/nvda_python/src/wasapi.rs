@@ -164,6 +164,10 @@ impl WasapiPlayer {
         let data_owned = data.to_vec();
         let feed_id;
         {
+            // IMPORTANT: `player` (MutexGuard) MUST outlive the `py.detach()`
+            // call below. The raw pointer in SendPtr is derived from the guard,
+            // so the guard must stay alive until detach returns. It drops at the
+            // end of this block, after detach completes.
             let mut player = self.inner.lock().unwrap();
             let player_ptr = SendPtr(&mut *player as *mut WasapiPlayerInner);
             // Release the GIL while feeding. The mutex remains locked,
@@ -173,21 +177,28 @@ impl WasapiPlayer {
             feed_id = py.detach(move || unsafe {
                 player_ptr.as_mut().feed(Some(&data_owned), true)
             }).map_err(to_os_error)?;
-            // MutexGuard drops here, releasing the mutex.
         }
         self.fire_pending_callbacks(py)?;
         Ok(feed_id)
     }
 
     fn stop(&self) -> PyResult<()> {
-        // Use the StopHandle to stop without acquiring the inner mutex.
-        // This allows stop() to interrupt a blocking feed() call.
-        self.stop_handle.stop();
+        // Try to acquire the inner mutex without blocking. If we get it,
+        // call the full WasapiPlayerInner::stop() which calls
+        // IAudioClient::Stop() for immediate audio halt. If the mutex is
+        // held (e.g. feed() is running), fall back to the lock-free
+        // StopHandle which sets the atomic state and wakes feed().
+        if let Ok(mut player) = self.inner.try_lock() {
+            player.stop().map_err(to_os_error)?;
+        } else {
+            self.stop_handle.stop();
+        }
         Ok(())
     }
 
     fn sync(&self, py: Python<'_>) -> PyResult<()> {
         {
+            // See feed() for why the MutexGuard must outlive py.detach().
             let mut player = self.inner.lock().unwrap();
             let player_ptr = SendPtr(&mut *player as *mut WasapiPlayerInner);
             py.detach(move || unsafe {
@@ -200,6 +211,7 @@ impl WasapiPlayer {
 
     fn idle(&self, py: Python<'_>) -> PyResult<()> {
         {
+            // See feed() for why the MutexGuard must outlive py.detach().
             let mut player = self.inner.lock().unwrap();
             let player_ptr = SendPtr(&mut *player as *mut WasapiPlayerInner);
             py.detach(move || unsafe {

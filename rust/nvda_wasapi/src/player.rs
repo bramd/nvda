@@ -271,11 +271,16 @@ impl WasapiPlayerInner {
             };
 
             let send_frames =
-                remaining_frames.min(self.buffer_frames - padding_frames);
+                remaining_frames.min(self.buffer_frames.saturating_sub(padding_frames));
+            if send_frames == 0 {
+                // Buffer is completely full -- wait and retry.
+                self.wait_until_needed(1);
+                continue;
+            }
             let silent_frame_count: u32 =
                 if should_insert_silent_frame { 1 } else { 0 };
             let send_bytes =
-                (send_frames - silent_frame_count) as usize * block_align;
+                (send_frames.saturating_sub(silent_frame_count)) as usize * block_align;
 
             let render = self.render.as_ref().unwrap();
             let buffer = unsafe { render.GetBuffer(send_frames)? };
