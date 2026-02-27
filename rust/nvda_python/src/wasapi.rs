@@ -145,14 +145,21 @@ impl WasapiPlayer {
         })
     }
 
-    fn open(&self) -> PyResult<()> {
-        let mut player = self.inner.lock().unwrap();
-        player.open(false).map_err(to_os_error)?;
-        // Replace the stop handle with a fresh one that references the
-        // (possibly new) audio client.
-        let mut sh = self.stop_handle.lock().unwrap();
-        *sh = player.stop_handle();
-        Ok(())
+    fn open(&self, py: Python<'_>) -> PyResult<()> {
+        // Release the GIL before locking inner to prevent deadlock with
+        // feed() which holds inner and waits for the GIL.
+        let inner = &self.inner;
+        let stop_handle_mutex = &self.stop_handle;
+        py.detach(move || {
+            let mut player = inner.lock().unwrap();
+            player.open(false)?;
+            // Replace the stop handle with a fresh one that references the
+            // (possibly new) audio client.
+            let mut sh = stop_handle_mutex.lock().unwrap();
+            *sh = player.stop_handle();
+            Ok::<(), windows::core::Error>(())
+        })
+        .map_err(to_os_error)
     }
 
     fn feed(&self, py: Python<'_>, data: &[u8]) -> PyResult<u32> {
@@ -205,26 +212,45 @@ impl WasapiPlayer {
         Ok(())
     }
 
-    fn pause(&self) -> PyResult<()> {
-        let mut player = self.inner.lock().unwrap();
-        player.pause().map_err(to_os_error)
+    fn pause(&self, py: Python<'_>) -> PyResult<()> {
+        // Release the GIL before locking inner to prevent deadlock with feed().
+        let inner = &self.inner;
+        py.detach(move || {
+            let mut player = inner.lock().unwrap();
+            player.pause()
+        })
+        .map_err(to_os_error)
     }
 
-    fn resume(&self) -> PyResult<()> {
-        let mut player = self.inner.lock().unwrap();
-        player.resume().map_err(to_os_error)
+    fn resume(&self, py: Python<'_>) -> PyResult<()> {
+        // Release the GIL before locking inner to prevent deadlock with feed().
+        let inner = &self.inner;
+        py.detach(move || {
+            let mut player = inner.lock().unwrap();
+            player.resume()
+        })
+        .map_err(to_os_error)
     }
 
     #[pyo3(name = "setChannelVolume")]
-    fn set_channel_volume(&self, channel: u32, level: f32) -> PyResult<()> {
-        let mut player = self.inner.lock().unwrap();
-        player.set_channel_volume(channel, level).map_err(to_os_error)
+    fn set_channel_volume(&self, py: Python<'_>, channel: u32, level: f32) -> PyResult<()> {
+        // Release the GIL before locking inner to prevent deadlock with feed().
+        let inner = &self.inner;
+        py.detach(move || {
+            let mut player = inner.lock().unwrap();
+            player.set_channel_volume(channel, level)
+        })
+        .map_err(to_os_error)
     }
 
     #[pyo3(name = "startTrimmingLeadingSilence")]
-    fn start_trimming_leading_silence(&self, start: bool) {
-        let mut player = self.inner.lock().unwrap();
-        player.start_trimming_leading_silence(start);
+    fn start_trimming_leading_silence(&self, py: Python<'_>, start: bool) {
+        // Release the GIL before locking inner to prevent deadlock with feed().
+        let inner = &self.inner;
+        py.detach(move || {
+            let mut player = inner.lock().unwrap();
+            player.start_trimming_leading_silence(start);
+        });
     }
 }
 
