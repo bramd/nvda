@@ -8,8 +8,6 @@
 
 import multiprocessing
 import os
-import shutil
-import subprocess
 import platform
 import sys
 from pathlib import Path
@@ -524,7 +522,85 @@ devDocTargets = env.SConscript(
 	"projectDocs/dev/developerGuide/sconscript",
 	exports=["env", "outputDir", "sourceDir", "userDocsDir"],
 )
+
+# Build nvdaRust (the Rust PyO3 cdylib) via maturin and install it into the
+# active virtualenv. We invoke `uvx maturin develop` so the .pyd lands in
+# .venv/Lib/site-packages/nvdaRust/ where Python's import machinery finds it,
+# and uv (no longer managing nvdaRust as a workspace member) leaves it alone.
+#
+# Profile selection mirrors C++: scons `release=False` (the default) → cargo
+# dev profile (no `--release` flag); `release=True` → cargo release profile.
+# This matches the /Od (dev) vs /O2 /GL /LTCG (release) distinction in
+# nvdaHelper/archBuild_sconscript.
+import subprocess as _subprocess  # noqa: E402
+
+rustNvdaPythonDir = Dir("#rust/nvda_python")
+rustWorkspaceDir = Dir("#rust")
+# Glob every .rs and Cargo.toml across the workspace so SCons re-runs maturin
+# whenever any Rust source or manifest changes (path-deps included).
+nvdaRustSources = (
+	env.Glob("#rust/nvda_*/src/*.rs")
+	+ env.Glob("#rust/nvda_*/Cargo.toml")
+	+ [rustWorkspaceDir.File("Cargo.toml")]
+)
+
+# Target is the installed .pyd inside .venv. Filename includes the Python
+# major.minor and the platform tag — both are constants for a given build host.
+import sysconfig as _sysconfig  # noqa: E402
+
+_pyTag = f"cp{_sysconfig.get_python_version().replace('.', '')}"
+_platTag = _sysconfig.get_platform().replace("-", "_")
+nvdaRustPyd = File(
+	f"#.venv/Lib/site-packages/nvdaRust/nvdaRust.{_pyTag}-{_platTag}.pyd",
+)
+
+
+def buildNvdaRust(target, source, env):
+	"""Run `uvx maturin develop` to build and install nvdaRust.
+
+	Profile is chosen by the SCons `release` BoolVariable — same convention
+	as the C++ build (see nvdaHelper/archBuild_sconscript:133-139).
+	"""
+	cmd = [
+		"uvx",
+		"maturin",
+		"develop",
+		"--manifest-path",
+		rustNvdaPythonDir.File("Cargo.toml").abspath,
+	]
+	if env["release"]:
+		cmd.append("--release")
+	# Maturin's progress output contains UTF-8 emoji. Decode explicitly as
+	# UTF-8 with replacement so the default Windows cp1252 decoder doesn't
+	# raise UnicodeDecodeError in subprocess's reader threads.
+	result = _subprocess.run(
+		cmd,
+		capture_output=True,
+		encoding="utf-8",
+		errors="replace",
+	)
+	if result.returncode != 0:
+		print(f"maturin develop failed:\n{result.stderr}")
+		return result.returncode
+	if not os.path.exists(target[0].abspath):
+		print(
+			f"maturin develop succeeded but {target[0].abspath} was not produced",
+		)
+		return 1
+	return 0
+
+
+nvdaRustInstall = env.Command(
+	nvdaRustPyd,
+	nvdaRustSources,
+	buildNvdaRust,
+)
+# Always reconsider the build (maturin's own staleness check is fast); SCons's
+# glob-based source list catches the common case of "I edited a .rs file".
+AlwaysBuild(nvdaRustInstall)
+
 dist = env.NVDADist("dist", [sourceDir, userDocsDir], uiAccess=bool(certFile) or bool(apiSigningToken))
+env.Depends(dist, nvdaRustInstall)
 env.Depends(dist, uninstaller)
 env.Depends(dist, devDocTargets)
 # dist will always be considered obsolete
