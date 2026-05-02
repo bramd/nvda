@@ -67,5 +67,4 @@ EXPORTS
 	_nvdaControllerInternal_openConfigDirectory DATA
 	rateLimitedUIAEventHandler_create
 	rateLimitedUIAEventHandler_terminate
-	isScreenFullyBlack
 	localListeningSocketExists

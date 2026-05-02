@@ -93,7 +93,6 @@ localLib = env.SharedLibrary(
 		"UIAEventLimiter/api.cpp",
 		"UIAEventLimiter/rateLimitedEventHandler.cpp",
 		"UIAEventLimiter/utils.cpp",
-		"screenCurtain.cpp",
 		"remoteAccess.cpp",
 	],
 	LIBS=[
@@ -104,8 +103,6 @@ localLib = env.SharedLibrary(
 		"rpcrt4",
 		"shlwapi",
 		detoursLib,
-		"Gdi32",
-		"Gdiplus",
 		"Iphlpapi",
 		"Ws2_32",
 		"runtimeobject",
