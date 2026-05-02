@@ -587,6 +587,18 @@ def buildNvdaRust(target, source, env):
 			f"maturin develop succeeded but {target[0].abspath} was not produced",
 		)
 		return 1
+	# Remove the .dist-info that maturin creates in site-packages. Without
+	# this, `uv sync` sees nvdarust as a "previously-managed but no-longer-in-
+	# pyproject" package and uninstalls the .pyd on every sync (including the
+	# implicit sync triggered by runnvda.bat / `uv run`). Python's import
+	# machinery doesn't need .dist-info to find the package — the nvdaRust/
+	# directory with __init__.py + .pyd is enough.
+	import glob as _glob  # noqa: E402
+	import shutil as _shutil  # noqa: E402
+
+	sitePackages = os.path.dirname(os.path.dirname(target[0].abspath))
+	for distInfo in _glob.glob(os.path.join(sitePackages, "nvdarust-*.dist-info")):
+		_shutil.rmtree(distInfo, ignore_errors=True)
 	return 0
 
 
