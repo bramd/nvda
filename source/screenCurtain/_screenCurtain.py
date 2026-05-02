@@ -15,7 +15,7 @@ from gui.guiHelper import BoxSizerHelper, ButtonHelper
 from gui.message import MessageDialog as ModernMessageDialog
 from gui.nvdaControls import MessageDialog
 from logHandler import log
-from NVDAHelper.localLib import isScreenFullyBlack
+import nvdaRust
 from NVDAState import _TrackNVDAInitialization
 from winBindings import magnification
 
@@ -214,7 +214,7 @@ class ScreenCurtain:
 				magnification.MagInitialize()
 				magnification.MagSetFullscreenColorEffect(TRANSFORM_BLACK)
 				magnification.MagShowSystemCursor(False)
-				if not isScreenFullyBlack():
+				if not nvdaRust.screen_curtain.isScreenFullyBlack():
 					raise RuntimeError("Screen is not black.")
 				break
 			except Exception as e:
