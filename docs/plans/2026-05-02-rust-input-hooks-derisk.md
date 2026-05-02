@@ -722,3 +722,14 @@ libs.extend(["ntdll", "userenv", "ws2_32", "bcrypt", "WindowsApp"])
 5. Once Rust is implemented, gate the corresponding `.cpp` out of the x86_64 source list.
 
 Multi-arch Rust + `#![no_std]` are both still open; address before the third port lands, or live with a binary-size cliff that grows with each addition.
+
+### Update: SCons now owns the cargo workflow for both crate types
+
+The plan above describes the SCons cargo block in `nvdaHelper/remote/sconscript` for the staticlib (`nvda_input_hooks`). Subsequently, `nvda_python` (the PyO3 cdylib that becomes `nvdaRust.pyd`) was also moved from the uv workspace to a SCons-built target — see `docs/plans/2026-05-03-rust-scons-integration.md` for the rationale (uv wheel-cache trap, no production fail-safe).
+
+Future Rust ports follow this pattern:
+
+* **PyO3 cdylib (loaded into NVDA's main process):** add to `nvda_python` as a submodule, no separate SCons build needed (already covered by the nvda_python build target in `sconstruct`).
+* **Staticlib for an injected DLL (e.g. `nvdaHelperRemote.dll`):** add an entry to the existing cargo block in that DLL's sconscript (currently only `nvdaHelper/remote/sconscript`), gating to x86_64 only until multi-arch cargo is solved.
+
+Both share the SCons `release` BoolVariable for profile selection.
