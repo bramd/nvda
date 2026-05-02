@@ -47,6 +47,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvda_screen_curtain"
+version = "0.1.0"
+dependencies = [
+ "windows",
+]
+
+[[package]]
 name = "nvda_text"
 version = "0.1.0"
 dependencies = [
