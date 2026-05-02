@@ -79,3 +79,31 @@ pub fn get_clipboard_text(unknown_addr: usize) -> OleResult {
     unsafe { ReleaseStgMedium(&mut { medium }) };
     Ok(text)
 }
+
+pub fn get_user_type(unknown_addr: usize, flags: u32) -> OleResult {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::System::Ole::USERCLASSTYPE;
+
+    let unknown = unsafe { borrow_iunknown(unknown_addr) }.ok_or(E_INVALIDARG.0)?;
+    let ole_object: IOleObject = unknown.cast().map_err(|_| E_NOINTERFACE.0)?;
+
+    let ole_str =
+        unsafe { ole_object.GetUserType(USERCLASSTYPE(flags as i32)) }.map_err(|e| e.code().0)?;
+    if ole_str.is_null() {
+        return Err(E_FAIL.0);
+    }
+
+    // ole_str is a PWSTR allocated with CoTaskMemAlloc; we own it
+    let result = unsafe {
+        let mut len = 0usize;
+        while *ole_str.0.add(len) != 0 {
+            len += 1;
+        }
+        let slice = std::slice::from_raw_parts(ole_str.0, len);
+        let s = String::from_utf16_lossy(slice);
+        CoTaskMemFree(Some(ole_str.0 as *const _));
+        s
+    };
+
+    Ok(result)
+}
