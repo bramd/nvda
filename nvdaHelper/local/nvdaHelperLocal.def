@@ -63,12 +63,9 @@ EXPORTS
 	dllImportTableHooks_hookSingle
 	dllImportTableHooks_unhookSingle
 	logMessage
-	getOleClipboardText
-	getOleUserType
 	_nvdaControllerInternal_reportLiveRegion DATA
 	_nvdaControllerInternal_openConfigDirectory DATA
 	rateLimitedUIAEventHandler_create
 	rateLimitedUIAEventHandler_terminate
 	isScreenFullyBlack
 	localListeningSocketExists
-	writeCrashDump

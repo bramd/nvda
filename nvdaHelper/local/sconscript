@@ -93,10 +93,8 @@ localLib = env.SharedLibrary(
 		"UIAEventLimiter/api.cpp",
 		"UIAEventLimiter/rateLimitedEventHandler.cpp",
 		"UIAEventLimiter/utils.cpp",
-		"oleUtils.cpp",
 		"screenCurtain.cpp",
 		"remoteAccess.cpp",
-		"crashDump.cpp",
 	],
 	LIBS=[
 		"advapi32.lib",
@@ -111,7 +109,6 @@ localLib = env.SharedLibrary(
 		"Iphlpapi",
 		"Ws2_32",
 		"runtimeobject",
-		"dbghelp",
 	],
 )
 
