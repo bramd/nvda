@@ -15,7 +15,7 @@ import NVDAState
 from logHandler import log, getFormattedStacksForAllThreads
 import core
 import globalVars
-import NVDAHelper
+import nvdaRust
 from winBindings.kernel32 import UnhandledExceptionFilter, GetCurrentThreadId
 
 
@@ -179,7 +179,9 @@ def crashHandler(exceptionInfo):
 		log.critical("NVDA crashed! Not writing minidump, as shouldWriteToDisk returned False.")
 	elif (logFileName := globalVars.appArgs.logFileName) is not None:
 		dumpPath = os.path.join(os.path.dirname(logFileName), "nvda_crash.dmp")
-		if not NVDAHelper.localLib.writeCrashDump(dumpPath, exceptionInfo):
+		# exceptionInfo is a ctypes pointer; pass its address as an int.
+		exceptionInfoAddr = ctypes.cast(exceptionInfo, ctypes.c_void_p).value or 0
+		if not nvdaRust.crashdump.writeCrashDump(dumpPath, exceptionInfoAddr):
 			log.critical("NVDA crashed! Error writing minidump", exc_info=True)
 		else:
 			log.critical(f"NVDA crashed! Minidump written to {dumpPath}")
