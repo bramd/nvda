@@ -136,6 +136,15 @@ mod wasapi_mod {
 #[pymodule]
 #[pyo3(name = "nvdaRust")]
 mod nvda_rust {
+    #[pymodule_init]
+    fn init(_m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
+        // Forward Rust `log` macros to Python's `logging` module. NVDA's root
+        // logger handlers pick up child loggers (named after the Rust crate)
+        // automatically via Python's logging hierarchy.
+        pyo3_log::init();
+        Ok(())
+    }
+
     #[pymodule_export]
     use super::crashdump_mod;
     #[pymodule_export]
