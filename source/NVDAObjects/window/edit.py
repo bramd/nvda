@@ -4,7 +4,7 @@
 # See the file COPYING for more details.
 
 import ctypes
-from comtypes import BSTR, COMError
+from comtypes import COMError
 import colors
 import eventHandler
 import comInterfaces.tom
@@ -27,7 +27,6 @@ import watchdog
 import locationHelper
 import textUtils
 from textUtils.segFlag import CharSegFlag, WordSegFlag
-import NVDAHelper.localLib
 
 
 selOffsetsAtLastCaretEvent = None
@@ -827,24 +826,21 @@ class ITextDocumentTextInfo(textInfos.TextInfo):
 		).text
 		if label and not label.isspace():
 			return label
+		import nvdaRust
+
 		# Windows Live Mail exposes the label via the embedded object's data (IDataObject)
-		text = BSTR()
+		oAddr = ctypes.cast(o, ctypes.c_void_p).value or 0
 		try:
-			NVDAHelper.localLib.getOleClipboardText(o, ctypes.byref(text))
-		except WindowsError:
+			label = nvdaRust.ole.getOleClipboardText(oAddr)
+		except OSError:
 			pass
-		else:
-			label = text.value
 		if label:
 			return label
 		# As a final fallback (e.g. could not get display model text for Outlook Express), use the embedded object's user type (e.g. "recipient").
-		userType = BSTR()
 		try:
-			NVDAHelper.localLib.getOleUserType(o, 0, ctypes.byref(userType))
-		except WindowsError:
+			label = nvdaRust.ole.getOleUserType(oAddr, 0)
+		except OSError:
 			pass
-		else:
-			label = userType.value
 		if label:
 			return label
 
