@@ -39,10 +39,35 @@ Exit code: 0 on all pass / Office-tests skipped, 1 on any failure.
 """
 
 import ctypes
+import logging
 import sys
 import time
 
 import nvdaRust
+
+
+class _RecordCollector(logging.Handler):
+	"""Captures log records emitted via Python's logging module so the manual
+	test can verify Rust-emitted log calls flow through pyo3-log."""
+
+	def __init__(self):
+		super().__init__()
+		self.records: list[logging.LogRecord] = []
+
+	def emit(self, record: logging.LogRecord) -> None:
+		self.records.append(record)
+
+
+def _installLogCapture(level: int = logging.DEBUG) -> _RecordCollector:
+	"""Install a record-capturing handler at the given level. Returns the handler."""
+	collector = _RecordCollector()
+	collector.setLevel(level)
+	root = logging.getLogger()
+	root.addHandler(collector)
+	# Default root level is WARNING; lower it so DEBUG-level Rust messages flow.
+	if root.level > level or root.level == logging.NOTSET:
+		root.setLevel(level)
+	return collector
 
 
 CF_UNICODETEXT = 13
@@ -205,12 +230,24 @@ def runCase(name: str, text: str) -> bool:
 	return False
 
 
-def runNullIUnknownCase() -> bool:
+def runNullIUnknownCase(collector: _RecordCollector) -> bool:
+	beforeCount = len(collector.records)
 	try:
 		nvdaRust.ole.getOleClipboardText(0)
 	except OSError as e:
-		print(f"  PASS  null IUnknown raises OSError ({e})")
-		return True
+		# Verify the Rust side emitted a WARNING-level log record.
+		newRecords = collector.records[beforeCount:]
+		oleRecords = [
+			r for r in newRecords if r.levelno == logging.WARNING and "pUnknown is null" in r.getMessage()
+		]
+		if oleRecords:
+			print(f"  PASS  null IUnknown raises OSError ({e}) and emits WARNING log record")
+			return True
+		print(
+			f"  FAIL  null IUnknown raised OSError but no matching WARNING record found. "
+			f"Captured {len(newRecords)} new record(s); levels: {[r.levelno for r in newRecords]}",
+		)
+		return False
 	print("  FAIL  null IUnknown should have raised OSError")
 	return False
 
@@ -317,6 +354,7 @@ def runUserTypeCases() -> tuple[int, int]:
 
 def main() -> int:
 	ole32.OleInitialize(None)
+	collector = _installLogCapture(level=logging.DEBUG)
 	saved = getClipboardUnicode()
 	failures = 0
 	try:
@@ -333,7 +371,7 @@ def main() -> int:
 		for name, text in cases:
 			if not runCase(name, text):
 				failures += 1
-		if not runNullIUnknownCase():
+		if not runNullIUnknownCase(collector):
 			failures += 1
 
 		print()
@@ -348,6 +386,7 @@ def main() -> int:
 				pass
 		ole32.OleUninitialize()
 	print()
+	print(f"Captured {len(collector.records)} total log record(s) during run.")
 	print(f"{'PASS' if failures == 0 else 'FAIL'} ({failures} failure(s))")
 	return 0 if failures == 0 else 1
 
