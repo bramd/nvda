@@ -598,6 +598,11 @@ nvdaRustInstall = env.Command(
 # Always reconsider the build (maturin's own staleness check is fast); SCons's
 # glob-based source list catches the common case of "I edited a .rs file".
 AlwaysBuild(nvdaRustInstall)
+# Make `scons source` also build nvdaRust so the dev workflow (scons source &&
+# runnvda.bat) picks up Rust changes without needing scons dist. The .pyd lives
+# in .venv (not source/), so SCons's directory-target rule for `source` doesn't
+# pick it up automatically.
+env.Alias("source", nvdaRustInstall)
 
 dist = env.NVDADist("dist", [sourceDir, userDocsDir], uiAccess=bool(certFile) or bool(apiSigningToken))
 env.Depends(dist, nvdaRustInstall)
