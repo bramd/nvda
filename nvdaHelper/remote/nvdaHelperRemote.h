@@ -48,6 +48,14 @@ bool unregisterWinEventHook(WINEVENTPROC hookProc);
 
 //Windows hook registration
 
+// C linkage so the Rust nvda_input_hooks staticlib can call these via
+// `extern "C"` declarations. The C++ definitions in nvdaHelperRemote.cpp pick
+// up C linkage by including this header, so existing C++ callers are
+// unaffected (the calls use the same unmangled names either way).
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * Registers a callback function to be called with in future windows hooks fired for this process.
  * @param hookType the type of windows hook (WH_CALLWNDPROC, WH_GETMESSAGE)
@@ -64,6 +72,10 @@ bool registerWindowsHook(int hookType, HOOKPROC hookProc);
  * @return True if it was unregistered, false otherwize.
  */
 bool unregisterWindowsHook(int hookType, HOOKPROC hookProc);
+
+#ifdef __cplusplus
+}
+#endif
 
 // The handle for NVDA's inproc manager thread
 extern HANDLE inprocMgrThreadHandle;

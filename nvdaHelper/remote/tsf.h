@@ -18,6 +18,12 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 void TSF_inProcess_initialize();
 void TSF_inProcess_terminate();
 void TSF_thread_detached();
+// C linkage so the Rust nvda_input_hooks staticlib can call this via an
+// `extern "C"` declaration. The C++ definition in tsf.cpp picks up C linkage
+// from this header.
+#ifdef __cplusplus
+extern "C"
+#endif
 bool isTSFThread();
 extern CLSID curTSFClsID;
 

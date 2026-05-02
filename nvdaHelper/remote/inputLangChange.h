@@ -21,7 +21,19 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 //Event IDs
 #define EVENT_INPUTLANGCHANGE 0x1001
 
+// C linkage so x86_64 can resolve these from the Rust nvda_input_hooks
+// staticlib (which exports unmangled `extern "C"` symbols), while the C++
+// implementation in inputLangChange.cpp also exports unmangled names on
+// other architectures.
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void inputLangChange_inProcess_initialize();
 void inputLangChange_inProcess_terminate();
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

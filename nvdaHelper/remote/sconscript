@@ -85,6 +85,12 @@ nvdaInProcUtilsRPCHeader, nvdaInProcUtilsRPCServerSource = env.MSRPCStubs(
 
 ia2utilsObj = env.Object("./ia2utils", "../common/ia2utils.cpp")
 
+# x86_64 links the Rust nvda_input_hooks staticlib instead of compiling
+# inputLangChange.cpp. Cargo produces a single .lib for the host triple, so
+# non-x86_64 NVDA builds keep using the C++ source. Multi-arch cargo builds
+# are a future de-risking exercise.
+isX64 = env["TARGET_ARCH"] == "x86_64"
+
 source = [
 	env["projectResFile"],
 	"injection.cpp",
@@ -121,12 +127,10 @@ source = [
 	"nvdaHelperRemote.def",
 	vbufBackendLibs,
 ]
-
-# Build the Rust staticlib for the input-hooks port (x86_64 only for now).
-# Cargo produces a single .lib for the host triple; non-x86_64 NVDA builds
-# keep using the C++ inputLangChange.cpp source. Multi-arch cargo builds are a
-# future de-risking exercise.
-isX64 = env["TARGET_ARCH"] == "x86_64"
+# When the Rust staticlib provides inputLangChange_inProcess_*, drop the C++
+# source on that arch so the linker resolves from Rust instead.
+if isX64:
+	source.remove("inputLangChange.cpp")
 
 cargoStaticLib = None
 if isX64:
@@ -195,6 +199,13 @@ libs = [
 ]
 if cargoStaticLib is not None:
 	libs.append(cargoStaticLib)
+	# Rust libstd transitively references symbols from these Win32 system
+	# libraries (ntdll for sync primitives and Nt* file APIs, userenv for
+	# home_dir lookups, ws2_32 for std::net, bcrypt for the secure RNG,
+	# WindowsApp for WinRT RoOriginateError). MSVC does not pick up the
+	# /DEFAULTLIB directives embedded in the Rust .lib reliably for
+	# staticlib consumers, so list them explicitly.
+	libs.extend(["ntdll", "userenv", "ws2_32", "bcrypt", "WindowsApp"])
 
 remoteLib = env.SharedLibrary(
 	target="nvdaHelperRemote",
