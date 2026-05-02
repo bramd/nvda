@@ -41,11 +41,54 @@ fn calculate_word_offsets(text_input: &str, offset: usize) -> (usize, usize) {
     nvda_text::word_offsets(text_input, offset)
 }
 
+// Crash dump — thin wrapper around nvda_crashdump.
+#[pyfunction]
+#[pyo3(name = "writeCrashDump")]
+fn write_crash_dump(path: &str, exception_pointers: usize) -> bool {
+    nvda_crashdump::write_crash_dump(path, exception_pointers)
+}
+
+// OLE helpers — thin wrappers around nvda_ole. The COM IUnknown is passed
+// from Python as an integer pointer:
+//     ptr = ctypes.cast(comObj, ctypes.c_void_p).value
+// HRESULT errors are mapped to PyOSError.
+#[pyfunction]
+#[pyo3(name = "getOleClipboardText")]
+fn get_ole_clipboard_text(unknown: usize) -> PyResult<String> {
+    nvda_ole::get_clipboard_text(unknown).map_err(|hr| {
+        pyo3::exceptions::PyOSError::new_err(format!("HRESULT 0x{:08x}", hr as u32))
+    })
+}
+
+#[pyfunction]
+#[pyo3(name = "getOleUserType")]
+fn get_ole_user_type(unknown: usize, flags: u32) -> PyResult<String> {
+    nvda_ole::get_user_type(unknown, flags).map_err(|hr| {
+        pyo3::exceptions::PyOSError::new_err(format!("HRESULT 0x{:08x}", hr as u32))
+    })
+}
+
 #[pymodule]
 #[pyo3(name = "tones")]
 mod tones_mod {
     #[pymodule_export]
     use super::generate_beep;
+}
+
+#[pymodule]
+#[pyo3(name = "crashdump")]
+mod crashdump_mod {
+    #[pymodule_export]
+    use super::write_crash_dump;
+}
+
+#[pymodule]
+#[pyo3(name = "ole")]
+mod ole_mod {
+    #[pymodule_export]
+    use super::get_ole_clipboard_text;
+    #[pymodule_export]
+    use super::get_ole_user_type;
 }
 
 #[pymodule]
@@ -79,6 +122,10 @@ mod wasapi_mod {
 #[pymodule]
 #[pyo3(name = "nvdaRust")]
 mod nvda_rust {
+    #[pymodule_export]
+    use super::crashdump_mod;
+    #[pymodule_export]
+    use super::ole_mod;
     #[pymodule_export]
     use super::text_mod;
     #[pymodule_export]

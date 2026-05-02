@@ -37,6 +37,8 @@ dependencies = [
 name = "nvda_python"
 version = "0.1.0"
 dependencies = [
+ "nvda_crashdump",
+ "nvda_ole",
  "nvda_text",
  "nvda_tones",
  "nvda_wasapi",
