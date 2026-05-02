@@ -25,7 +25,6 @@ from ctypes import (
 	c_uint,
 )
 from ctypes.wintypes import (
-	DWORD,
 	HANDLE,
 	HWND,
 	RECT,
@@ -383,21 +382,6 @@ VBuf_locateControlFieldNodeAtOffset.argtypes = (
 	POINTER(VBufRemote_nodeHandle_t),  # foundNode
 )
 
-getOleClipboardText = dll.getOleClipboardText
-getOleClipboardText.restype = HRESULT
-getOleClipboardText.argtypes = (
-	POINTER(IUnknown),  # object that supports IDataObject
-	POINTER(BSTR),  # BSTR* text
-)
-
-getOleUserType = dll.getOleUserType
-getOleUserType.restype = HRESULT
-getOleUserType.argtypes = (
-	POINTER(IUnknown),  # object supporting IOLEObject
-	DWORD,  # dwFlags
-	POINTER(BSTR),  # BSTR* userType
-)
-
 findWindowWithClassInThread = dll.findWindowWithClassInThread
 findWindowWithClassInThread.restype = HWND
 findWindowWithClassInThread.argtypes = (
@@ -531,16 +515,3 @@ isScreenFullyBlack.restype = c_bool
 localListeningSocketExists = dll.localListeningSocketExists
 localListeningSocketExists.argtypes = (c_ushort, c_wchar_p)
 localListeningSocketExists.restype = c_bool
-
-writeCrashDump = dll.writeCrashDump
-"""
-Writes a crash dump to the specified path.
-:param dumpPath: Path to write the dump to.
-:param exceptionPointers: Pointer to an EXCEPTION_POINTERS structure from an UnhandledExceptionFilter callback.
-:return: True on success, False on failure.
-"""
-writeCrashDump.argtypes = (
-	c_wchar_p,  # dumpPath
-	c_void_p,  # exceptionPointers
-)
-writeCrashDump.restype = bool
