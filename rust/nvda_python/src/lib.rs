@@ -69,13 +69,6 @@ fn get_ole_user_type(unknown: usize, flags: u32) -> PyResult<String> {
 }
 
 #[pymodule]
-#[pyo3(name = "tones")]
-mod tones_mod {
-    #[pymodule_export]
-    use super::generate_beep;
-}
-
-#[pymodule]
 #[pyo3(name = "crashdump")]
 mod crashdump_mod {
     #[pymodule_export]
@@ -100,6 +93,13 @@ mod text_mod {
     use super::calculate_character_offsets;
     #[pymodule_export]
     use super::calculate_word_offsets;
+}
+
+#[pymodule]
+#[pyo3(name = "tones")]
+mod tones_mod {
+    #[pymodule_export]
+    use super::generate_beep;
 }
 
 #[pymodule]
