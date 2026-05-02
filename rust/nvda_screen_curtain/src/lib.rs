@@ -15,7 +15,7 @@ Ported from nvdaHelper/local/screenCurtain.cpp.
 
 use std::ptr;
 
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{GetLastError, HWND};
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
     GetObjectW, ReleaseDC, SelectObject, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
@@ -88,8 +88,8 @@ impl Drop for GpBitmapGuard {
 /// Captures the entire virtual screen and returns true iff every pixel is
 /// exactly RGB(0, 0, 0).
 ///
-/// Returns false on any failure (no logging is performed; the Python caller
-/// treats failure the same as "screen is not black").
+/// Returns false on any failure (failures are logged via `log::error!`; the
+/// Python caller treats failure the same as "screen is not black").
 ///
 /// GDI+ note: this function relies on GDI+ already being initialised in the
 /// host process. NVDA performs `GdiplusStartup` during startup, so the
@@ -113,11 +113,13 @@ pub fn is_screen_fully_black() -> bool {
     // The desktop window covers the entire virtual screen.
     let desktop_wnd = unsafe { GetDesktopWindow() };
     if desktop_wnd.is_invalid() {
+        log::error!("isScreenFullyBlack: failed to get handle for desktop window");
         return false;
     }
 
     let desktop_dc = unsafe { GetDC(desktop_wnd) };
     if desktop_dc.is_invalid() {
+        log::error!("isScreenFullyBlack: failed to get device context for desktop");
         return false;
     }
     let _desktop_dc_guard = DesktopDcGuard {
@@ -127,6 +129,7 @@ pub fn is_screen_fully_black() -> bool {
 
     let capture_dc = unsafe { CreateCompatibleDC(desktop_dc) };
     if capture_dc.is_invalid() {
+        log::error!("isScreenFullyBlack: failed to create compatible device context");
         return false;
     }
     let _capture_dc_guard = MemDcGuard(capture_dc);
@@ -134,6 +137,7 @@ pub fn is_screen_fully_black() -> bool {
     let capture_bitmap =
         unsafe { CreateCompatibleBitmap(desktop_dc, screen_width, screen_height) };
     if capture_bitmap.is_invalid() {
+        log::error!("isScreenFullyBlack: failed to create compatible bitmap");
         return false;
     }
     let _capture_bitmap_guard = BitmapGuard(capture_bitmap);
@@ -141,6 +145,9 @@ pub fn is_screen_fully_black() -> bool {
     // Set capture_dc to draw to capture_bitmap.
     let old_obj = unsafe { SelectObject(capture_dc, capture_bitmap) };
     if old_obj.is_invalid() {
+        log::error!(
+            "isScreenFullyBlack: failed to select capture bitmap into capture device context"
+        );
         return false;
     }
 
@@ -163,6 +170,10 @@ pub fn is_screen_fully_black() -> bool {
         let _ = SelectObject(capture_dc, old_obj);
     }
     if blt_result.is_err() {
+        log::error!(
+            "isScreenFullyBlack: BitBlt failed (GetLastError = {})",
+            unsafe { GetLastError().0 }
+        );
         return false;
     }
 
@@ -176,6 +187,7 @@ pub fn is_screen_fully_black() -> bool {
         )
     };
     if bytes_written == 0 {
+        log::error!("isScreenFullyBlack: failed to get bitmap metadata");
         return false;
     }
 
@@ -224,6 +236,7 @@ pub fn is_screen_fully_black() -> bool {
     // `bytesWritten == ERROR_INVALID_PARAMETER` (= 87), but that conflates a
     // valid 87-scan-line copy with failure; we drop that check.
     if lines_copied == 0 {
+        log::error!("isScreenFullyBlack: GetDIBits failed (lines_copied = 0)");
         return false;
     }
 
@@ -237,6 +250,10 @@ pub fn is_screen_fully_black() -> bool {
         )
     };
     if status != GdipOk || gp_bitmap_ptr.is_null() {
+        log::error!(
+            "isScreenFullyBlack: GdipCreateBitmapFromGdiDib failed (status = {:?})",
+            status
+        );
         return false;
     }
     let _gp_bitmap_guard = GpBitmapGuard(gp_bitmap_ptr);
@@ -246,6 +263,10 @@ pub fn is_screen_fully_black() -> bool {
     let status =
         unsafe { GdipBitmapGetHistogramSize(HistogramFormatRGB, &mut histogram_size) };
     if status != GdipOk || histogram_size == 0 {
+        log::error!(
+            "isScreenFullyBlack: GdipBitmapGetHistogramSize failed (status = {:?})",
+            status
+        );
         return false;
     }
 
@@ -266,7 +287,23 @@ pub fn is_screen_fully_black() -> bool {
         )
     };
     if status != GdipOk {
+        log::error!(
+            "isScreenFullyBlack: GdipBitmapGetHistogram failed (status = {:?})",
+            status
+        );
         return false;
+    }
+
+    // Trace the per-bin histogram values when debug logging is enabled. The
+    // gate avoids paying the formatting cost on every screen-curtain check
+    // when debug logging is off (the common case).
+    if log::log_enabled!(log::Level::Debug) {
+        let mut summary = String::with_capacity(histogram_size as usize * 16);
+        summary.push_str("Histogram of virtual screen:");
+        for i in 0..histogram_size as usize {
+            summary.push_str(&format!(" ({}, {}, {})", hist_r[i], hist_g[i], hist_b[i]));
+        }
+        log::debug!("{}", summary);
     }
 
     // If the entire screen is black, then the only colour in the histogram

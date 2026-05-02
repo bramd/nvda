@@ -3,6 +3,9 @@ name = "nvda_screen_curtain"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies]
+log = "0.4"
+
 [dependencies.windows]
 version = "0.58"
 features = [
