@@ -7,11 +7,8 @@ import api
 import braille
 import config
 import controlTypes
-import ctypes
-import NVDAHelper
 import speech
 import textInfos
-import textUtils
 import UIAHandler
 
 from comtypes import COMError
@@ -297,39 +294,22 @@ class ConsoleUIATextInfoWorkaroundEndInclusive(ConsoleUIATextInfo):
 		"""
 		Given a caret textInfo expanded to line, returns the index into the
 		line where the caret is located.
-		This is necessary since Uniscribe requires indices into the text to
-		find word boundaries, but UIA only allows for relative movement.
 		"""
 		# position a textInfo from the start of the line up to the current position.
 		charInfo = lineInfo.copy()
 		charInfo.setEndPoint(self, "endToStart")
 		text = charInfo._rangeObj.getText(-1)
-		offset = textUtils.WideStringOffsetConverter(text).encodedStringLength
-		return offset
+		return len(text)
 
 	def _getWordOffsetsInThisLine(self, offset, lineInfo):
+		import nvdaRust
+
 		lineText = lineInfo._rangeObj.getText(-1)
 		# Convert NULL and non-breaking space to space to make sure
 		# that words will break on them
 		lineText = lineText.translate({0: " ", 0xA0: " "})
-		start = ctypes.c_int()
-		end = ctypes.c_int()
-		# Uniscribe does some strange things when you give it a string  with
-		# not more than two alphanumeric chars in a row.
-		# Inject two alphanumeric characters at the end to fix this.
-		lineText += "xx"
-		lineTextLen = textUtils.WideStringOffsetConverter(lineText).encodedStringLength
-		NVDAHelper.localLib.calculateWordOffsets(
-			lineText,
-			lineTextLen,
-			offset,
-			ctypes.byref(start),
-			ctypes.byref(end),
-		)
-		return (
-			start.value,
-			min(end.value, max(1, lineTextLen - 2)),
-		)
+		start, end = nvdaRust.text.calculateWordOffsets(lineText, offset)
+		return (start, min(end, len(lineText)))
 
 	def _isCollapsed(self):
 		"""Works around a UIA bug on conhost versions before microsoft/terminal#4018 that means we

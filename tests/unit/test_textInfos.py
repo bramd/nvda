@@ -137,6 +137,118 @@ class TestCharacterOffsets(unittest.TestCase):
 		self.assertEqual(ti.offsets, (0, 1))  # One offset
 
 
+class TestCalculateUniscribeOffsets(unittest.TestCase):
+	"""
+	Tests for OffsetsTextInfo._calculateUniscribeOffsets, covering both WCHAR-encoded
+	and str-encoded TextInfos and both UNIT_CHARACTER and UNIT_WORD.
+	"""
+
+	def _makeTI(self, text: str, encoding=textUtils.WCHAR_ENCODING):
+		obj = BasicTextProvider(text=text, encoding=encoding)
+		return obj.makeTextInfo(Offsets(0, 0))
+
+	# ── UNIT_CHARACTER ──
+
+	def test_character_wchar_astral_atHighSurrogate(self):
+		# WCHAR offset 1 = high surrogate of 🤦 (U+1F926)
+		ti = self._makeTI("a\U0001f926b")
+		self.assertEqual(
+			ti._calculateUniscribeOffsets("a\U0001f926b", textInfos.UNIT_CHARACTER, 1),
+			(1, 3),
+		)
+
+	def test_character_wchar_astral_atLowSurrogate(self):
+		# WCHAR offset 2 = low surrogate of 🤦 — should still resolve to the same cluster
+		ti = self._makeTI("a\U0001f926b")
+		self.assertEqual(
+			ti._calculateUniscribeOffsets("a\U0001f926b", textInfos.UNIT_CHARACTER, 2),
+			(1, 3),
+		)
+
+	def test_character_str_astral(self):
+		# Non-WCHAR encoding: relOffset is in str-space (1 codepoint per offset)
+		ti = self._makeTI("a\U0001f926b", encoding=None)
+		self.assertEqual(
+			ti._calculateUniscribeOffsets("a\U0001f926b", textInfos.UNIT_CHARACTER, 1),
+			(1, 2),
+		)
+
+	def test_character_combiningMark(self):
+		# "é" is one grapheme cluster but two str codepoints
+		ti = self._makeTI("éx", encoding=None)
+		self.assertEqual(
+			ti._calculateUniscribeOffsets("éx", textInfos.UNIT_CHARACTER, 0),
+			(0, 2),
+		)
+		self.assertEqual(
+			ti._calculateUniscribeOffsets("éx", textInfos.UNIT_CHARACTER, 1),
+			(0, 2),
+		)
+		self.assertEqual(
+			ti._calculateUniscribeOffsets("éx", textInfos.UNIT_CHARACTER, 2),
+			(2, 3),
+		)
+
+	def test_character_crlfSplit(self):
+		# Uniscribe historically treats \r and \n as separate characters, not as one cluster
+		ti = self._makeTI("a\r\nb", encoding=None)
+		self.assertEqual(
+			ti._calculateUniscribeOffsets("a\r\nb", textInfos.UNIT_CHARACTER, 1),
+			(1, 2),
+		)
+		self.assertEqual(
+			ti._calculateUniscribeOffsets("a\r\nb", textInfos.UNIT_CHARACTER, 2),
+			(2, 3),
+		)
+
+	# ── UNIT_WORD ──
+
+	def test_word_simple(self):
+		ti = self._makeTI("hello world", encoding=None)
+		# Trailing space belongs to the preceding word (issue #1656)
+		self.assertEqual(
+			ti._calculateUniscribeOffsets("hello world", textInfos.UNIT_WORD, 0),
+			(0, 6),
+		)
+
+	def test_word_inWhitespace_belongsToPreceding(self):
+		# Querying inside a whitespace run returns the preceding word + that whitespace
+		ti = self._makeTI("hello world", encoding=None)
+		self.assertEqual(
+			ti._calculateUniscribeOffsets("hello world", textInfos.UNIT_WORD, 5),
+			(0, 6),
+		)
+
+	def test_word_wchar_astral_atHighSurrogate(self):
+		# "hi 🤦 x" — UAX#29 treats the emoji as its own word.
+		# WCHAR layout: 'h'=0, 'i'=1, ' '=2, 🤦-high=3, 🤦-low=4, ' '=5, 'x'=6
+		# Querying at the high surrogate (WCHAR 3) should return the 🤦 + trailing space.
+		text = "hi \U0001f926 x"
+		ti = self._makeTI(text)
+		self.assertEqual(
+			ti._calculateUniscribeOffsets(text, textInfos.UNIT_WORD, 3),
+			(3, 6),
+		)
+
+	def test_word_wchar_astral_atLowSurrogate(self):
+		# Same text, but querying at the low surrogate (WCHAR 4) — must resolve to the
+		# same word. This is the case the WCHAR↔str conversion direction flip could
+		# have broken: encodedToStrOffsets(4, 5) must round to the codepoint's str index.
+		text = "hi \U0001f926 x"
+		ti = self._makeTI(text)
+		self.assertEqual(
+			ti._calculateUniscribeOffsets(text, textInfos.UNIT_WORD, 4),
+			(3, 6),
+		)
+
+	def test_word_pastEnd(self):
+		ti = self._makeTI("abc", encoding=None)
+		self.assertEqual(
+			ti._calculateUniscribeOffsets("abc", textInfos.UNIT_WORD, 5),
+			(5, 6),
+		)
+
+
 class TestEndpoints(unittest.TestCase):
 	def test_TextInfoEndpoint_largerAndSmaller(self):
 		obj = BasicTextProvider(text="abcdef")

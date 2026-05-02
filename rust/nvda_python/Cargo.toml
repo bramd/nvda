@@ -8,6 +8,7 @@ name = "nvdaRust"
 crate-type = ["cdylib"]
 
 [dependencies]
+nvda_text = { path = "../nvda_text" }
 nvda_tones = { path = "../nvda_tones" }
 nvda_wasapi = { path = "../nvda_wasapi" }
 pyo3 = { version = "0.28", features = ["extension-module"] }

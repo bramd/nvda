@@ -523,34 +523,6 @@ nvdaController_onSsmlMarkReached = dll.nvdaController_onSsmlMarkReached
 nvdaController_onSsmlMarkReached.restype = c_ulong
 nvdaController_onSsmlMarkReached.argtypes = (c_wchar_p,)
 
-calculateCharacterBoundaries = dll.calculateCharacterBoundaries
-calculateCharacterBoundaries.restype = c_bool
-calculateCharacterBoundaries.argtypes = (
-	c_wchar_p,  # text
-	c_int,  # textLength
-	POINTER(c_int),  #  offsets
-	POINTER(c_int),  #  offsetsCount
-)
-
-calculateCharacterOffsets = dll.calculateCharacterOffsets
-calculateCharacterOffsets.restype = c_bool
-calculateCharacterOffsets.argtypes = (
-	c_wchar_p,  # text
-	c_int,  # textLength
-	c_int,  # offset
-	POINTER(c_int),  # startOffset
-	POINTER(c_int),  # endOffset
-)
-
-calculateWordOffsets = dll.calculateWordOffsets
-calculateWordOffsets.restype = c_bool
-calculateWordOffsets.argtypes = (
-	c_wchar_p,  # text
-	c_int,  # textLength
-	c_int,  # offset
-	POINTER(c_int),  # startOffset
-	POINTER(c_int),  # endOffset
-)
 
 isScreenFullyBlack = dll.isScreenFullyBlack
 isScreenFullyBlack.argtypes = ()

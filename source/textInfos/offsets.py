@@ -5,9 +5,7 @@
 
 from abc import abstractmethod
 import re
-import ctypes
 import unicodedata
-import NVDAHelper
 import config.featureFlagEnums
 import NVDAState
 import config
@@ -444,41 +442,37 @@ class OffsetsTextInfo(textInfos.TextInfo, metaclass=_OffsetsTextInfoMeta):
 	) -> Optional[Tuple[int, int]]:
 		"""
 		Calculates the bounds of a unit at an offset within a given string of text
-		using the Windows uniscribe  library, also used in Notepad, for example.
+		using Unicode segmentation (UAX#29).
 		Units supported are character and word.
 		@param lineText: the text string to analyze
 		@param unit: the TextInfo unit (character or word)
 		@param relOffset: the character offset within the text string at which to calculate the bounds.
 		"""
-		if unit is textInfos.UNIT_WORD:
-			helperFunc = NVDAHelper.localLib.calculateWordOffsets
-		elif unit is textInfos.UNIT_CHARACTER:
-			helperFunc = NVDAHelper.localLib.calculateCharacterOffsets
-		else:
-			raise NotImplementedError(f"Unit: {unit}")
-		relStart = ctypes.c_int()
-		relEnd = ctypes.c_int()
-		# We can't rely on len(lineText) to calculate the length of the line.
-		offsetConverter = textUtils.WideStringOffsetConverter(lineText)
-		lineLength = offsetConverter.encodedStringLength
-		if self.encoding != textUtils.WCHAR_ENCODING:
-			# We need to convert the str based line offsets to wide string offsets.
-			relOffset = offsetConverter.strToEncodedOffsets(relOffset, relOffset)[0]
-		if helperFunc(
-			lineText,
-			lineLength,
-			relOffset,
-			ctypes.byref(relStart),
-			ctypes.byref(relEnd),
-		):
-			relStart = relStart.value
-			relEnd = relEnd.value
-			if self.encoding != textUtils.WCHAR_ENCODING:
-				# We need to convert the uniscribe based offsets to str offsets.
-				relStart, relEnd = offsetConverter.encodedToStrOffsets(relStart, relEnd)
-			return (relStart, relEnd)
-		log.debugWarning(f"Uniscribe failed to calculate {unit} offsets for text {lineText!r}")
-		return None
+		import nvdaRust
+
+		if self.encoding == textUtils.WCHAR_ENCODING:
+			# Convert wide string offset to str offset for the Rust functions.
+			offsetConverter = textUtils.WideStringOffsetConverter(lineText)
+			relOffset = offsetConverter.encodedToStrOffsets(relOffset, relOffset + 1)[0]
+
+		try:
+			if unit is textInfos.UNIT_WORD:
+				relStart, relEnd = nvdaRust.text.calculateWordOffsets(lineText, relOffset)
+			elif unit is textInfos.UNIT_CHARACTER:
+				relStart, relEnd = nvdaRust.text.calculateCharacterOffsets(lineText, relOffset)
+			else:
+				raise NotImplementedError(f"Unit: {unit}")
+		except (ValueError, OverflowError):
+			# Text may contain lone surrogates which can't be encoded as valid UTF-8
+			# for the Rust functions. Fall back to non-uniscribe offset calculation.
+			log.debugWarning(f"Rust text segmentation failed for text {lineText!r}, falling back")
+			return None
+
+		if self.encoding == textUtils.WCHAR_ENCODING:
+			# Convert str offsets back to wide string offsets.
+			relStart, relEnd = offsetConverter.strToEncodedOffsets(relStart, relEnd)
+
+		return (relStart, relEnd)
 
 	def _getCharacterOffsets(self, offset):
 		if not (

@@ -6,14 +6,6 @@ use pyo3::types::PyBytes;
 mod wasapi;
 
 /// Generate a beep tone as raw PCM bytes.
-///
-/// Parameters:
-///   hz: frequency in hertz
-///   length_ms: duration in milliseconds
-///   left: left channel volume (0-100)
-///   right: right channel volume (0-100)
-///
-/// Returns: bytes containing 16-bit stereo PCM audio at 44100 Hz
 #[pyfunction]
 #[pyo3(name = "generateBeep")]
 fn generate_beep<'py>(
@@ -27,11 +19,44 @@ fn generate_beep<'py>(
     PyBytes::new(py, &pcm)
 }
 
+// Text segmentation functions — thin wrappers around nvda_text.
+#[pyfunction]
+#[pyo3(name = "splitAtCharacterBoundaries")]
+fn split_at_character_boundaries(text_input: &str) -> Vec<String> {
+    nvda_text::split_at_character_boundaries(text_input)
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+#[pyfunction]
+#[pyo3(name = "calculateCharacterOffsets")]
+fn calculate_character_offsets(text_input: &str, offset: usize) -> (usize, usize) {
+    nvda_text::character_offsets(text_input, offset)
+}
+
+#[pyfunction]
+#[pyo3(name = "calculateWordOffsets")]
+fn calculate_word_offsets(text_input: &str, offset: usize) -> (usize, usize) {
+    nvda_text::word_offsets(text_input, offset)
+}
+
 #[pymodule]
 #[pyo3(name = "tones")]
 mod tones_mod {
     #[pymodule_export]
     use super::generate_beep;
+}
+
+#[pymodule]
+#[pyo3(name = "text")]
+mod text_mod {
+    #[pymodule_export]
+    use super::split_at_character_boundaries;
+    #[pymodule_export]
+    use super::calculate_character_offsets;
+    #[pymodule_export]
+    use super::calculate_word_offsets;
 }
 
 #[pymodule]
@@ -54,6 +79,8 @@ mod wasapi_mod {
 #[pymodule]
 #[pyo3(name = "nvdaRust")]
 mod nvda_rust {
+    #[pymodule_export]
+    use super::text_mod;
     #[pymodule_export]
     use super::tones_mod;
     #[pymodule_export]
