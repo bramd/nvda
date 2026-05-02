@@ -87,6 +87,7 @@ repos:
         (?x)^tests/(
           checkPot.py |  # Doesn't use unittest
           system |  # Uses robot
+          manual |  # Manual integration scripts, not unittest
           unit/ (
             # Test helpers
             textProvider.py |
