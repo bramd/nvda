@@ -92,10 +92,10 @@ impl Drop for GpBitmapGuard {
 /// treats failure the same as "screen is not black").
 ///
 /// GDI+ note: this function relies on GDI+ already being initialised in the
-/// host process (the host process performs `GdiplusStartup` elsewhere).
-/// Because nvdaRust.pyd loads into the same process as the existing
-/// `nvdaHelperLocal.dll` consumer, the same global GDI+ token is available
-/// without us calling `GdiplusStartup` again.
+/// host process. NVDA performs `GdiplusStartup` during startup, so the
+/// global GDI+ token is available when this function is called from
+/// nvdaRust.pyd. A different host (e.g. a standalone unit-test harness) MUST
+/// call `GdiplusStartup` itself before invoking this function.
 pub fn is_screen_fully_black() -> bool {
     // The virtual screen is the bounding rectangle of all of the monitors on the system.
     let screen_width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
@@ -112,7 +112,7 @@ pub fn is_screen_fully_black() -> bool {
 
     // The desktop window covers the entire virtual screen.
     let desktop_wnd = unsafe { GetDesktopWindow() };
-    if desktop_wnd.0 == 0 as _ {
+    if desktop_wnd.is_invalid() {
         return false;
     }
 
@@ -220,8 +220,9 @@ pub fn is_screen_fully_black() -> bool {
             DIB_RGB_COLORS,
         )
     };
-    // GetDIBits returns 0 on failure; ERROR_INVALID_PARAMETER is also
-    // documented as a possible non-success return per the C++.
+    // GetDIBits returns 0 on failure per MSDN. The C++ also rejected
+    // `bytesWritten == ERROR_INVALID_PARAMETER` (= 87), but that conflates a
+    // valid 87-scan-line copy with failure; we drop that check.
     if lines_copied == 0 {
         return false;
     }
