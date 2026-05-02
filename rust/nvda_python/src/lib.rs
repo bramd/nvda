@@ -137,11 +137,26 @@ mod wasapi_mod {
 #[pyo3(name = "nvdaRust")]
 mod nvda_rust {
     #[pymodule_init]
-    fn init(_m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
-        // Forward Rust `log` macros to Python's `logging` module. NVDA's root
-        // logger handlers pick up child loggers (named after the Rust crate)
-        // automatically via Python's logging hierarchy.
-        pyo3_log::init();
+    fn init(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
+        // Forward Rust `log` macros to Python's `logging` module. NVDA's
+        // logHandler installs its handler on the root Python logger and
+        // filters by record name and level (see source/logHandler.py:605),
+        // so per-crate loggers (named after the Rust crate, e.g. `nvda_ole`)
+        // propagate correctly.
+        //
+        // We don't use the convenience `pyo3_log::init()` because:
+        //   * It defaults to `Caching::LoggersAndLevels`, which snapshots
+        //     each Python logger's effective level on first call. NVDA
+        //     adjusts log levels at runtime (debug-on-error, log-viewer),
+        //     so we use `Caching::Loggers` to query the current level on
+        //     every emit.
+        //   * Its default Rust-side filter discards records below INFO,
+        //     which would silently drop our `log::warn!` diagnostics if
+        //     ever changed. We set `LevelFilter::Trace` explicitly so the
+        //     Python side is the single source of truth for filtering.
+        let _ = pyo3_log::Logger::new(m.py(), pyo3_log::Caching::Loggers)?
+            .filter(log::LevelFilter::Trace)
+            .install();
         Ok(())
     }
 
