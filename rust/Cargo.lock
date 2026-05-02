@@ -19,6 +19,13 @@ name = "nvda_core"
 version = "0.1.0"
 
 [[package]]
+name = "nvda_crashdump"
+version = "0.1.0"
+dependencies = [
+ "windows",
+]
+
+[[package]]
 name = "nvda_python"
 version = "0.1.0"
 dependencies = [
