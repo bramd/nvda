@@ -5,6 +5,10 @@ edition = "2021"
 
 [lib]
 crate-type = ["staticlib"]
+# No tests — the crate's extern "C" deps (registerWindowsHook,
+# nvdaControllerInternal_*, isTSFThread) are only resolved at nvdaHelperRemote.dll
+# link time, so a standalone test binary cannot link.
+test = false
 
 [dependencies.windows]
 version = "0.58"
