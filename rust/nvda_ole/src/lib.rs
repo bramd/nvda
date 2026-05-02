@@ -24,8 +24,10 @@ pub type OleResult = Result<String, i32>;
 /// Borrow an IUnknown from a raw pointer address (e.g. passed from Python via
 /// `ctypes.cast(comObj, ctypes.c_void_p).value`). Returns `None` for null.
 ///
-/// SAFETY: caller must ensure `addr` is a valid IUnknown pointer that outlives
-/// the returned reference. We do NOT take ownership (no AddRef/Release).
+/// SAFETY: caller must ensure `addr` is a valid IUnknown pointer for the
+/// duration of this call. The caller's pointer is NOT consumed; we AddRef via
+/// `clone()` so the returned owned `IUnknown` drops cleanly without affecting
+/// the caller's lifetime.
 unsafe fn borrow_iunknown(addr: usize) -> Option<IUnknown> {
     if addr == 0 {
         return None;
@@ -63,6 +65,9 @@ pub fn get_clipboard_text(unknown_addr: usize) -> OleResult {
     let text = unsafe {
         let ptr = GlobalLock(hglobal) as *const u16;
         if ptr.is_null() {
+            // Deliberate divergence from C++: oleUtils.cpp returned S_OK with
+            // an empty BSTR when GlobalLock failed. We surface the failure as
+            // an HRESULT so the Python caller can fall through cleanly.
             ReleaseStgMedium(&mut { medium });
             return Err(E_FAIL.0);
         }
