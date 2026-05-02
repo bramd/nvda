@@ -38,8 +38,17 @@ unsafe fn borrow_iunknown(addr: usize) -> Option<IUnknown> {
 }
 
 pub fn get_clipboard_text(unknown_addr: usize) -> OleResult {
-    let unknown = unsafe { borrow_iunknown(unknown_addr) }.ok_or(E_INVALIDARG.0)?;
-    let data_object: IDataObject = unknown.cast().map_err(|_| E_NOINTERFACE.0)?;
+    let unknown = match unsafe { borrow_iunknown(unknown_addr) } {
+        Some(u) => u,
+        None => {
+            log::warn!("getOleClipboardText: pUnknown is null.");
+            return Err(E_INVALIDARG.0);
+        }
+    };
+    let data_object: IDataObject = unknown.cast().map_err(|_| {
+        log::warn!("getOleClipboardText: could not get IDataObject interface from pUnknown");
+        E_NOINTERFACE.0
+    })?;
 
     let format = FORMATETC {
         cfFormat: CF_UNICODETEXT.0,
@@ -49,15 +58,20 @@ pub fn get_clipboard_text(unknown_addr: usize) -> OleResult {
         tymed: TYMED_HGLOBAL.0 as u32,
     };
 
-    let medium: STGMEDIUM = unsafe { data_object.GetData(&format) }.map_err(|e| e.code().0)?;
+    let medium: STGMEDIUM = unsafe { data_object.GetData(&format) }.map_err(|e| {
+        log::warn!("getOleClipboardText: IDataObject::GetData failed with HRESULT 0x{:08x}", e.code().0 as u32);
+        e.code().0
+    })?;
 
     if medium.tymed != TYMED_HGLOBAL.0 as u32 {
+        log::warn!("getOleClipboardText: got back invalid medium (tymed = {})", medium.tymed);
         unsafe { ReleaseStgMedium(&mut { medium }) };
         return Err(E_FAIL.0);
     }
 
     let hglobal = unsafe { medium.u.hGlobal };
     if hglobal.is_invalid() {
+        log::warn!("getOleClipboardText: medium.hGlobal is invalid");
         unsafe { ReleaseStgMedium(&mut { medium }) };
         return Err(E_FAIL.0);
     }
@@ -68,6 +82,7 @@ pub fn get_clipboard_text(unknown_addr: usize) -> OleResult {
             // Deliberate divergence from C++: oleUtils.cpp returned S_OK with
             // an empty BSTR when GlobalLock failed. We surface the failure as
             // an HRESULT so the Python caller can fall through cleanly.
+            log::warn!("getOleClipboardText: GlobalLock returned null");
             ReleaseStgMedium(&mut { medium });
             return Err(E_FAIL.0);
         }
@@ -89,12 +104,28 @@ pub fn get_user_type(unknown_addr: usize, flags: u32) -> OleResult {
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::Win32::System::Ole::USERCLASSTYPE;
 
-    let unknown = unsafe { borrow_iunknown(unknown_addr) }.ok_or(E_INVALIDARG.0)?;
-    let ole_object: IOleObject = unknown.cast().map_err(|_| E_NOINTERFACE.0)?;
+    let unknown = match unsafe { borrow_iunknown(unknown_addr) } {
+        Some(u) => u,
+        None => {
+            log::warn!("getOleUserType: pUnknown is null.");
+            return Err(E_INVALIDARG.0);
+        }
+    };
+    let ole_object: IOleObject = unknown.cast().map_err(|_| {
+        log::warn!("getOleUserType: could not get IOleObject interface from pUnknown");
+        E_NOINTERFACE.0
+    })?;
 
-    let ole_str =
-        unsafe { ole_object.GetUserType(USERCLASSTYPE(flags as i32)) }.map_err(|e| e.code().0)?;
+    let ole_str = unsafe { ole_object.GetUserType(USERCLASSTYPE(flags as i32)) }.map_err(|e| {
+        log::warn!(
+            "getOleUserType: IOleObject::GetUserType failed with HRESULT 0x{:08x} for flags {}",
+            e.code().0 as u32,
+            flags,
+        );
+        e.code().0
+    })?;
     if ole_str.is_null() {
+        log::warn!("getOleUserType: IOleObject::GetUserType returned null string for flags {}", flags);
         return Err(E_FAIL.0);
     }
 

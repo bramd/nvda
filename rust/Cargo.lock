@@ -51,6 +51,7 @@ dependencies = [
 name = "nvda_ole"
 version = "0.1.0"
 dependencies = [
+ "log",
  "windows",
  "windows-core",
 ]

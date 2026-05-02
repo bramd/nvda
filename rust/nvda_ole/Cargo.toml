@@ -3,6 +3,9 @@ name = "nvda_ole"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies]
+log = "0.4"
+
 [dependencies.windows-core]
 version = "0.58"
 
