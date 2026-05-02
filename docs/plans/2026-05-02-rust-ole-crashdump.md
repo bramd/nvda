@@ -6,7 +6,7 @@
 
 **Architecture:** Two small standalone crates, each one file. `nvda_ole` wraps `IDataObject::GetData(CF_UNICODETEXT)` and `IOleObject::GetUserType` via `windows-rs` 0.58, accepting raw COM pointers as `usize` from Python. `nvda_crashdump` calls `MiniDumpWriteDump` via the same `windows` crate. PyO3 bindings live in the existing `rust/nvda_python` crate as `nvdaRust.ole` and `nvdaRust.crashdump` submodules — same pattern as `nvdaRust.text` (commit `efb0e2b55`) and `nvdaRust.tones`.
 
-**Tech Stack:** Rust 2021, PyO3 0.28, `windows` 0.58 with features `Win32_System_Com`, `Win32_System_Ole`, `Win32_System_DataExchange`, `Win32_System_Memory` (for OLE), `Win32_System_Diagnostics_Debug`, `Win32_Storage_FileSystem`, `Win32_System_Threading` (for crash dump), `Win32_Foundation` (both).
+**Tech Stack:** Rust 2021, PyO3 0.28, `windows` 0.58 with features `Win32_System_Com`, `Win32_System_Ole`, `Win32_System_Com_StructuredStorage`, `Win32_System_Memory`, `Win32_Graphics_Gdi` (for OLE — the StructuredStorage and Gdi features are required by `STGMEDIUM`/`ReleaseStgMedium`/HGLOBAL gating), `Win32_System_Diagnostics_Debug`, `Win32_Storage_FileSystem`, `Win32_System_Threading`, `Win32_Security`, `Win32_System_Kernel` (for crash dump), `Win32_Foundation` (both).
 
 ---
 
@@ -293,12 +293,15 @@ version = "0.58"
 version = "0.58"
 features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
     "Win32_System_Ole",
-    "Win32_System_DataExchange",
     "Win32_System_Memory",
 ]
 ```
+
+(The implementer may need to add more features as the compiler demands. `STGMEDIUM` and `ReleaseStgMedium` are gated on `Win32_Graphics_Gdi` + `Win32_System_Com_StructuredStorage`. `CF_UNICODETEXT` lives in `Win32_System_Ole`, not `Win32_System_DataExchange`, in this version.)
 
 * [ ] **Step 2: Add the crate to the workspace**
 
