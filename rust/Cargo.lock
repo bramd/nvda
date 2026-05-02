@@ -26,6 +26,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvda_input_hooks"
+version = "0.1.0"
+dependencies = [
+ "windows",
+]
+
+[[package]]
 name = "nvda_ole"
 version = "0.1.0"
 dependencies = [

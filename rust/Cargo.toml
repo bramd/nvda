@@ -1,3 +1,3 @@
 [workspace]
-members = ["nvda_core", "nvda_crashdump", "nvda_ole", "nvda_screen_curtain", "nvda_text", "nvda_tones", "nvda_wasapi", "nvda_python"]
+members = ["nvda_core", "nvda_crashdump", "nvda_input_hooks", "nvda_ole", "nvda_screen_curtain", "nvda_text", "nvda_tones", "nvda_wasapi", "nvda_python"]
 resolver = "2"
