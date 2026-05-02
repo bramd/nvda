@@ -26,6 +26,10 @@
 		".github/PULL_REQUEST_TEMPLATE.md",
 		"projectDocs/issues/securityAdvisoryTemplate.md",
 		// Old markdown files used for testing
-		"tests/markdownTranslate/"
+		"tests/markdownTranslate/",
+		// Existing implementation plans intentionally use **Step N:** pseudo-headings
+		// (MD036). Excluded from lint to avoid restructuring historical docs.
+		"docs/plans/2026-02-25-rust-wasapi-design.md",
+		"docs/plans/2026-02-25-rust-wasapi-implementation.md"
 	]
 }

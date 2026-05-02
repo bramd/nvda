@@ -70,7 +70,6 @@ pub fn write_crash_dump(path: &str, exception_pointers_addr: usize) -> bool {
     };
 
     let _ = unsafe { CloseHandle(handle) };
-    let _ = mdei; // keep alive until after MiniDumpWriteDump returns
     result.is_ok()
 }
 
