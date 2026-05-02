@@ -53,6 +53,18 @@ def createAndDeleteTempFilePath_contextManager(
 		os.remove(tempFilePath)
 
 
+def _gitEnv() -> dict[str, str]:
+	# Strip env vars that override repo discovery, so git auto-discovers from cwd
+	# or the given file path. pre-commit sets GIT_DIR/GIT_INDEX_FILE for its hook
+	# environment, which makes `git rev-parse --show-toplevel` return cwd instead
+	# of the actual worktree (especially in nested git worktrees).
+	return {
+		k: v
+		for k, v in os.environ.items()
+		if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY")
+	}
+
+
 def getLastCommitID(filePath: str) -> str:
 	# Run the git log command to get the last commit ID for the given file
 	result = subprocess.run(
@@ -60,6 +72,7 @@ def getLastCommitID(filePath: str) -> str:
 		capture_output=True,
 		text=True,
 		check=True,
+		env=_gitEnv(),
 	)
 	commitID = result.stdout.strip()
 	if not re.match(r"[0-9a-f]{40}", commitID):
@@ -74,6 +87,7 @@ def getGitDir() -> str:
 		capture_output=True,
 		text=True,
 		check=True,
+		env=_gitEnv(),
 	)
 	gitDir = result.stdout.strip()
 	if not os.path.isdir(gitDir):

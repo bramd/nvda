@@ -149,7 +149,7 @@ repos:
       types: [pofile]
     - id: scons-source
       name: build c/c++ files
-      entry: cmd.exe /c "scons source --all-cores"
+      entry: cmd.exe /c ".\\scons.bat source --all-cores"
       language: system
       pass_filenames: false
       types_or: [c, c++]
