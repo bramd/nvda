@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 nvda_crashdump = { path = "../nvda_crashdump" }
 nvda_ole = { path = "../nvda_ole" }
+nvda_screen_curtain = { path = "../nvda_screen_curtain" }
 nvda_text = { path = "../nvda_text" }
 nvda_tones = { path = "../nvda_tones" }
 nvda_wasapi = { path = "../nvda_wasapi" }

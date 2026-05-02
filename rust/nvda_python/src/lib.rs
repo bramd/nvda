@@ -68,6 +68,13 @@ fn get_ole_user_type(unknown: usize, flags: u32) -> PyResult<String> {
     })
 }
 
+// Screen curtain — thin wrapper around nvda_screen_curtain.
+#[pyfunction]
+#[pyo3(name = "isScreenFullyBlack")]
+fn is_screen_fully_black() -> bool {
+    nvda_screen_curtain::is_screen_fully_black()
+}
+
 #[pymodule]
 #[pyo3(name = "crashdump")]
 mod crashdump_mod {
@@ -82,6 +89,13 @@ mod ole_mod {
     use super::get_ole_clipboard_text;
     #[pymodule_export]
     use super::get_ole_user_type;
+}
+
+#[pymodule]
+#[pyo3(name = "screen_curtain")]
+mod screen_curtain_mod {
+    #[pymodule_export]
+    use super::is_screen_fully_black;
 }
 
 #[pymodule]
@@ -126,6 +140,8 @@ mod nvda_rust {
     use super::crashdump_mod;
     #[pymodule_export]
     use super::ole_mod;
+    #[pymodule_export]
+    use super::screen_curtain_mod;
     #[pymodule_export]
     use super::text_mod;
     #[pymodule_export]
