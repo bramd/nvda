@@ -508,10 +508,6 @@ nvdaController_onSsmlMarkReached.restype = c_ulong
 nvdaController_onSsmlMarkReached.argtypes = (c_wchar_p,)
 
 
-isScreenFullyBlack = dll.isScreenFullyBlack
-isScreenFullyBlack.argtypes = ()
-isScreenFullyBlack.restype = c_bool
-
 localListeningSocketExists = dll.localListeningSocketExists
 localListeningSocketExists.argtypes = (c_ushort, c_wchar_p)
 localListeningSocketExists.restype = c_bool
