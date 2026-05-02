@@ -674,4 +674,51 @@ git push origin HEAD
 
 ## Notes for future ports
 
-(This section is filled in by Task 7 once the work lands.)
+What actually happened, captured for whoever picks up the next `nvdaHelper/remote/*.cpp` port (likely `textFromIAccessible.cpp`):
+
+### Multi-arch was the first surprise
+
+The plan as drafted assumed single-arch. NVDA's `nvdaHelperRemote.dll` is built for x86, x86_64, arm64, arm64ec — cargo only built one `.lib` for the host triple, and the moment a real Rust symbol got referenced on a non-x86_64 build, the link would have failed with "incompatible machine type". Surfaced this on Task 2 (where the Rust lib was added to LIBS but not yet referenced — the byte-identical DLL output was the giveaway). Resolution: gated the cargo build + lib-link to `env["TARGET_ARCH"] == "x86_64"`, kept the C++ source for non-x86_64. Multi-arch cargo (per-arch `--target` invocations + per-arch lib routing) is a separate de-risking exercise; not needed to validate the staticlib pattern.
+
+### MSVC `.obj`-vs-`.lib` resolution is forgiving
+
+The plan predicted Task 4 would surface an LNK2005 duplicate-symbol error, with both `inputLangChange.obj` and `nvda_input_hooks.lib` defining the same names. **Didn't happen.** MSVC's linker resolves `.obj` symbols first, then only pulls members from `.lib` files when symbols are still undefined. Since the C++ `.obj` resolved everything, the Rust `.lib` members were never pulled in — no conflict, no warning. This means: adding a Rust `.lib` to the link is *always safe* as a no-op until you remove the corresponding `.obj` from the source list. Useful property for incremental ports.
+
+### `extern "C"` headers were the real ABI gap
+
+The bigger surprise hit at Task 5 (after removing `inputLangChange.cpp` from x86_64's source list): LNK2019 unresolved-symbol errors. The C++ headers declared `inputLangChange_inProcess_initialize`, `registerWindowsHook`, `isTSFThread` etc. without a linkage specifier — so C++ callers were looking up mangled names like `?inputLangChange_inProcess_initialize@@YAXXZ` while Rust exported the unmangled `inputLangChange_inProcess_initialize`. The original C++ worked because both sides were C++ (matching mangled names); Rust as `extern "C"` breaks that.
+
+Fix: wrap the affected declarations in `#ifdef __cplusplus / extern "C" { ... } / #endif` guards in `inputLangChange.h`, `nvdaHelperRemote.h`, and `tsf.h`. The corresponding C++ definitions in the matching `.cpp` files pick up C linkage automatically because they include those headers. Zero ABI change for existing callers — both linkages produce the same symbol name as long as the function isn't overloaded.
+
+**Lesson for future ports:** check every header whose function the new Rust crate declares as `extern "C"`. If those declarations don't already have `extern "C"` guards, add them as part of the port.
+
+### Rust libstd transitive Win32 dependencies
+
+Rust's `std` (used here for `std::sync::atomic`) pulls in transitive imports from `__imp_RoOriginateErrorW`, `__imp_NtReadFile`, `__imp_WSAStartup`, `__imp_GetUserProfileDirectoryW`, etc. — surface from `std::net`, `std::fs`, `std::env`, `std::sync`. The plan anticipated `bcrypt` and `ntdll` only.
+
+Final libs added (gated to x86_64 only):
+
+```python
+libs.extend(["ntdll", "userenv", "ws2_32", "bcrypt", "WindowsApp"])
+```
+
+**Future option to consider:** make the Rust crate `#![no_std]`. We don't actually need `std` in this small crate — `core::sync::atomic::AtomicIsize` works the same as `std::sync::atomic::AtomicIsize`. `#![no_std]` would eliminate most of these transitive imports and reduce the per-injected-process Rust footprint (currently ~600 KB of libstd code in every host process). Worth doing **before** the next port to avoid baking std-dependence into the pattern. Filed as a follow-up.
+
+### Final size and feature list
+
+* `source/lib/x64/nvdaHelperRemote.dll`: 1,271,296 bytes before this branch → 1,371,648 bytes after = **+100 KB**. The Rust libstd footprint is much larger than the actual code we ported (22 LOC), so this is overhead-dominated. With `#![no_std]` the increment should be a few KB.
+* `nvda_input_hooks` `Cargo.toml` features: `Win32_Foundation`, `Win32_System_Threading`, `Win32_UI_WindowsAndMessaging`, `Win32_UI_Input_KeyboardAndMouse`, `Win32_UI_TextServices`. (`Win32_System_Threading` was added during implementation for `GetCurrentThreadId` — the plan listed it as anticipated.)
+* No CRT-mode flags needed. No `panic = "abort"` profile change. No `RUSTFLAGS`. Default Rust toolchain + default cargo profile worked.
+* No panics during DLL injection in any tested host (Notepad, Word, Outlook, Chrome, Explorer).
+
+### What this means for the next remote/ port
+
+`textFromIAccessible.cpp` (167 LOC, COM-heavy) is the natural next target. Pattern is now proven:
+
+1. Add a new `nvda_*` staticlib crate to the workspace.
+2. In the same `nvdaHelper/remote/sconscript`, extend the existing `if isX64:` block with another cargo invocation OR refactor to a single multi-crate cargo build. (Currently there's just one Rust crate; if we add a second, consider `cargo build --workspace` or pass multiple `--package` flags.)
+3. Add the new lib to the `libs.append(...)` call.
+4. Add `extern "C"` guards to any C++ header declaring functions Rust will provide.
+5. Once Rust is implemented, gate the corresponding `.cpp` out of the x86_64 source list.
+
+Multi-arch Rust + `#![no_std]` are both still open; address before the third port lands, or live with a binary-size cliff that grows with each addition.
