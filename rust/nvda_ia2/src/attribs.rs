@@ -179,3 +179,109 @@ mod tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// extern "C" shim
+// ---------------------------------------------------------------------------
+
+/// Callback invoked once per attribute. `key_ptr`/`val_ptr` point to UTF-16
+/// code units (without a NUL terminator); `key_len`/`val_len` are code-unit
+/// counts. Both pointers are valid only for the duration of the call.
+pub type AttribCallback = unsafe extern "C" fn(
+    ctx: *mut core::ffi::c_void,
+    key_ptr: *const u16,
+    key_len: usize,
+    val_ptr: *const u16,
+    val_len: usize,
+);
+
+/// C-callable replacement for `IA2AttribsToMap`.
+///
+/// `input_ptr` / `input_len` point to a UTF-16 attributes string. The shim
+/// parses it and invokes `cb(ctx, key, key_len, val, val_len)` once per
+/// attribute. The C++ wrapper in `ia2utils.cpp` uses this to populate the
+/// caller's `std::map<std::wstring, std::wstring>&`.
+///
+/// # Safety
+/// - `input_ptr` must be valid for `input_len` u16s, or null when `input_len`
+///   is 0.
+/// - `cb` must be a valid function pointer; `ctx` is opaque user data passed
+///   through to `cb` unchanged.
+#[no_mangle]
+pub unsafe extern "C" fn nvda_ia2_attribs_to_map(
+    input_ptr: *const u16,
+    input_len: usize,
+    ctx: *mut core::ffi::c_void,
+    cb: AttribCallback,
+) {
+    let input = if input_ptr.is_null() || input_len == 0 {
+        String::new()
+    } else {
+        let slice = std::slice::from_raw_parts(input_ptr, input_len);
+        String::from_utf16_lossy(slice)
+    };
+    let map = parse_attribs(&input);
+    for (k, v) in map {
+        let k_utf16: Vec<u16> = k.encode_utf16().collect();
+        let v_utf16: Vec<u16> = v.encode_utf16().collect();
+        cb(
+            ctx,
+            k_utf16.as_ptr(),
+            k_utf16.len(),
+            v_utf16.as_ptr(),
+            v_utf16.len(),
+        );
+    }
+}
+
+#[cfg(test)]
+mod shim_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    thread_local! {
+        static COLLECTED: RefCell<BTreeMap<String, String>> = RefCell::new(BTreeMap::new());
+    }
+
+    unsafe extern "C" fn collect_cb(
+        _ctx: *mut core::ffi::c_void,
+        key_ptr: *const u16,
+        key_len: usize,
+        val_ptr: *const u16,
+        val_len: usize,
+    ) {
+        let key = String::from_utf16_lossy(std::slice::from_raw_parts(key_ptr, key_len));
+        let val = String::from_utf16_lossy(std::slice::from_raw_parts(val_ptr, val_len));
+        COLLECTED.with(|c| { c.borrow_mut().insert(key, val); });
+    }
+
+    #[test]
+    fn shim_invokes_callback_per_pair() {
+        COLLECTED.with(|c| c.borrow_mut().clear());
+        let input: Vec<u16> = "a:1;b:2;".encode_utf16().collect();
+        unsafe {
+            nvda_ia2_attribs_to_map(
+                input.as_ptr(),
+                input.len(),
+                core::ptr::null_mut(),
+                collect_cb,
+            );
+        }
+        COLLECTED.with(|c| {
+            let m = c.borrow();
+            assert_eq!(m.get("a"), Some(&"1".to_string()));
+            assert_eq!(m.get("b"), Some(&"2".to_string()));
+            assert_eq!(m.len(), 2);
+        });
+    }
+
+    #[test]
+    fn shim_handles_null_input() {
+        COLLECTED.with(|c| c.borrow_mut().clear());
+        unsafe {
+            nvda_ia2_attribs_to_map(core::ptr::null(), 0, core::ptr::null_mut(), collect_cb);
+        }
+        COLLECTED.with(|c| assert!(c.borrow().is_empty()));
+    }
+}
