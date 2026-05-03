@@ -21,6 +21,7 @@
 //! `windows::Win32::UI::Accessibility`).
 
 use windows::core::{BSTR, HRESULT, IUnknown, IUnknown_Vtbl, Interface};
+use windows::Win32::Foundation::E_POINTER;
 use windows::Win32::UI::Accessibility::{IAccessible, IAccessible_Vtbl};
 
 use crate::types::IA2TextSegment;
@@ -270,6 +271,53 @@ pub struct IAccessibleHypertext_Vtbl {
     pub get_nHyperlinks: usize,
     pub get_hyperlink: unsafe extern "system" fn(this: *mut core::ffi::c_void, index: i32, hyperlink: *mut Option<IAccessibleHyperlink>) -> HRESULT,
     pub get_hyperlinkIndex: unsafe extern "system" fn(this: *mut core::ffi::c_void, char_index: i32, hyperlink_index: *mut i32) -> HRESULT,
+}
+
+impl IAccessibleHypertext {
+    /// Retrieves the hyperlink at `index`. The COM contract returns
+    /// `E_INVALIDARG` when `index >= n_hyperlinks`. The caller is expected
+    /// to bound-check via `get_hyperlinkIndex` first (the pattern used by
+    /// `getTextFromIAccessible`).
+    ///
+    /// # Safety
+    ///
+    /// The underlying COM pointer wrapped by `self` must point to a live,
+    /// well-formed `IAccessibleHypertext` implementation for the duration of
+    /// this call.
+    pub unsafe fn get_hyperlink(&self, index: i32) -> windows::core::Result<IAccessibleHyperlink> {
+        let mut out: Option<IAccessibleHyperlink> = None;
+        let hr = (Interface::vtable(self).get_hyperlink)(
+            Interface::as_raw(self),
+            index,
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        out.ok_or_else(|| windows::core::Error::from(E_POINTER))
+    }
+
+    /// Returns the hyperlink index for the embedded-object character at
+    /// `char_index`, or an HRESULT error if there is no hyperlink at that
+    /// offset.
+    ///
+    /// # Safety
+    ///
+    /// The underlying COM pointer wrapped by `self` must point to a live,
+    /// well-formed `IAccessibleHypertext` implementation for the duration of
+    /// this call.
+    pub unsafe fn get_hyperlinkIndex(&self, char_index: i32) -> windows::core::Result<i32> {
+        let mut out: i32 = 0;
+        let hr = (Interface::vtable(self).get_hyperlinkIndex)(
+            Interface::as_raw(self),
+            char_index,
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok(out)
+    }
 }
 
 // --- IAccessibleHypertext2 ------------------------------------------------
