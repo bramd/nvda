@@ -85,10 +85,10 @@ nvdaInProcUtilsRPCHeader, nvdaInProcUtilsRPCServerSource = env.MSRPCStubs(
 
 ia2utilsObj = env.Object("./ia2utils", "../common/ia2utils.cpp")
 
-# x86_64 links the Rust nvda_input_hooks staticlib instead of compiling
-# inputLangChange.cpp. Cargo produces a single .lib for the host triple, so
-# non-x86_64 NVDA builds keep using the C++ source. Multi-arch cargo builds
-# are a future de-risking exercise.
+# x86_64 links Rust staticlibs (nvda_input_hooks, nvda_ia2) instead of the
+# corresponding C++ source. Cargo produces one .lib per crate for the host
+# triple, so non-x86_64 NVDA builds keep using the C++ source. Multi-arch
+# cargo builds are a future de-risking exercise.
 isX64 = env["TARGET_ARCH"] == "x86_64"
 
 source = [
@@ -133,24 +133,32 @@ if isX64:
 	source.remove("inputLangChange.cpp")
 
 cargoStaticLib = None
+ia2StaticLib = None
 if isX64:
 	import os  # noqa: E402
 	import subprocess  # noqa: E402
 
-	rustCrateDir = Dir("#rust/nvda_input_hooks")
 	rustWorkspaceDir = Dir("#rust")
 	rustTargetDir = Dir("#build/rust")
-	rustOutputLib = rustTargetDir.File("release/nvda_input_hooks.lib")
+	inputHooksLib = rustTargetDir.File("release/nvda_input_hooks.lib")
+	ia2Lib = rustTargetDir.File("release/nvda_ia2.lib")
+
+	inputHooksCrate = Dir("#rust/nvda_input_hooks")
+	ia2Crate = Dir("#rust/nvda_ia2")
 
 	# Glob source files so SCons re-runs cargo when any .rs or Cargo.toml changes.
-	rustSources = env.Glob(rustCrateDir.path + "/src/*.rs") + [
-		rustCrateDir.File("Cargo.toml"),
-		Dir("#rust").File("Cargo.toml"),
-	]
+	rustSources = (
+		env.Glob(inputHooksCrate.path + "/src/*.rs")
+		+ env.Glob(ia2Crate.path + "/src/*.rs")
+		+ [
+			inputHooksCrate.File("Cargo.toml"),
+			ia2Crate.File("Cargo.toml"),
+			rustWorkspaceDir.File("Cargo.toml"),
+		]
+	)
 
-	def buildCargoStaticLib(target, source, env):
-		"""Run `cargo build --release -p nvda_input_hooks` and place the .lib
-		where SCons expects it."""
+	def buildCargoStaticLibs(target, source, env):
+		"""Run cargo for both staticlibs in one invocation."""
 		result = subprocess.run(
 			[
 				"cargo",
@@ -158,28 +166,30 @@ if isX64:
 				"--release",
 				"--package",
 				"nvda_input_hooks",
+				"--package",
+				"nvda_ia2",
 				"--target-dir",
 				rustTargetDir.abspath,
 				"--manifest-path",
 				rustWorkspaceDir.File("Cargo.toml").abspath,
 			],
 			capture_output=True,
-			text=True,
+			encoding="utf-8",
+			errors="replace",
 		)
 		if result.returncode != 0:
 			print(f"cargo build failed:\n{result.stderr}")
 			return result.returncode
-		# cargo produces nvda_input_hooks.lib at <target-dir>/release/.
-		# Confirm the file landed where we expect.
-		if not os.path.exists(target[0].abspath):
-			print(f"cargo built successfully but {target[0].abspath} was not produced")
-			return 1
+		for t in target:
+			if not os.path.exists(t.abspath):
+				print(f"cargo built successfully but {t.abspath} was not produced")
+				return 1
 		return 0
 
-	cargoStaticLib = env.Command(
-		rustOutputLib,
+	cargoStaticLib, ia2StaticLib = env.Command(
+		[inputHooksLib, ia2Lib],
 		rustSources,
-		buildCargoStaticLib,
+		buildCargoStaticLibs,
 	)
 
 libs = [
@@ -199,6 +209,7 @@ libs = [
 ]
 if cargoStaticLib is not None:
 	libs.append(cargoStaticLib)
+	libs.append(ia2StaticLib)
 	# Rust libstd transitively references symbols from these Win32 system
 	# libraries (ntdll for sync primitives and Nt* file APIs, userenv for
 	# home_dir lookups, ws2_32 for std::net, bcrypt for the secure RNG,
