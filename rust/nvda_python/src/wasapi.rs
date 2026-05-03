@@ -87,22 +87,10 @@ impl SendPtr {
 pub struct WasapiPlayer {
     inner: Mutex<WasapiPlayerInner>,
     stop_handle: StopHandle,
-    callback: Py<PyAny>,
-    pending_callbacks: Arc<Mutex<Vec<u32>>>,
-}
-
-impl WasapiPlayer {
-    /// Drain pending feed IDs and call the Python callback for each.
-    fn fire_pending_callbacks(&self, py: Python<'_>) -> PyResult<()> {
-        let ids: Vec<u32> = {
-            let mut pending = self.pending_callbacks.lock().unwrap();
-            pending.drain(..).collect()
-        };
-        for id in ids {
-            self.callback.call1(py, (id,))?;
-        }
-        Ok(())
-    }
+    /// Kept for `Drop` semantics — the inner-crate callback closure also holds
+    /// a clone, but we keep the original here so dropping the WasapiPlayer
+    /// drops both references.
+    _callback: Py<PyAny>,
 }
 
 #[pymethods]
@@ -110,6 +98,7 @@ impl WasapiPlayer {
     #[new]
     #[pyo3(signature = (endpointId, channels, samplesPerSec, bitsPerSample, callback))]
     fn new(
+        py: Python<'_>,
         endpointId: &str,
         channels: u16,
         samplesPerSec: u32,
@@ -123,10 +112,26 @@ impl WasapiPlayer {
         })?;
         let counters = global.counters.clone();
 
-        let pending_callbacks: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
-        let pending_clone = pending_callbacks.clone();
+        // Wrap the Python callable in a Send closure that briefly re-acquires
+        // the GIL to invoke it. This matches the C++ WINFUNCTYPE behavior:
+        // the callback fires immediately inside the WASAPI feed loop (between
+        // buffer writes) so onDone notifications -- e.g. synthIndexReached
+        // for TTS -- arrive without the ~100ms feed-loop-wait latency the
+        // previous queue-and-drain pattern added.
+        //
+        // Errors from the Python callback are swallowed with a debug log;
+        // matches the C++ behavior, which had no error-propagation path
+        // either (Python exceptions raised in WINFUNCTYPE callbacks became
+        // thread state that got cleared at the next normal Python boundary).
+        let callback_for_inner = callback.clone_ref(py);
         let callback_fn: Box<dyn Fn(u32) + Send> = Box::new(move |feed_id: u32| {
-            pending_clone.lock().unwrap().push(feed_id);
+            Python::attach(|py| {
+                if let Err(e) = callback_for_inner.call1(py, (feed_id,)) {
+                    log::warn!(
+                        "WasapiPlayer feed-done callback raised: {e:?} (feed_id={feed_id})",
+                    );
+                }
+            });
         });
 
         let inner = WasapiPlayerInner::new(
@@ -144,8 +149,7 @@ impl WasapiPlayer {
         Ok(Self {
             inner: Mutex::new(inner),
             stop_handle,
-            callback,
-            pending_callbacks,
+            _callback: callback,
         })
     }
 
@@ -178,7 +182,6 @@ impl WasapiPlayer {
                 player_ptr.as_mut().feed(Some(&data_owned), true)
             }).map_err(to_os_error)?;
         }
-        self.fire_pending_callbacks(py)?;
         Ok(feed_id)
     }
 
@@ -205,7 +208,6 @@ impl WasapiPlayer {
                 player_ptr.as_mut().sync()
             }).map_err(to_os_error)?;
         }
-        self.fire_pending_callbacks(py)?;
         Ok(())
     }
 
@@ -218,7 +220,6 @@ impl WasapiPlayer {
                 player_ptr.as_mut().idle()
             }).map_err(to_os_error)?;
         }
-        self.fire_pending_callbacks(py)?;
         Ok(())
     }
 
