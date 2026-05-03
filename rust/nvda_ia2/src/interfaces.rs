@@ -93,6 +93,16 @@ impl IAccessible2 {
     /// Returns the IA2 attributes string (server-allocated BSTR).
     /// Returns `S_FALSE` with a NULL output BSTR if there are no attributes
     /// (per the IDL contract at Accessible2.idl:687).
+    ///
+    /// # Safety
+    ///
+    /// The underlying COM pointer wrapped by `self` must point to a live,
+    /// well-formed `IAccessible2` implementation for the duration of this
+    /// call. The `&self` borrow encodes this in Rust terms, but COM objects
+    /// can be in invalid states across thread or process boundaries (e.g.
+    /// after the server has been torn down, or when called from a thread
+    /// the object was not marshalled to). Callers are responsible for
+    /// ensuring the apartment / lifetime invariants are upheld.
     pub unsafe fn get_attributes(&self) -> windows::core::Result<BSTR> {
         let mut out = core::mem::ManuallyDrop::new(BSTR::default());
         let hr = (Interface::vtable(self).get_attributes)(
@@ -100,6 +110,9 @@ impl IAccessible2 {
             &mut out as *mut _,
         );
         if hr.is_err() {
+            // Take ownership of any BSTR a misbehaving server may have written
+            // before returning failure, so its Drop runs SysFreeString.
+            let _ = core::mem::ManuallyDrop::into_inner(out);
             return Err(hr.into());
         }
         // Take ownership of the BSTR (BSTR's Drop will SysFreeString).
@@ -111,8 +124,12 @@ impl IAccessible2 {
 //
 // PR 2 will use get_text and get_newText. We declare the full prefix of the
 // vtable up to (and including) get_newText. Until PR 2 wires it up, the
-// methods are present but unexercised — the linker may drop unused slots
-// from a final binary, but the vtable layout requires every offset.
+// methods are present but unexercised — Rust function wrappers will be added
+// in PR 2 when callers need them. The vtable layout (the `_Vtbl` struct's
+// field order and widths) must include every slot up to the last one we care
+// about so that offset arithmetic for the methods we DO call lands at the
+// correct vtable index. Note that `_Vtbl` is a *description* of the COM
+// server's vtable, not a vtable our code constructs.
 //
 // Vtable order (from AccessibleText.idl):
 //   1.  addSelection
