@@ -189,6 +189,60 @@ pub struct IAccessibleText_Vtbl {
     pub get_oldText: usize,
 }
 
+impl IAccessibleText {
+    /// Returns `[start_offset, end_offset)` of the text. Pass `0` /
+    /// `IA2_TEXT_OFFSET_LENGTH` (-1) to retrieve the whole string.
+    /// See `include/ia2/api/AccessibleText.idl` for the IDL contract.
+    ///
+    /// # Safety
+    ///
+    /// The underlying COM pointer wrapped by `self` must point to a live,
+    /// well-formed `IAccessibleText` implementation for the duration of this
+    /// call. Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_text(&self, start_offset: i32, end_offset: i32) -> windows::core::Result<BSTR> {
+        let mut out = core::mem::ManuallyDrop::new(BSTR::default());
+        let hr = (Interface::vtable(self).get_text)(
+            Interface::as_raw(self),
+            start_offset,
+            end_offset,
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            // Drop any BSTR a misbehaving server may have written before
+            // returning failure.
+            let _ = core::mem::ManuallyDrop::into_inner(out);
+            return Err(hr.into());
+        }
+        Ok(core::mem::ManuallyDrop::into_inner(out))
+    }
+
+    /// Returns the most recently inserted text segment for this object.
+    /// Only valid during an in-process winEvent callback (IA2_EVENT_TEXT_*).
+    ///
+    /// # Safety
+    ///
+    /// The underlying COM pointer wrapped by `self` must point to a live,
+    /// well-formed `IAccessibleText` implementation for the duration of this
+    /// call. Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`]. The returned `IA2TextSegment` owns
+    /// its `text` BSTR (freed on drop).
+    pub unsafe fn get_newText(&self) -> windows::core::Result<IA2TextSegment> {
+        let mut out = IA2TextSegment::default();
+        let hr = (Interface::vtable(self).get_newText)(
+            Interface::as_raw(self),
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            // Drop any BSTR a misbehaving server may have written before
+            // returning failure. `IA2TextSegment::Drop` is BSTR's Drop on the
+            // `text` field, which calls SysFreeString.
+            return Err(hr.into());
+        }
+        Ok(out)
+    }
+}
+
 // --- IAccessibleHypertext -------------------------------------------------
 //
 // Inherits from IAccessibleText. Vtable order (from AccessibleHypertext.idl):
