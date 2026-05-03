@@ -234,9 +234,10 @@ impl IAccessibleText {
             &mut out as *mut _,
         );
         if hr.is_err() {
-            // Drop any BSTR a misbehaving server may have written before
-            // returning failure. `IA2TextSegment::Drop` is BSTR's Drop on the
-            // `text` field, which calls SysFreeString.
+            // The compiler-generated drop for `IA2TextSegment` calls
+            // `BSTR::Drop` on the `text` field, which calls SysFreeString
+            // on any non-null pointer a misbehaving server may have
+            // written before returning failure.
             return Err(hr.into());
         }
         Ok(out)
