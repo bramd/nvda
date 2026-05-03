@@ -241,7 +241,7 @@ mod shim_tests {
     use std::collections::BTreeMap;
 
     thread_local! {
-        static COLLECTED: RefCell<BTreeMap<String, String>> = RefCell::new(BTreeMap::new());
+        static COLLECTED: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
     }
 
     unsafe extern "C" fn collect_cb(
