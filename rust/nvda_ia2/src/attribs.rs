@@ -13,46 +13,56 @@ use std::collections::BTreeMap;
 /// - `\` escapes the next character (so `\:` is a literal colon, etc.).
 /// - The trailing `;` is optional.
 /// - Empty keys are dropped (mirrors the C++ behaviour at ia2utils.cpp:50).
+/// - Every unescaped `:` overwrites the key with whatever has accumulated
+///   since the previous `:` or `;` (mirrors the C++ behaviour at
+///   ia2utils.cpp:43-46, where `key = str; str.clear();` runs on every
+///   `:`). Well-formed IA2 input escapes colons in values; this only
+///   matters for malformed input.
 /// - The `src` value is truncated if it starts with `data:` and contains
 ///   `base64,` (mirrors the C++ behaviour at ia2utils.cpp:62-74).
 ///
 /// `BTreeMap<String, String>` is used (not `HashMap`) for deterministic
 /// iteration in tests; the C++ side uses `std::map` which is also ordered.
 pub fn parse_attribs(input: &str) -> BTreeMap<String, String> {
+    // Mirror the C++ in `IA2AttribsToMap` directly: a single `str`
+    // accumulator that all chars feed into, plus a separate `key` that is
+    // only assigned on `:`. The C++ uses an empty-key sentinel (rather than
+    // a have_key flag) to mean "no `:` seen yet in the current pair", which
+    // also drops pairs whose key is empty (e.g. `:val;`).
     let mut out = BTreeMap::new();
+    let mut str = String::new();
     let mut key = String::new();
-    let mut value = String::new();
     let mut in_escape = false;
-    let mut have_key = false;
 
     for ch in input.chars() {
         if in_escape {
-            if have_key {
-                value.push(ch);
-            } else {
-                key.push(ch);
-            }
+            str.push(ch);
             in_escape = false;
         } else if ch == '\\' {
             in_escape = true;
-        } else if ch == ':' && !have_key {
-            have_key = true;
+        } else if ch == ':' {
+            // C++ ia2utils.cpp:43-46: `key = str; str.clear();` runs on
+            // EVERY unescaped `:`, even after a `:` was already seen this
+            // pair. So `a:b:c;` parses as {"b": "c"}, not {"a": "b:c"}.
+            key = std::mem::take(&mut str);
         } else if ch == ';' {
-            if have_key && !key.is_empty() {
-                out.insert(std::mem::take(&mut key), std::mem::take(&mut value));
+            if !key.is_empty() {
+                // mem::take leaves `key` and `str` empty for the next pair.
+                out.insert(std::mem::take(&mut key), std::mem::take(&mut str));
             } else {
-                key.clear();
-                value.clear();
+                // No `:` seen this pair (or the key was empty); drop the
+                // accumulated chars. Matches C++ ia2utils.cpp:50-53 (the
+                // !key.empty() guard skips the insert; key.clear() / str.clear()
+                // run unconditionally).
+                str.clear();
             }
-            have_key = false;
-        } else if have_key {
-            value.push(ch);
         } else {
-            key.push(ch);
+            str.push(ch);
         }
     }
-    if have_key && !key.is_empty() {
-        out.insert(key, value);
+    // Handle the last attribute when there's no trailing `;` (C++ ia2utils.cpp:59).
+    if !key.is_empty() {
+        out.insert(key, str);
     }
     truncate_base64_src(&mut out);
     out
@@ -141,41 +151,63 @@ mod tests {
     }
 
     #[test]
+    fn unescaped_colon_in_value_overwrites_key() {
+        // Mirrors C++ ia2utils.cpp:43-46 quirk: every unescaped `:` is treated
+        // as a key/value separator, so a second `:` in what looked like a value
+        // overwrites the key with whatever was accumulated since the first `:`.
+        // Well-formed IA2 input escapes colons in values; this test pins the
+        // behavior for malformed input.
+        assert_eq!(parse_attribs("a:b:c;"), map(&[("b", "c")]));
+    }
+
+    #[test]
     fn src_data_base64_is_truncated() {
+        // `:` and `;` inside the value must be escaped or they re-trigger
+        // the parser's separator handling (mirroring C++ ia2utils.cpp:43-47).
         assert_eq!(
-            parse_attribs("src:data:image/png;base64,iVBORw0KGgo;"),
-            // Note: the `;` inside the base64 part isn't escaped, so the
-            // semicolon ends the value at `data:image/png`. This matches
-            // the C++ parser; the test documents the behaviour. The
-            // truncation only fires when the value (post-parse) still
-            // starts with `data:` and contains `base64,`.
-            // Adjusted expectation: the value at this point is just
-            // "data:image/png" -- no `base64,`, so no truncation occurs.
-            map(&[("src", "data:image/png")]),
+            parse_attribs("src:data\\:image/png\\;base64,iVBORw0KGgo;"),
+            map(&[("src", "data:image/png;base64,<truncated>")]),
         );
     }
 
     #[test]
-    fn src_with_escaped_semicolon_truncated() {
+    fn src_data_base64_no_trailing_semicolon() {
+        // Same as above but the final `;` is omitted, exercising the
+        // EOF-flush branch in the parser (C++ ia2utils.cpp:59).
         assert_eq!(
-            parse_attribs("src:data:image/png\\;base64,iVBORw0KGgo;"),
+            parse_attribs("src:data\\:image/png\\;base64,iVBORw0KGgo"),
             map(&[("src", "data:image/png;base64,<truncated>")]),
         );
     }
 
     #[test]
     fn src_without_data_prefix_not_truncated() {
+        // `:` in the URL is escaped so the value stays attached to the
+        // `src` key.
         assert_eq!(
-            parse_attribs("src:http://example.com/img.png;"),
+            parse_attribs("src:http\\://example.com/img.png;"),
             map(&[("src", "http://example.com/img.png")]),
         );
     }
 
     #[test]
     fn non_src_data_value_not_truncated() {
+        // Truncation only fires for the `src` key (C++ ia2utils.cpp:63).
         assert_eq!(
-            parse_attribs("href:data:text/plain\\;base64,abc;"),
+            parse_attribs("href:data\\:text/plain\\;base64,abc;"),
             map(&[("href", "data:text/plain;base64,abc")]),
+        );
+    }
+
+    #[test]
+    fn unescaped_colons_in_url_overwrite_key_per_cpp() {
+        // Documents the C++ ia2utils.cpp:43-46 quirk on a realistic
+        // malformed input: an unescaped `http:` inside a `src` value
+        // ends up making `http` the key. This mirrors the C++ parser
+        // exactly; well-formed serialisers escape `:` in values.
+        assert_eq!(
+            parse_attribs("src:http://example.com/img.png;"),
+            map(&[("http", "//example.com/img.png")]),
         );
     }
 }
@@ -207,6 +239,12 @@ pub type AttribCallback = unsafe extern "C" fn(
 ///   is 0.
 /// - `cb` must be a valid function pointer; `ctx` is opaque user data passed
 ///   through to `cb` unchanged.
+/// - `cb` must not unwind. C++ exceptions thrown out of the callback would
+///   propagate through the `extern "C"` frame, which is undefined behavior
+///   on stable Rust. In the planned C++ adapter (`ia2utils.cpp`), the only
+///   realistic throw is `std::bad_alloc` from `std::map::emplace` or
+///   `std::wstring` construction; the adapter must catch (or accept process
+///   termination on OOM) before returning to Rust.
 #[no_mangle]
 pub unsafe extern "C" fn nvda_ia2_attribs_to_map(
     input_ptr: *const u16,
