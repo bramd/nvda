@@ -19,6 +19,51 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 
 using namespace std;
 
+// Forward declarations of the Rust shims (linked from nvda_ia2.lib on x86_64).
+// Non-x86_64 builds do not link nvda_ia2 -- those builds use the C++ fallback
+// at the bottom of this file (guarded by `#ifndef _M_X64`).
+#ifdef _M_X64
+extern "C" {
+	typedef void (*AttribCallback)(
+		void* ctx,
+		const wchar_t* key, size_t key_len,
+		const wchar_t* val, size_t val_len);
+
+	void nvda_ia2_attribs_to_map(
+		const wchar_t* input, size_t input_len,
+		void* ctx, AttribCallback cb);
+
+	bool nvda_ia2_fetch_attributes(
+		void* pacc2, void* ctx, AttribCallback cb);
+}
+
+namespace {
+	void insert_into_map(
+		void* ctx,
+		const wchar_t* key, size_t key_len,
+		const wchar_t* val, size_t val_len
+	) {
+		auto& m = *static_cast<std::map<std::wstring, std::wstring>*>(ctx);
+		m.emplace(std::wstring(key, key_len), std::wstring(val, val_len));
+	}
+}
+
+bool fetchIA2Attributes(IAccessible2* pacc2, std::map<std::wstring, std::wstring>& attribsMap) {
+	return nvda_ia2_fetch_attributes(pacc2, &attribsMap, insert_into_map);
+}
+
+void IA2AttribsToMap(const std::wstring& attribsString, std::map<std::wstring, std::wstring>& attribsMap) {
+	nvda_ia2_attribs_to_map(
+		attribsString.c_str(),
+		attribsString.size(),
+		&attribsMap,
+		insert_into_map);
+}
+#else
+// Non-x86_64 fallback: keep the original C++ implementations because cargo
+// only produces a host-triple staticlib. This is the same code as before
+// this PR, kept verbatim. Multi-arch cargo builds are a future exercise.
+
 bool fetchIA2Attributes(IAccessible2* pacc2, map<wstring, wstring>& attribsMap) {
 	BSTR attribs = NULL;
 	pacc2->get_attributes(&attribs);
@@ -73,6 +118,7 @@ void IA2AttribsToMap(const wstring &attribsString, map<wstring, wstring> &attrib
 		}
 	}
 }
+#endif
 
 std::pair<std::vector<CComVariant>, HRESULT>
 getAccessibleChildren(IAccessible* pacc, long indexOfFirstChild, long maxChildCount) {
