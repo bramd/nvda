@@ -18,6 +18,12 @@ use windows::core::Interface;
 /// # Safety
 /// - `pacc2` must be a valid `IAccessible2*` for the duration of the call.
 /// - `cb` must be a valid function pointer; `ctx` is opaque user data.
+/// - `cb` must not unwind. C++ exceptions thrown out of the callback would
+///   propagate through the `extern "C"` frame, which is undefined behavior
+///   on stable Rust. In the planned C++ adapter (`ia2utils.cpp`), the only
+///   realistic throw is `std::bad_alloc` from `std::map::emplace` or
+///   `std::wstring` construction; the adapter must catch (or accept process
+///   termination on OOM) before returning to Rust.
 #[no_mangle]
 pub unsafe extern "C" fn nvda_ia2_fetch_attributes(
     pacc2: *mut core::ffi::c_void,
@@ -37,7 +43,21 @@ pub unsafe extern "C" fn nvda_ia2_fetch_attributes(
         Ok(b) => b,
         Err(_) => return false,
     };
-    if bstr.is_empty() {
+    // Mirror C++ ia2utils.cpp:25 (`if (!attribs) return false`): only a
+    // NULL BSTR signals "no attributes", a non-NULL zero-length BSTR is
+    // treated as a successful (but empty) attributes string and parsed
+    // normally (yielding zero callback invocations). `BSTR::is_empty()`
+    // returns true for both NULL and zero-length, so it can't be used here.
+    //
+    // `windows-strings 0.1.0`'s `BSTR` is `#[repr(transparent)]` over a
+    // single `*const u16` field (private, no public accessor). The cleanest
+    // way to inspect the raw pointer without consuming the BSTR is to
+    // reinterpret a `&BSTR` as a `&*const u16` via the transparent layout.
+    // SAFETY: `BSTR` is documented `#[repr(transparent)] (*const u16)` in
+    // windows-strings; reading the pointer through a shared reference is a
+    // valid use of repr(transparent).
+    let raw_ptr: *const u16 = unsafe { *(&bstr as *const _ as *const *const u16) };
+    if raw_ptr.is_null() {
         return false;
     }
     let s = bstr.to_string();
