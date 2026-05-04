@@ -1,9 +1,14 @@
 //! Port of `getTextFromIAccessible` from
 //! `nvdaHelper/remote/textFromIAccessible.cpp`.
 //!
-//! For now this module exposes only the `is_empty_text` pure helper.
-//! The full `get_text_from_iaccessible` port and its `extern "C"` shim
-//! are added in a follow-up commit.
+//! This module exposes the pure `is_empty_text` helper and the
+//! `nvda_ia2_get_text_from_iaccessible` extern C shim for C++ callers.
+
+use crate::interfaces::{IAccessible2, IAccessibleHypertext, IAccessibleText};
+use std::collections::BTreeMap;
+use windows::core::{Interface, BSTR, VARIANT};
+use windows::Win32::System::Com::IDispatch;
+use windows::Win32::UI::Accessibility::{AccessibleChildren, IAccessible};
 
 pub const OBJ_REPLACEMENT_CHAR: u16 = 0xFFFC;
 
@@ -33,12 +38,6 @@ fn is_whitespace_w(c: u16) -> bool {
     )
 }
 
-use crate::interfaces::{IAccessible2, IAccessibleHypertext, IAccessibleText};
-use std::collections::BTreeMap;
-use windows::core::{Interface, BSTR, VARIANT};
-use windows::Win32::System::Com::IDispatch;
-use windows::Win32::UI::Accessibility::{AccessibleChildren, IAccessible};
-
 /// `IA2_TEXT_OFFSET_LENGTH` per `include/ia2/api/IA2CommonTypes.idl:160`.
 const IA2_TEXT_OFFSET_LENGTH: i32 = -1;
 
@@ -63,9 +62,9 @@ pub type AppendCharsCallback = unsafe extern "C" fn(
 
 /// C-callable replacement for `getTextFromIAccessible`.
 ///
-/// `pacc2` is borrowed (no `Release`). On `true`, `cb` was invoked exactly
-/// once with the collected text (possibly empty). On `false`, `cb` may have
-/// been invoked zero or one times -- the C++ caller must accept either.
+/// `pacc2` is borrowed (no `Release`). `cb` is always invoked exactly once
+/// with the collected text (possibly empty) before this function returns,
+/// regardless of whether the return value is `true` or `false`.
 ///
 /// # Safety
 ///
