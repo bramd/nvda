@@ -279,6 +279,10 @@ impl IAccessibleHypertext {
     /// to bound-check via `get_hyperlinkIndex` first (the pattern used by
     /// `getTextFromIAccessible`).
     ///
+    /// Returns an `E_POINTER` error if the COM call returned `S_OK` but
+    /// wrote a null hyperlink pointer (the IDL allows this for invalid
+    /// indices, see `include/ia2/api/AccessibleHypertext.idl:92`).
+    ///
     /// # Safety
     ///
     /// The underlying COM pointer wrapped by `self` must point to a live,
@@ -292,14 +296,30 @@ impl IAccessibleHypertext {
             &mut out as *mut _,
         );
         if hr.is_err() {
+            // No `ManuallyDrop::into_inner` cleanup is needed here (unlike
+            // `IAccessible2::get_attributes`): `out` is
+            // `Option<IAccessibleHyperlink>`, and `IAccessibleHyperlink`'s
+            // `Drop` (the standard windows-rs interface drop, calling
+            // `Release`) runs automatically when the `Option` falls out of
+            // scope on this early-return or on the success path below.
+            // Adding `into_inner` would not compile.
             return Err(hr.into());
         }
         out.ok_or_else(|| windows::core::Error::from(E_POINTER))
     }
 
-    /// Returns the hyperlink index for the embedded-object character at
-    /// `char_index`, or an HRESULT error if there is no hyperlink at that
-    /// offset.
+    /// Returns the 0-based hyperlink index for the embedded-object character
+    /// at `char_index`, or `-1` if the character is not on a link.
+    ///
+    /// The IDL contract (`include/ia2/api/AccessibleHypertext.idl`) is:
+    /// returns `S_OK` with a valid index when the character is on a link,
+    /// `S_FALSE` with `index = -1` when it is not. `windows::core::HRESULT`
+    /// treats `S_FALSE` as success (`is_err()` is false), so this wrapper
+    /// returns `Ok(-1)` in that case rather than an `Err`.
+    ///
+    /// **Callers must check the returned value is `>= 0` before passing it
+    /// to `get_hyperlink`** -- passing `-1` would result in a wasted COM
+    /// call returning `E_INVALIDARG`.
     ///
     /// # Safety
     ///
