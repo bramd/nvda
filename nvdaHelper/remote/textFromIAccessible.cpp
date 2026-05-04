@@ -121,6 +121,7 @@ bool getTextFromIAccessible(
 	CComQIPtr<IAccessibleText> paccText(pacc2);
 
 	if (!paccText && recurse && !useNewText) {
+		//no IAccessibleText interface, so try children instead
 		long childCount = 0;
 		if (!useNewText && pacc2->get_accChildCount(&childCount) == S_OK && childCount > 0) {
 			auto[varChildren, accChildRes] = getAccessibleChildren(pacc2, 0, childCount);
@@ -135,9 +136,9 @@ bool getTextFromIAccessible(
 							gotText |= getTextFromIAccessible(
 								textBuf,
 								pacc2Child,
-								false,
-								true,
-								true
+								false, // useNewText
+								true, // recurse
+								true // includeTopLevelText
 							);
 						}
 					}
@@ -146,8 +147,10 @@ bool getTextFromIAccessible(
 		}
 	}
 	else if (paccText) {
+		//We can use IAccessibleText because it exists
 		CComBSTR bstrText;
 		long startOffset = 0;
+		//If requested, get the text from IAccessibleText::newText rather than just IAccessibleText::text.
 		if (useNewText) {
 			IA2TextSegment newSeg {};
 			if (S_OK == paccText->get_newText(&newSeg) && newSeg.text) {
@@ -158,6 +161,7 @@ bool getTextFromIAccessible(
 		else {
 			paccText->get_text(0, IA2_TEXT_OFFSET_LENGTH, &bstrText);
 		}
+		//If we got text, add it to  the string provided, however if there are embedded objects in the text, recurse in to these
 		if (bstrText) {
 			long textLength = SysStringLen(bstrText);
 			CComQIPtr<IAccessibleHypertext> paccHypertext;
@@ -200,6 +204,7 @@ bool getTextFromIAccessible(
 		}
 	}
 	if (!gotText && !useNewText) {
+		//We got no text from IAccessibleText interface or children, so try name and/or description
 		gotText = appendNameDescription(pacc2, textBuf);
 	}
 	return gotText;
