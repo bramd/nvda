@@ -116,6 +116,90 @@ pub unsafe fn find_aria_atomic(
     unsafe { find_aria_atomic(&parent_acc2, &parent_map) }
 }
 
+use windows::core::VARIANT;
+use windows::Win32::Foundation::HWND;
+use windows::Win32::System::Com::{IDispatch, IServiceProvider};
+use windows::Win32::UI::Accessibility::{AccessibleObjectFromWindow, IAccessible};
+use windows::Win32::UI::WindowsAndMessaging::OBJID_CLIENT;
+
+/// IA2 navigation relations. See `include/ia2/api/IA2Relations.idl`. These
+/// constants are not exported by windows-rs, so we declare them locally.
+pub(crate) const NAVRELATION_EMBEDS: i32 = 0x1009;
+pub(crate) const NAVRELATION_CONTAINING_TAB_PANE: i32 = 0x1012;
+
+/// Pull the IA2 `uniqueID` out of a VARIANT that should hold an IDispatch
+/// pointing to an `IAccessible`. Mirrors `getIa2UniqueIdFromDispatchVariant`
+/// in `ia2LiveRegions.cpp:58-74`. Returns `0` for any failure path
+/// (matches the C++ contract; the caller compares against another id and
+/// `0` falls through to "unknown" treatment).
+pub fn ia2_unique_id_from_dispatch_variant(variant: &VARIANT) -> i32 {
+    let Ok(disp) = IDispatch::try_from(variant) else { return 0 };
+    let Ok(serv) = disp.cast::<IServiceProvider>() else { return 0 };
+    // SAFETY: QueryService is FFI; we hold a live IServiceProvider via
+    // `serv` for the duration of the call.
+    let Ok(acc2) = (unsafe { serv.QueryService::<IAccessible2>(&IAccessible::IID) })
+    else {
+        return 0;
+    };
+    // SAFETY: acc2 is a live IAccessible2 we just received from QueryService.
+    unsafe { acc2.get_uniqueID() }.unwrap_or(0)
+}
+
+/// Returns `true` if `pacc2` lives in a Firefox background tab. Mirrors
+/// `isInBackgroundTab` in `ia2LiveRegions.cpp:76-107`.
+///
+/// In Firefox, all tabs share the same HWND. The "containing tab pane"
+/// for the event target is compared against the "embedded" tab pane on
+/// the window root: if they have different IA2 unique IDs, the event
+/// target is in a background tab.
+///
+/// # Safety
+///
+/// `pacc2` must be a live `IAccessible2`; `hwnd` must be a valid window
+/// handle for the duration of the call.
+pub unsafe fn is_in_background_tab(pacc2: &IAccessible2, hwnd: HWND) -> bool {
+    let pacc: &IAccessible = pacc2;
+    let start = VARIANT::from(0i32); // CHILDID_SELF
+    let acc_doc = match unsafe { pacc.accNavigate(NAVRELATION_CONTAINING_TAB_PANE, &start) } {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let acc_doc_id = ia2_unique_id_from_dispatch_variant(&acc_doc);
+    if acc_doc_id == 0 {
+        return false;
+    }
+    // Get the root accessible for the window.
+    let mut root_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
+    if unsafe {
+        AccessibleObjectFromWindow(
+            hwnd,
+            OBJID_CLIENT.0 as u32,
+            &IAccessible::IID,
+            &mut root_ptr,
+        )
+    }
+    .is_err()
+    {
+        return false;
+    }
+    if root_ptr.is_null() {
+        return false;
+    }
+    // Take ownership of the AddRef'd IAccessible the out-param contract
+    // gave us. `from_raw` consumes the raw pointer's reference; `root`'s
+    // Drop (i.e. `Release`) balances it. Mirrors the C++ CComPtr.
+    let root: IAccessible = unsafe { IAccessible::from_raw(root_ptr) };
+    let fg_doc = match unsafe { root.accNavigate(NAVRELATION_EMBEDS, &start) } {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let fg_doc_id = ia2_unique_id_from_dispatch_variant(&fg_doc);
+    if fg_doc_id == 0 {
+        return false;
+    }
+    acc_doc_id != fg_doc_id
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

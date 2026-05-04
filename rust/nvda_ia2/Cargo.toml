@@ -17,4 +17,5 @@ features = [
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
 ]
