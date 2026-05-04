@@ -1,4 +1,4 @@
-﻿//! Port of `nvdaHelper/remote/ia2LiveRegions.cpp`.
+//! Port of `nvdaHelper/remote/ia2LiveRegions.cpp`.
 //!
 //! For now this module exposes only the pure attribute predicates over
 //! the IA2 attribute map. The COM-orchestration helpers
@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use crate::attribs::parse_attribs;
 use crate::interfaces::IAccessible2;
 use windows::core::Interface;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LivePoliteness {
     Polite,
@@ -76,20 +77,20 @@ pub fn is_container_atomic(map: &BTreeMap<String, String>) -> bool {
     map.get("container-atomic").map(|v| v == "true").unwrap_or(false)
 }
 
-/// If pacc2 declares tomic="true", returns it (cloned, AddRef'd).
-/// Otherwise, if it declares container-atomic="true", walks up
-/// ccParent and returns the nearest atomic ancestor (recursively).
-/// Returns None if no atomic ancestor exists.
+/// If `pacc2` declares `atomic="true"`, returns it (cloned, AddRef'd).
+/// Otherwise, if it declares `container-atomic="true"`, walks up
+/// `accParent` and returns the nearest atomic ancestor (recursively).
+/// Returns `None` if no atomic ancestor exists.
 ///
-/// Mirrors indAriaAtomic in ia2LiveRegions.cpp:30-56.
+/// Mirrors `findAriaAtomic` in `ia2LiveRegions.cpp:30-56`.
 ///
-/// ttribs_map is the IA2 attributes for pacc2 -- the caller already
+/// `attribs_map` is the IA2 attributes for `pacc2` -- the caller already
 /// has these for the entry node, so we take them as a parameter rather
 /// than fetching twice.
 ///
 /// # Safety
 ///
-/// pacc2 must be a live, well-formed IAccessible2 for the duration
+/// `pacc2` must be a live, well-formed `IAccessible2` for the duration
 /// of the call. The recursive walk dereferences each parent pointer the
 /// COM server returns.
 pub unsafe fn find_aria_atomic(
@@ -114,6 +115,7 @@ pub unsafe fn find_aria_atomic(
     let parent_map = parse_attribs(&parent_bstr.to_string());
     unsafe { find_aria_atomic(&parent_acc2, &parent_map) }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
