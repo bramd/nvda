@@ -44,10 +44,10 @@ namespace {
 		try {
 			static_cast<std::wstring*>(ctx)->append(ptr, len);
 		} catch (const std::bad_alloc&) {
-			// Swallow OOM rather than letting an exception cross the C ABI
-			// frame back into Rust. The text buffer will be partially
-			// populated; matches the C++ implementation's pre-PR-2 behavior
-			// (which would also fail on OOM).
+			// Suppressed to prevent UB from a C++ exception crossing the
+			// extern "C" frame back into Rust. The caller receives a
+			// partially-populated text buffer; the Rust shim still returns
+			// its computed gotText boolean.
 		}
 	}
 }
