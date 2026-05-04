@@ -199,6 +199,30 @@ const long FINDCONTENTDESCENDANT_LAST=2;
 const long FINDCONTENTDESCENDANT_SELECTIONSTART=3;
 const long FINDCONTENTDESCENDANT_SELECTIONEND=4;
 
+#ifdef _M_X64
+extern "C" {
+	bool nvda_ia2_find_content_descendant(
+		void* pacc2,
+		unsigned int what,
+		int* descendant_id,
+		int* descendant_offset);
+}
+
+bool findContentDescendant(IAccessible2* pacc2, long what, long* descendantID, long* descendantOffset) {
+	int id = 0;
+	int off = 0;
+	bool ok = nvda_ia2_find_content_descendant(
+		pacc2,
+		static_cast<unsigned int>(what),
+		&id,
+		&off);
+	if (ok) {
+		*descendantID = id;
+		*descendantOffset = off;
+	}
+	return ok;
+}
+#else
 bool findContentDescendant(IAccessible2* pacc2, long what, long* descendantID, long* descendantOffset) {
 	bool foundDescendant=false;
 	IAccessibleText* paccText=NULL;
@@ -283,6 +307,7 @@ bool findContentDescendant(IAccessible2* pacc2, long what, long* descendantID, l
 	}
 	return foundDescendant;
 }
+#endif
 
 
 CComPtr<IAccessible2> getIA2(const HWND hwnd, const long parentID) {
