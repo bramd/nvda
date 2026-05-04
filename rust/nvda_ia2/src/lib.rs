@@ -19,5 +19,6 @@
 pub mod attribs;
 pub mod fetch;
 pub mod interfaces;
+pub mod live_regions;
 pub mod text;
 pub mod types;
