@@ -17,6 +17,9 @@ pub struct IA2TextSegment {
     pub end: i32,
 }
 
+/// `IA2_STATE_EDITABLE` per `include/ia2/api/AccessibleStates.idl:101`.
+pub const IA2_STATE_EDITABLE: i32 = 0x8;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -90,7 +90,7 @@ pub unsafe extern "C" fn nvda_ia2_get_text_from_iaccessible(
         None => return false,
     };
     let mut buf: Vec<u16> = Vec::new();
-    let got_text = get_text_from_iaccessible(
+    let got_text = get_text_from_iaccessible_collect(
         &mut buf,
         acc2,
         use_new_text,
@@ -102,7 +102,7 @@ pub unsafe extern "C" fn nvda_ia2_get_text_from_iaccessible(
 }
 
 /// Pure-Rust port of `getTextFromIAccessible`.
-fn get_text_from_iaccessible(
+pub(crate) fn get_text_from_iaccessible_collect(
     text_buf: &mut Vec<u16>,
     pacc2: &IAccessible2,
     use_new_text: bool,
@@ -146,7 +146,7 @@ fn get_text_from_iaccessible(
             if child_is_live_off(&pacc2_child) {
                 continue;
             }
-            got_text |= get_text_from_iaccessible(
+            got_text |= get_text_from_iaccessible_collect(
                 text_buf,
                 &pacc2_child,
                 false, // use_new_text
@@ -202,7 +202,7 @@ fn get_text_from_iaccessible(
                                     pacc_hyperlink.cast::<IAccessible2>()
                                 {
                                     if !child_is_live_off(&pacc2_child)
-                                        && get_text_from_iaccessible(
+                                        && get_text_from_iaccessible_collect(
                                             text_buf, &pacc2_child, false, true, true,
                                         )
                                     {
