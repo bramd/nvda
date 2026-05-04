@@ -213,10 +213,13 @@ if cargoStaticLib is not None:
 	# Rust libstd transitively references symbols from these Win32 system
 	# libraries (ntdll for sync primitives and Nt* file APIs, userenv for
 	# home_dir lookups, ws2_32 for std::net, bcrypt for the secure RNG,
-	# WindowsApp for WinRT RoOriginateError). MSVC does not pick up the
-	# /DEFAULTLIB directives embedded in the Rust .lib reliably for
-	# staticlib consumers, so list them explicitly.
-	libs.extend(["ntdll", "userenv", "ws2_32", "bcrypt", "WindowsApp"])
+	# WindowsApp for WinRT RoOriginateError). The windows-core crate
+	# bundles VARIANT/PROPVARIANT TryFrom impls into the same compilation
+	# unit as the AccessibleChildren shim used by nvda_ia2, pulling in
+	# propsys symbols (PropVariantTo*, VariantToBoolean, ...). MSVC does
+	# not pick up the /DEFAULTLIB directives embedded in the Rust .lib
+	# reliably for staticlib consumers, so list them explicitly.
+	libs.extend(["ntdll", "userenv", "ws2_32", "bcrypt", "WindowsApp", "propsys"])
 
 remoteLib = env.SharedLibrary(
 	target="nvdaHelperRemote",
