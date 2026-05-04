@@ -211,11 +211,11 @@ pub struct IAccessibleText_Vtbl {
     pub base__: IUnknown_Vtbl,
     pub addSelection: usize,
     pub get_attributes: usize,
-    pub get_caretOffset: usize,
+    pub get_caretOffset: unsafe extern "system" fn(this: *mut core::ffi::c_void, offset: *mut i32) -> HRESULT,
     pub get_characterExtents: usize,
-    pub get_nSelections: usize,
+    pub get_nSelections: unsafe extern "system" fn(this: *mut core::ffi::c_void, n_selections: *mut i32) -> HRESULT,
     pub get_offsetAtPoint: usize,
-    pub get_selection: usize,
+    pub get_selection: unsafe extern "system" fn(this: *mut core::ffi::c_void, selection_index: i32, start_offset: *mut i32, end_offset: *mut i32) -> HRESULT,
     pub get_text: unsafe extern "system" fn(this: *mut core::ffi::c_void, start_offset: i32, end_offset: i32, text: *mut core::mem::ManuallyDrop<BSTR>) -> HRESULT,
     pub get_textBeforeOffset: usize,
     pub get_textAfterOffset: usize,
@@ -223,7 +223,7 @@ pub struct IAccessibleText_Vtbl {
     pub removeSelection: usize,
     pub setCaretOffset: usize,
     pub setSelection: usize,
-    pub get_nCharacters: usize,
+    pub get_nCharacters: unsafe extern "system" fn(this: *mut core::ffi::c_void, n_characters: *mut i32) -> HRESULT,
     pub scrollSubstringTo: usize,
     pub scrollSubstringToPoint: usize,
     pub get_newText: unsafe extern "system" fn(this: *mut core::ffi::c_void, new_text: *mut IA2TextSegment) -> HRESULT,
@@ -282,6 +282,86 @@ impl IAccessibleText {
             return Err(hr.into());
         }
         Ok(out)
+    }
+
+    /// Returns the current caret offset within this text. See
+    /// `include/ia2/api/AccessibleText.idl` for the IDL contract.
+    ///
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_caretOffset(&self) -> windows::core::Result<i32> {
+        let mut out: i32 = 0;
+        let hr = (Interface::vtable(self).get_caretOffset)(
+            Interface::as_raw(self),
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok(out)
+    }
+
+    /// Returns the total character count of this text.
+    ///
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_nCharacters(&self) -> windows::core::Result<i32> {
+        let mut out: i32 = 0;
+        let hr = (Interface::vtable(self).get_nCharacters)(
+            Interface::as_raw(self),
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok(out)
+    }
+
+    /// Returns the number of active text selections.
+    ///
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_nSelections(&self) -> windows::core::Result<i32> {
+        let mut out: i32 = 0;
+        let hr = (Interface::vtable(self).get_nSelections)(
+            Interface::as_raw(self),
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok(out)
+    }
+
+    /// Returns the `(startOffset, endOffset)` for the selection at
+    /// `selection_index`.
+    ///
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_selection(
+        &self,
+        selection_index: i32,
+    ) -> windows::core::Result<(i32, i32)> {
+        let mut start: i32 = 0;
+        let mut end: i32 = 0;
+        let hr = (Interface::vtable(self).get_selection)(
+            Interface::as_raw(self),
+            selection_index,
+            &mut start as *mut _,
+            &mut end as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok((start, end))
     }
 }
 
