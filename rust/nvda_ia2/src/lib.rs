@@ -19,4 +19,5 @@
 pub mod attribs;
 pub mod fetch;
 pub mod interfaces;
+pub mod text;
 pub mod types;
