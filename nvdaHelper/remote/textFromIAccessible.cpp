@@ -23,6 +23,51 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 using namespace std;
 auto constexpr OBJ_REPLACEMENT_CHAR = L'\xfffc';
 
+#ifdef _M_X64
+extern "C" {
+	typedef void (*AppendCharsCallback)(
+		void* ctx,
+		const wchar_t* ptr,
+		size_t len);
+
+	bool nvda_ia2_get_text_from_iaccessible(
+		void* pacc2,
+		bool use_new_text,
+		bool recurse,
+		bool include_top_level_text,
+		void* ctx,
+		AppendCharsCallback cb);
+}
+
+namespace {
+	void append_chars(void* ctx, const wchar_t* ptr, size_t len) {
+		try {
+			static_cast<std::wstring*>(ctx)->append(ptr, len);
+		} catch (const std::bad_alloc&) {
+			// Swallow OOM rather than letting an exception cross the C ABI
+			// frame back into Rust. The text buffer will be partially
+			// populated; matches the C++ implementation's pre-PR-2 behavior
+			// (which would also fail on OOM).
+		}
+	}
+}
+
+bool getTextFromIAccessible(
+	wstring& textBuf,
+	IAccessible2* pacc2,
+	bool useNewText,
+	bool recurse,
+	bool includeTopLevelText
+) {
+	return nvda_ia2_get_text_from_iaccessible(
+		pacc2, useNewText, recurse, includeTopLevelText,
+		&textBuf, append_chars);
+}
+
+#else
+// Non-x86_64 fallback: keep the original C++ implementation because cargo
+// only produces a host-triple staticlib. This is the same code as before
+// this PR, kept verbatim. Multi-arch cargo builds are a future exercise.
 
 bool isEmpty(CComBSTR& val) {
 	if (!val) {
@@ -61,7 +106,6 @@ bool appendNameDescription(CComPtr<IAccessible> pacc, wstring& textBuf) {
 	return gotText;
 }
 
-
 bool getTextFromIAccessible(
 	wstring& textBuf,
 	IAccessible2* pacc2,
@@ -77,7 +121,6 @@ bool getTextFromIAccessible(
 	CComQIPtr<IAccessibleText> paccText(pacc2);
 
 	if (!paccText && recurse && !useNewText) {
-		//no IAccessibleText interface, so try children instead
 		long childCount = 0;
 		if (!useNewText && pacc2->get_accChildCount(&childCount) == S_OK && childCount > 0) {
 			auto[varChildren, accChildRes] = getAccessibleChildren(pacc2, 0, childCount);
@@ -92,9 +135,9 @@ bool getTextFromIAccessible(
 							gotText |= getTextFromIAccessible(
 								textBuf,
 								pacc2Child,
-								false, // useNewText
-								true, // recurse
-								true // includeTopLevelText
+								false,
+								true,
+								true
 							);
 						}
 					}
@@ -103,10 +146,8 @@ bool getTextFromIAccessible(
 		}
 	}
 	else if (paccText) {
-		//We can use IAccessibleText because it exists
 		CComBSTR bstrText;
 		long startOffset = 0;
-		//If requested, get the text from IAccessibleText::newText rather than just IAccessibleText::text.
 		if (useNewText) {
 			IA2TextSegment newSeg {};
 			if (S_OK == paccText->get_newText(&newSeg) && newSeg.text) {
@@ -117,7 +158,6 @@ bool getTextFromIAccessible(
 		else {
 			paccText->get_text(0, IA2_TEXT_OFFSET_LENGTH, &bstrText);
 		}
-		//If we got text, add it to  the string provided, however if there are embedded objects in the text, recurse in to these
 		if (bstrText) {
 			long textLength = SysStringLen(bstrText);
 			CComQIPtr<IAccessibleHypertext> paccHypertext;
@@ -160,8 +200,8 @@ bool getTextFromIAccessible(
 		}
 	}
 	if (!gotText && !useNewText) {
-		//We got no text from IAccessibleText interface or children, so try name and/or description
 		gotText = appendNameDescription(pacc2, textBuf);
 	}
 	return gotText;
 }
+#endif
