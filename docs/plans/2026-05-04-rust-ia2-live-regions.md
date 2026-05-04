@@ -475,11 +475,37 @@ git commit -m "Port findAriaAtomic to Rust"
 
 **Files:**
 
+* Modify: `rust/nvda_ia2/Cargo.toml` (enable two new windows-rs features)
 * Modify: `rust/nvda_ia2/src/live_regions.rs` (append)
 
 The background-tab check uses two `accNavigate` calls (one on the event target via `NAVRELATION_CONTAINING_TAB_PANE`, one on the window root via `NAVRELATION_EMBEDS`) and compares the returned IA2 unique IDs. If they differ, the event target is in a background tab.
 
-* [ ] **Step 1: Append the helpers**
+* [ ] **Step 1: Enable the windows-rs features for `OBJID_CLIENT`**
+
+`AccessibleObjectFromWindow` takes the `OBJID_CLIENT` constant. windows-rs places it under `Win32_UI_WindowsAndMessaging`. Edit `rust/nvda_ia2/Cargo.toml`, find:
+
+```toml
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Accessibility",
+]
+```
+
+Add `"Win32_UI_WindowsAndMessaging"` to the list (alphabetical position):
+
+```toml
+features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
+]
+```
+
+* [ ] **Step 2: Append the helpers**
 
 Append to `rust/nvda_ia2/src/live_regions.rs`, after `find_aria_atomic`:
 
@@ -488,16 +514,12 @@ use windows::core::VARIANT;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{IDispatch, IServiceProvider};
 use windows::Win32::UI::Accessibility::{AccessibleObjectFromWindow, IAccessible};
+use windows::Win32::UI::WindowsAndMessaging::OBJID_CLIENT;
 
 /// IA2 navigation relations. See `include/ia2/api/IA2Relations.idl`. These
 /// constants are not exported by windows-rs, so we declare them locally.
 pub(crate) const NAVRELATION_EMBEDS: i32 = 0x1009;
 pub(crate) const NAVRELATION_CONTAINING_TAB_PANE: i32 = 0x1012;
-
-/// `OBJID_CLIENT` per oleacc.h. The windows-rs constant lives in
-/// `Win32_UI_WindowsAndMessaging` (a feature we don't currently enable);
-/// declare locally to avoid pulling in the whole module surface.
-pub(crate) const OBJID_CLIENT: u32 = 0xFFFF_FFFC; // -4 as u32
 
 /// Pull the IA2 `uniqueID` out of a VARIANT that should hold an IDispatch
 /// pointing to an `IAccessible`. Mirrors `getIa2UniqueIdFromDispatchVariant`
@@ -545,7 +567,7 @@ pub unsafe fn is_in_background_tab(pacc2: &IAccessible2, hwnd: HWND) -> bool {
     if unsafe {
         AccessibleObjectFromWindow(
             hwnd,
-            OBJID_CLIENT,
+            OBJID_CLIENT.0 as u32,
             &IAccessible::IID,
             &mut root_ptr,
         )
@@ -573,9 +595,9 @@ pub unsafe fn is_in_background_tab(pacc2: &IAccessible2, hwnd: HWND) -> bool {
 }
 ```
 
-The `IAccessible::from_raw_borrowed(&root_ptr)` followed by `.clone()` is the windows-rs pattern for taking ownership of an out-param `*mut c_void` that we don't want to leak: the borrow-clone pair AddRefs once (so we own the new ref), and the original out-param ref is intentionally leaked because `AccessibleObjectFromWindow` returned it as "raw owned." We then balance by `Release` on drop. This matches the lifetime contract `CComPtr<IAccessible>` had in the C++.
+`IAccessible::from_raw(root_ptr)` consumes the raw pointer's reference into an owned `IAccessible`; `Drop` will `Release` it. Mirrors the C++ `CComPtr<IAccessible>` ownership semantics for `AccessibleObjectFromWindow`'s out-param. `OBJID_CLIENT` is windows-rs's strongly-typed wrapper around the SDK's `i32` value; `.0 as u32` extracts the raw discriminant for the `dwid: u32` param.
 
-* [ ] **Step 2: Verify build / clippy / tests**
+* [ ] **Step 3: Verify build / clippy / tests**
 
 ```sh
 cargo build --manifest-path rust/nvda_ia2/Cargo.toml
@@ -585,14 +607,12 @@ cargo test --manifest-path rust/nvda_ia2/Cargo.toml
 
 Expected: clean build, no warnings, 45 tests still pass.
 
-If clippy flags `OBJID_CLIENT` not being a `u32` -- it's typically declared as `OBJECT_IDENTIFIER` in windows-rs which is a thin wrapper. The `.0 as u32` cast is the standard escape hatch.
-
 If `AccessibleObjectFromWindow` complains that `&IAccessible::IID` is the wrong pointer type, it expects `*const GUID`; coerce with `&IAccessible::IID as *const _`.
 
-* [ ] **Step 3: Commit**
+* [ ] **Step 4: Commit**
 
 ```sh
-git add rust/nvda_ia2/src/live_regions.rs
+git add rust/nvda_ia2/Cargo.toml rust/nvda_ia2/src/live_regions.rs
 git commit -m "Port isInBackgroundTab and dispatch-variant uniqueID helper"
 ```
 
@@ -602,22 +622,25 @@ git commit -m "Port isInBackgroundTab and dispatch-variant uniqueID helper"
 
 **Files:**
 
+* Modify: `rust/nvda_ia2/Cargo.toml` (enable `Win32_UI_Controls` for `STATE_SYSTEM_OFFSCREEN`)
 * Modify: `rust/nvda_ia2/src/live_regions.rs` (append)
+* Modify: `rust/nvda_ia2/src/text.rs` (rename helper, see Step 4)
+* Modify: `rust/nvda_ia2/src/types.rs` (add `IA2_STATE_EDITABLE`, see Step 3)
 
 This task adds the function that runs the full filter chain after the C++ side has done the Win32-only setup, plus the `extern "C"` shim and its `ReportLiveRegionCallback` typedef.
 
-* [ ] **Step 1: Append the handler and shim**
+* [ ] **Step 1: Enable `Win32_UI_Controls` for `STATE_SYSTEM_OFFSCREEN`**
+
+The IA2 state-bit constant `STATE_SYSTEM_OFFSCREEN` lives under `Win32_UI_Controls` in windows-rs (it gets categorised by where it first appears in the Windows SDK headers; the type wrapper name is incidental). Edit `rust/nvda_ia2/Cargo.toml`, find the `features` list and add `"Win32_UI_Controls"` in alphabetical position.
+
+* [ ] **Step 2: Append the handler and shim**
 
 Append to `rust/nvda_ia2/src/live_regions.rs`, after `is_in_background_tab`:
 
 ```rust
 use crate::text::get_text_from_iaccessible_collect;
 use crate::types::IA2_STATE_EDITABLE;
-
-/// `STATE_SYSTEM_OFFSCREEN` per oleacc.h. The windows-rs constant lives
-/// in `Win32_UI_Controls` (a feature we don't currently enable); declare
-/// locally to avoid pulling in the whole module surface.
-const STATE_SYSTEM_OFFSCREEN: i32 = 0x10000;
+use windows::Win32::UI::Controls::STATE_SYSTEM_OFFSCREEN;
 
 /// WinEvent identifiers the live-region hook cares about. Pre-filtered by
 /// the C++ side so Rust doesn't need to import the platform constants.
@@ -724,7 +747,10 @@ unsafe fn handle_live_region_event(
     };
 
     // Background-tab filter (only when the offscreen state bit is set).
-    if (acc_state & STATE_SYSTEM_OFFSCREEN) != 0
+    // STATE_SYSTEM_OFFSCREEN is wrapped by windows-rs as a tuple struct
+    // (the wrapper type name is unrelated to its actual semantics --
+    // it's the standard Win32 STATE_SYSTEM_* bitmask value).
+    if (acc_state & STATE_SYSTEM_OFFSCREEN.0 as i32) != 0
         && unsafe { is_in_background_tab(pacc2, hwnd) }
     {
         return false;
@@ -860,7 +886,7 @@ Note: this task references two items that need to exist before it compiles:
 1. `crate::types::IA2_STATE_EDITABLE` -- declare it in `rust/nvda_ia2/src/types.rs` as `pub const IA2_STATE_EDITABLE: i32 = 0x8;` if not already present.
 2. `crate::text::get_text_from_iaccessible_collect` -- this is currently `get_text_from_iaccessible` in `text.rs`, but it's `fn` (private). Promote it to `pub(crate)` and rename to `get_text_from_iaccessible_collect` so the live-regions code can call it directly without going through the FFI shim.
 
-* [ ] **Step 2: Add the IA2_STATE_EDITABLE constant**
+* [ ] **Step 3: Add the IA2_STATE_EDITABLE constant**
 
 In `rust/nvda_ia2/src/types.rs`, append (or place alongside other IA2 constants if any exist):
 
@@ -869,7 +895,7 @@ In `rust/nvda_ia2/src/types.rs`, append (or place alongside other IA2 constants 
 pub const IA2_STATE_EDITABLE: i32 = 0x8;
 ```
 
-* [ ] **Step 3: Promote `get_text_from_iaccessible` for in-crate callers**
+* [ ] **Step 4: Promote `get_text_from_iaccessible` for in-crate callers**
 
 In `rust/nvda_ia2/src/text.rs`, find:
 
@@ -897,7 +923,7 @@ pub(crate) fn get_text_from_iaccessible_collect(
 
 Update the call site inside the same file (`nvda_ia2_get_text_from_iaccessible`) to use the new name.
 
-* [ ] **Step 4: Verify build / clippy / tests**
+* [ ] **Step 5: Verify build / clippy / tests**
 
 ```sh
 cargo build --manifest-path rust/nvda_ia2/Cargo.toml
@@ -911,10 +937,10 @@ If clippy complains about the `name.as_wide()` / `desc.as_wide()` unused-binding
 
 If `HWND(hwnd)` doesn't compile because `HWND` is a tuple struct in windows-rs 0.58, the spelling may need to be `HWND(hwnd as _)` or `HWND::default()`. Check the actual definition in `windows::Win32::Foundation::HWND` if so.
 
-* [ ] **Step 5: Commit**
+* [ ] **Step 6: Commit**
 
 ```sh
-git add rust/nvda_ia2/src/live_regions.rs rust/nvda_ia2/src/text.rs rust/nvda_ia2/src/types.rs
+git add rust/nvda_ia2/Cargo.toml rust/nvda_ia2/src/live_regions.rs rust/nvda_ia2/src/text.rs rust/nvda_ia2/src/types.rs
 git commit -m "Add live-region event handler and extern C shim"
 ```
 
