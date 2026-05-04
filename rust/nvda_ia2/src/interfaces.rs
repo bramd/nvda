@@ -77,13 +77,13 @@ pub struct IAccessible2_Vtbl {
     pub scrollTo: usize,
     pub scrollToPoint: usize,
     pub get_groupPosition: usize,
-    pub get_states: usize,
+    pub get_states: unsafe extern "system" fn(this: *mut core::ffi::c_void, states: *mut i32) -> HRESULT,
     pub get_extendedRole: usize,
     pub get_localizedExtendedRole: usize,
     pub get_nExtendedStates: usize,
     pub get_extendedStates: usize,
     pub get_localizedExtendedStates: usize,
-    pub get_uniqueID: usize,
+    pub get_uniqueID: unsafe extern "system" fn(this: *mut core::ffi::c_void, unique_id: *mut i32) -> HRESULT,
     pub get_windowHandle: usize,
     pub get_indexInParent: usize,
     pub get_locale: usize,
@@ -118,6 +118,46 @@ impl IAccessible2 {
         }
         // Take ownership of the BSTR (BSTR's Drop will SysFreeString).
         Ok(core::mem::ManuallyDrop::into_inner(out))
+    }
+
+    /// Returns the IA2 state bitmask. See `include/ia2/api/AccessibleStates.idl`
+    /// for flag definitions (`IA2_STATE_EDITABLE`, etc.).
+    ///
+    /// # Safety
+    ///
+    /// The underlying COM pointer wrapped by `self` must point to a live,
+    /// well-formed `IAccessible2` implementation for the duration of this
+    /// call. Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_states(&self) -> windows::core::Result<i32> {
+        let mut out: i32 = 0;
+        let hr = (Interface::vtable(self).get_states)(
+            Interface::as_raw(self),
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok(out)
+    }
+
+    /// Returns the IA2 unique ID for this object. See
+    /// `include/ia2/api/Accessible2.idl` for the IDL contract.
+    ///
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_uniqueID(&self) -> windows::core::Result<i32> {
+        let mut out: i32 = 0;
+        let hr = (Interface::vtable(self).get_uniqueID)(
+            Interface::as_raw(self),
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok(out)
     }
 }
 
