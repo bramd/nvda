@@ -186,16 +186,13 @@ impl WasapiPlayer {
     }
 
     fn stop(&self) -> PyResult<()> {
-        // Try to acquire the inner mutex without blocking. If we get it,
-        // call the full WasapiPlayerInner::stop() which calls
-        // IAudioClient::Stop() for immediate audio halt. If the mutex is
-        // held (e.g. feed() is running), fall back to the lock-free
-        // StopHandle which sets the atomic state and wakes feed().
-        if let Ok(mut player) = self.inner.try_lock() {
-            player.stop().map_err(to_os_error)?;
-        } else {
-            self.stop_handle.stop();
-        }
+        // The StopHandle is always safe to call from any thread. It calls
+        // IAudioClient::Stop() directly via the shared client slot, so the
+        // device halts immediately even when feed() is currently holding
+        // the player mutex. (Previously this fell back to a signal-only
+        // path when feed() held the mutex, which let up to ~BUFFER_MS of
+        // already-queued audio keep playing.)
+        self.stop_handle.stop();
         Ok(())
     }
 

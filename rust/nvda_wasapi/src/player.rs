@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Media::Audio::{
@@ -33,10 +33,52 @@ fn is_error(hr: &windows::core::Error, code: i32) -> bool {
     hr.code().0 == code
 }
 
+/// Thread-safe shared cell holding the current `IAudioClient`.
+///
+/// The same `Arc<ClientSlot>` is held by `WasapiPlayerInner` and any
+/// `StopHandle` it creates, so a stop call from another thread can call
+/// `IAudioClient::Stop()` directly on the current client (halting audio
+/// immediately) without acquiring the player mutex. The slot is updated
+/// atomically by `open()` when the device is reopened, so a stop racing
+/// against a device-change reopen will call `Stop()` on whichever client
+/// is current at the moment the slot is read; calling `Stop()` on a
+/// just-replaced client is harmless.
+pub(crate) struct ClientSlot {
+    inner: Mutex<Option<IAudioClient>>,
+}
+
+// SAFETY: `IAudioClient` methods are documented as thread-safe by Microsoft
+// (the COM apartment model places audio session objects in the MTA). The
+// `Mutex` provides synchronisation for the swap operation. We declare Send
+// + Sync explicitly because windows-rs interface types do not auto-derive
+// these traits.
+unsafe impl Send for ClientSlot {}
+unsafe impl Sync for ClientSlot {}
+
+impl ClientSlot {
+    fn new() -> Self {
+        Self { inner: Mutex::new(None) }
+    }
+
+    /// Snapshot the current client (cloning AddRef's the COM pointer).
+    /// The returned Option is independent of subsequent slot updates.
+    fn snapshot(&self) -> Option<IAudioClient> {
+        self.inner.lock().unwrap().clone()
+    }
+
+    fn replace(&self, new_client: Option<IAudioClient>) {
+        *self.inner.lock().unwrap() = new_client;
+    }
+
+    fn is_some(&self) -> bool {
+        self.inner.lock().unwrap().is_some()
+    }
+}
+
 /// Core WASAPI audio player. This is the internal struct without any PyO3
 /// bindings -- it will be wrapped by a Python-facing class later.
 pub struct WasapiPlayerInner {
-    client: Option<IAudioClient>,
+    client_slot: Arc<ClientSlot>,
     render: Option<IAudioRenderClient>,
     clock: Option<IAudioClock>,
     buffer_frames: u32,
@@ -78,7 +120,7 @@ impl WasapiPlayerInner {
         let wake_event = unsafe { CreateEventW(None, false, false, None)? };
         let block_align = channels * bits_per_sample / 8;
         Ok(Self {
-            client: None,
+            client_slot: Arc::new(ClientSlot::new()),
             render: None,
             clock: None,
             buffer_frames: 0,
@@ -106,7 +148,7 @@ impl WasapiPlayerInner {
     ///
     /// If force is false and the device is already open, this is a no-op.
     pub fn open(&mut self, force: bool) -> windows::core::Result<()> {
-        if self.client.is_some() && !force {
+        if self.client_slot.is_some() && !force {
             return Ok(());
         }
         // Snapshot device change counters.
@@ -168,7 +210,7 @@ impl WasapiPlayerInner {
         let clock: IAudioClock = unsafe { client.GetService()? };
         let clock_freq = unsafe { clock.GetFrequency()? };
 
-        self.client = Some(client);
+        self.client_slot.replace(Some(client));
         self.render = Some(render);
         self.clock = Some(clock);
         self.buffer_frames = buffer_frames;
@@ -265,9 +307,9 @@ impl WasapiPlayerInner {
             // getPaddingHandlingStopOrDevChange again in the branch above and
             // falls through with the updated paddingFrames). We do the same
             // by calling GetCurrentPadding once more.
-            let padding_frames = {
-                let client = self.client.as_ref().unwrap();
-                unsafe { client.GetCurrentPadding()? }
+            let padding_frames = match self.client_slot.snapshot() {
+                Some(client) => unsafe { client.GetCurrentPadding()? },
+                None => return Ok(0),
             };
 
             let send_frames =
@@ -324,9 +366,10 @@ impl WasapiPlayerInner {
             }
 
             if self.get_play_state() == PlayState::Stopped {
-                let client = self.client.as_ref().unwrap();
-                unsafe {
-                    client.Start()?;
+                if let Some(client) = self.client_slot.snapshot() {
+                    unsafe {
+                        client.Start()?;
+                    }
                 }
                 if self.get_play_state() == PlayState::Stopping {
                     // stop() was called while we were calling Start().
@@ -360,35 +403,16 @@ impl WasapiPlayerInner {
         Ok(feed_id)
     }
 
-    /// Stop playback. Sets play state to Stopping and wakes any waiting
-    /// feed/sync.
+    /// Stop playback. Calls `IAudioClient::Stop()` to halt audio immediately,
+    /// sets play state to Stopping, and wakes any waiting feed/sync. Safe to
+    /// call from any thread (delegates to the lock-free [`StopHandle`] path).
     pub fn stop(&mut self) -> windows::core::Result<()> {
-        if let Some(ref client) = self.client {
-            let result = unsafe { client.Stop() };
-            // Set state AFTER client.Stop() to avoid the feeder thread
-            // calling Reset() before Stop() completes.
-            self.set_play_state(PlayState::Stopping);
-            if let Err(e) = result {
-                if is_error(&e, AUDCLNT_E_DEVICE_INVALIDATED)
-                    || is_error(&e, AUDCLNT_E_NOT_INITIALIZED)
-                {
-                    // Device already stopped/invalidated -- ignore.
-                } else {
-                    return Err(e);
-                }
-            }
-        } else {
-            self.set_play_state(PlayState::Stopping);
-        }
-        unsafe {
-            let _ = SetEvent(self.wake_event);
-        }
-        Ok(())
+        self.stop_handle().stop_inner()
     }
 
     /// Reset our state after being stopped. Runs on the feeder thread.
     fn complete_stop(&mut self) {
-        if let Some(ref client) = self.client {
+        if let Some(client) = self.client_slot.snapshot() {
             if let Err(e) = unsafe { client.Reset() } {
                 eprintln!("Couldn't reset stream: {:?}", e);
             }
@@ -434,7 +458,7 @@ impl WasapiPlayerInner {
         if self.get_play_state() != PlayState::Playing {
             return Ok(());
         }
-        if let Some(ref client) = self.client {
+        if let Some(client) = self.client_slot.snapshot() {
             unsafe {
                 client.Stop()?;
             }
@@ -447,7 +471,7 @@ impl WasapiPlayerInner {
         if self.get_play_state() != PlayState::Playing {
             return Ok(());
         }
-        if let Some(ref client) = self.client {
+        if let Some(client) = self.client_slot.snapshot() {
             unsafe {
                 client.Start()?;
             }
@@ -461,7 +485,7 @@ impl WasapiPlayerInner {
         channel: u32,
         level: f32,
     ) -> windows::core::Result<()> {
-        let client = match self.client.as_ref() {
+        let client = match self.client_slot.snapshot() {
             Some(c) => c,
             None => return Ok(()),
         };
@@ -472,8 +496,10 @@ impl WasapiPlayerInner {
             Err(e) if is_error(&e, AUDCLNT_E_DEVICE_INVALIDATED) => {
                 // Device was invalidated -- fall back to default.
                 self.open(true)?;
-                let client = self.client.as_ref().unwrap();
-                unsafe { client.GetService()? }
+                match self.client_slot.snapshot() {
+                    Some(c) => unsafe { c.GetService()? },
+                    None => return Ok(()),
+                }
             }
             Err(e) => return Err(e),
         };
@@ -500,11 +526,14 @@ impl WasapiPlayerInner {
 
     /// Create a StopHandle that can stop playback from another thread.
     ///
-    /// The returned handle is stable across device reopens -- it references
-    /// the same `play_state` Arc and `wake_event` HANDLE that persist for
-    /// the lifetime of this player.
+    /// The returned handle is stable across device reopens -- it shares the
+    /// same `client_slot`, `play_state` Arc, and `wake_event` HANDLE that
+    /// persist for the lifetime of this player. When `feed()` reopens the
+    /// device on a device-change event, the slot is updated atomically and
+    /// the handle automatically references the new client.
     pub fn stop_handle(&self) -> StopHandle {
         StopHandle {
+            client_slot: self.client_slot.clone(),
             play_state: self.play_state.clone(),
             wake_event: self.wake_event,
         }
@@ -621,7 +650,10 @@ impl WasapiPlayerInner {
         }
 
         // Get current padding.
-        let client = self.client.as_ref().unwrap();
+        let client = match self.client_slot.snapshot() {
+            Some(c) => c,
+            None => return PaddingResult::Stopped,
+        };
         match unsafe { client.GetCurrentPadding() } {
             Ok(p) => PaddingResult::Ok(p),
             Err(e)
@@ -632,7 +664,10 @@ impl WasapiPlayerInner {
                 if let Err(e2) = self.reopen_using_new_device() {
                     return PaddingResult::Err(e2);
                 }
-                let client = self.client.as_ref().unwrap();
+                let client = match self.client_slot.snapshot() {
+                    Some(c) => c,
+                    None => return PaddingResult::Stopped,
+                };
                 match unsafe { client.GetCurrentPadding() } {
                     Ok(p) => PaddingResult::Ok(p),
                     Err(e2) => PaddingResult::Err(e2),
@@ -658,24 +693,29 @@ unsafe impl Send for WasapiPlayerInner {}
 /// A lightweight, thread-safe handle for stopping playback from any thread.
 ///
 /// This allows `stop()` to interrupt a blocking `feed()` call without needing
-/// to acquire the mutex that `feed()` holds. It works by:
-/// 1. Setting the atomic play_state to Stopping
-/// 2. Signaling the wake event so the feed loop wakes up
+/// to acquire the player mutex. It:
+/// 1. Snapshots the current `IAudioClient` from the shared slot and calls
+///    `IAudioClient::Stop()` directly so audio output halts immediately
+///    (instead of draining the up-to-`BUFFER_MS` worth of frames already
+///    queued in the device).
+/// 2. Sets the atomic play_state to Stopping (release ordering, paired with
+///    the feeder thread's acquire load).
+/// 3. Signals the wake event so the feed loop wakes up and runs
+///    `complete_stop()` which calls `IAudioClient::Reset()`.
 ///
-/// When `feed()` wakes up and sees `play_state == Stopping`, it calls
-/// `complete_stop()` to reset the stream (using the current client).
-///
-/// Note: we intentionally do NOT store `IAudioClient` here. The client can
-/// be replaced by `reopen_using_new_device()` inside `feed()`, and a stale
-/// client reference here would call `Stop()` on the wrong device. Instead,
-/// `complete_stop()` (which runs on the feeder thread with the current
-/// client) handles stopping the WASAPI stream.
+/// The client slot is updated atomically by `WasapiPlayerInner::open()` on
+/// device-change reopen. A stop racing against a reopen will call `Stop()`
+/// on whichever client is current at the moment the slot is read; calling
+/// `Stop()` on a just-replaced client is harmless (it stops a stream that
+/// is no longer routed to the device).
 pub struct StopHandle {
+    client_slot: Arc<ClientSlot>,
     play_state: Arc<AtomicU8>,
     wake_event: HANDLE,
 }
 
-// SAFETY: AtomicU8 is inherently thread-safe. HANDLE for SetEvent is
+// SAFETY: `ClientSlot` carries Send + Sync via its own manual impls.
+// `AtomicU8` is inherently thread-safe. `HANDLE` for `SetEvent` is
 // documented as thread-safe by Windows.
 unsafe impl Send for StopHandle {}
 unsafe impl Sync for StopHandle {}
@@ -684,11 +724,42 @@ impl StopHandle {
     /// Stop playback from any thread. This is the thread-safe equivalent of
     /// `WasapiPlayerInner::stop()`.
     pub fn stop(&self) {
-        self.play_state
-            .store(PlayState::STOPPING_U8, Ordering::Release);
-        unsafe {
-            let _ = SetEvent(self.wake_event);
+        // Ignore the result -- treat the same way the inner stop() does for
+        // benign HRESULTs (device invalidated / not initialised).
+        let _ = self.stop_inner();
+    }
+
+    /// Stop playback and return any error from `IAudioClient::Stop()`. Used
+    /// by `WasapiPlayerInner::stop()` to surface real failures while we
+    /// still propagate `Result` upwards.
+    pub(crate) fn stop_inner(&self) -> windows::core::Result<()> {
+        if let Some(client) = self.client_slot.snapshot() {
+            let result = unsafe { client.Stop() };
+            // Set state AFTER client.Stop() to avoid the feeder thread
+            // calling Reset() before Stop() completes.
+            self.play_state
+                .store(PlayState::STOPPING_U8, Ordering::Release);
+            unsafe {
+                let _ = SetEvent(self.wake_event);
+            }
+            if let Err(e) = result {
+                let code = e.code().0;
+                if code == AUDCLNT_E_DEVICE_INVALIDATED
+                    || code == AUDCLNT_E_NOT_INITIALIZED
+                {
+                    // Device already stopped/invalidated -- ignore.
+                    return Ok(());
+                }
+                return Err(e);
+            }
+        } else {
+            self.play_state
+                .store(PlayState::STOPPING_U8, Ordering::Release);
+            unsafe {
+                let _ = SetEvent(self.wake_event);
+            }
         }
+        Ok(())
     }
 }
 
