@@ -34,4 +34,5 @@ pub mod role_long_string;
 pub mod selected_item;
 pub mod text;
 pub mod textbox_in_combobox;
+pub mod toolkit_name;
 pub mod types;

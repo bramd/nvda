@@ -656,3 +656,58 @@ pub struct IAccessibleHyperlink_Vtbl {
     pub base__: IUnknown_Vtbl,
     // Methods deliberately omitted -- this PR only needs the IID for QI.
 }
+
+// --- IAccessibleApplication -----------------------------------------------
+//
+// Inherits from IUnknown. Vtable order (from AccessibleApplication.idl):
+//   1. get_appName
+//   2. get_appVersion
+//   3. get_toolkitName    <-- the only one we use
+//   4. get_toolkitVersion
+
+windows_core::imp::define_interface!(
+    IAccessibleApplication,
+    IAccessibleApplication_Vtbl,
+    0xd49ded83_5b25_43f4_9b95_93b44595979e
+);
+impl core::ops::Deref for IAccessibleApplication {
+    type Target = IUnknown;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+windows_core::imp::interface_hierarchy!(IAccessibleApplication, IUnknown);
+
+#[repr(C)]
+pub struct IAccessibleApplication_Vtbl {
+    pub base__: IUnknown_Vtbl,
+    pub get_appName: usize,
+    pub get_appVersion: usize,
+    pub get_toolkitName: unsafe extern "system" fn(
+        this: *mut core::ffi::c_void,
+        name: *mut core::mem::ManuallyDrop<BSTR>,
+    ) -> HRESULT,
+    pub get_toolkitVersion: usize,
+}
+
+impl IAccessibleApplication {
+    /// Returns the toolkit name (e.g. `"Mozilla Gecko"`, `"Chrome"`).
+    /// Server-allocated BSTR; the wrapper takes ownership.
+    ///
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_toolkitName(&self) -> windows::core::Result<BSTR> {
+        let mut out = core::mem::ManuallyDrop::new(BSTR::default());
+        let hr = (Interface::vtable(self).get_toolkitName)(
+            Interface::as_raw(self),
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            let _ = core::mem::ManuallyDrop::into_inner(out);
+            return Err(hr.into());
+        }
+        Ok(core::mem::ManuallyDrop::into_inner(out))
+    }
+}

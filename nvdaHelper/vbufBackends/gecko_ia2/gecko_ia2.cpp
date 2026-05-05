@@ -194,28 +194,34 @@ inline void GeckoVBufBackend_t::fillTableCellInfo_IATable2(VBufStorage_controlFi
 	fillTableHeaders(node, paccTableCell, &IAccessibleTableCell::get_rowHeaderCells, L"table-rowheadercells");
 }
 
-void GeckoVBufBackend_t::versionSpecificInit(IAccessible2* pacc) {
-	IServiceProvider* serv = NULL;
-	if (pacc->QueryInterface(IID_IServiceProvider, (void**)&serv) != S_OK)
-		return;
-	IAccessibleApplication* iaApp = NULL;
-	if (serv->QueryService(IID_IAccessibleApplication, IID_IAccessibleApplication, (void**)&iaApp) != S_OK) {
-		serv->Release();
-		return;
-	}
-	serv->Release();
+#ifdef NVDA_HAS_RUST_HELPERS
+extern "C" {
+	typedef void (*nvda_ia2_toolkit_name_callback)(
+		void* ctx,
+		const wchar_t* ptr,
+		size_t len);
 
-	BSTR toolkitName = NULL;
-	if (iaApp->get_toolkitName(&toolkitName) != S_OK) {
-		iaApp->Release();
-		return;
-	}
-	if(toolkitName) {
-		this->toolkitName = std::wstring(toolkitName, SysStringLen(toolkitName));
-	}
-	iaApp->Release();
-	SysFreeString(toolkitName);
+	bool nvda_ia2_get_toolkit_name(
+		void* pacc,
+		void* ctx,
+		nvda_ia2_toolkit_name_callback cb);
 }
+
+namespace {
+	void toolkitName_cb(void* ctx, const wchar_t* ptr, size_t len) {
+		try {
+			static_cast<std::wstring*>(ctx)->assign(ptr, len);
+		} catch (const std::bad_alloc&) {
+			// Suppressed to prevent UB from a C++ exception crossing the
+			// extern "C" frame back into Rust.
+		}
+	}
+}
+
+void GeckoVBufBackend_t::versionSpecificInit(IAccessible2* pacc) {
+	nvda_ia2_get_toolkit_name(pacc, &this->toolkitName, toolkitName_cb);
+}
+#endif
 
 
 class LabelInfo {
