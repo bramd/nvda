@@ -49,72 +49,65 @@ bool hasXmlRoleAttribContainingValue(const map<wstring,wstring>& attribsMap, con
 	return attribsMapIt != attribsMap.end() && attribsMapIt->second.find(roleName) != wstring::npos;
 }
 
+#ifdef NVDA_HAS_RUST_HELPERS
+extern "C" {
+	typedef void (*nvda_ia2_relation_target_callback)(
+		void* ctx,
+		void* iaccessible2_ptr);
+
+	bool nvda_ia2_get_relation_targets_of_type(
+		void* pacc2_2,
+		const wchar_t* relation_ptr,
+		size_t relation_len,
+		int max_targets,
+		bool is_chrome,
+		void* ctx,
+		nvda_ia2_relation_target_callback cb);
+}
+
+namespace {
+	void relationTarget_cb(void* ctx, void* p) {
+		auto* vec = static_cast<std::vector<CComQIPtr<IAccessible2>>*>(ctx);
+		// p is either null (QI to IAccessible2 failed on the Rust side --
+		// preserve the C++ original's behavior of pushing a null entry)
+		// or an AddRef'd IAccessible2*. Attach to a CComPtr so the
+		// CComQIPtr's QI sees the existing AddRef'd pointer; the
+		// CComQIPtr move-constructs from CComPtr without an extra AddRef.
+		if (!p) {
+			vec->emplace_back();
+			return;
+		}
+		CComPtr<IAccessible2> acc;
+		acc.Attach(static_cast<IAccessible2*>(p));
+		vec->emplace_back(acc);
+	}
+}
+
 std::vector<CComQIPtr<IAccessible2>> GeckoVBufBackend_t::getRelationElementsOfType(
 	LPCOLESTR ia2TargetRelation,
 	IAccessible2_2* element,
 	const std::optional<std::size_t> numRelations
 ) {
 	constexpr long FETCH_ALL = 0l;  // See docs of relationTargetsOfType.
-	long nTargets = static_cast<long>(
+	const long maxTargets = static_cast<long>(
 		min<size_t>(
-			numRelations.value_or(FETCH_ALL),  // Default is to fetch all relations.
+			numRelations.value_or(FETCH_ALL),
 			static_cast<size_t>((numeric_limits<long>::max)())
 		)
 	);
-
 	const bool isChrome = this->toolkitName.compare(L"Chrome") == 0;
-	if (isChrome) {
-		// Due to a bug in Chrome, nTargets is not respected https://crbug.com/1399184
-		// As a work around, request all targets (by setting numRelations to 0).
-		// There is no major performance hit to fetch all targets in Chrome as Chrome is already fetching all targets either way.
-		// In Firefox there would be extra cross-process calls.
-		nTargets = FETCH_ALL;
-	}
-	// the relation type string *must* be passed correctly as a BSTR otherwise we can see crashes in 32 bit Firefox.
-	CComBSTR relationAsBSTR(ia2TargetRelation);
-
-	IUnknown** targets = nullptr;
-	/*
-	relationTargetsOfType(
-		// type: use IA2_RELATION_* constants
-		// from 'include/ia2/api/AccessibleRelation.idl' becomes 'build/<arch>/ia2.h'
-		[in] BSTR type,
-		[in] long maxTargets, // 0 means all.
-		[out, size_is(,*nTargets)] IUnknown ***targets, // targets data.
-		[out, retval] long *nTargets // number targets fetched
-	)*/
-	HRESULT res = element->get_relationTargetsOfType(
-		relationAsBSTR,
-		nTargets,
-		&targets,
-		&nTargets
-	);
-	if (res != S_OK) {
-		// Return early on failure. Due to failure, there is no need to CoTaskMemFree
-		// the targets parameter can be considered invalid.
-		return {};
-	}
-	// Grab all the returned IUnknowns and store them as a collection of smart pointers
-	// so that any further returns will correctly release all the objects.
-	const std::size_t numFetched = static_cast<std::size_t>(nTargets >= 0 ? nTargets : 0);  // handle negative numbers for signed conversion.
-	const std::size_t numToReturn = std::min<std::size_t>(  // Limit to numRelations, the amount expected by the caller.
-		numRelations.value_or(numFetched),
-		numFetched
-	);
-	std::vector< CComQIPtr<IAccessible2>> smartTargets;
-	for(std::size_t i = 0; i < numToReturn; ++i) {
-		CComPtr<IUnknown> punk;
-		punk.Attach(targets[i]);
-		smartTargets.emplace_back(punk);
-	}
-	// we can now free the memory that Gecko  allocated to give us  the IUnknowns
-	CoTaskMemFree(targets);
-	if(nTargets==0) {
-		LOG_DEBUG(L"relationTargetsOfType for " << relationAsBSTR.m_str << L" found no targets");
-		return {};
-	}
-	return smartTargets;
+	std::vector<CComQIPtr<IAccessible2>> result;
+	const size_t relationLen = wcslen(ia2TargetRelation);
+	nvda_ia2_get_relation_targets_of_type(
+		element,
+		ia2TargetRelation, relationLen,
+		maxTargets,
+		isChrome,
+		&result,
+		relationTarget_cb);
+	return result;
 }
+#endif
 
 const wchar_t EMBEDDED_OBJ_CHAR = 0xFFFC;
 // Always render a space for "empty" / metadata only
