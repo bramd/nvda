@@ -363,26 +363,38 @@ CComPtr<IAccessible2> getTextBoxInComboBox(
 #endif
 
 
+#ifdef NVDA_HAS_RUST_HELPERS
+extern "C" {
+	typedef void (*nvda_ia2_role_string_callback)(
+		void* ctx,
+		const wchar_t* role_string_ptr,
+		size_t role_string_len);
+
+	int nvda_ia2_get_role_long_role_string(
+		void* pacc,
+		int childid,
+		void* ctx,
+		nvda_ia2_role_string_callback cb);
+}
+
+namespace {
+	void roleString_cb(void* ctx, const wchar_t* p, size_t n) {
+		auto* out = static_cast<CComBSTR*>(ctx);
+		// Allocate a fresh BSTR -- the (p, n) range borrows from the
+		// VARIANT inside the Rust shim and may not outlive the call.
+		*out = CComBSTR(static_cast<int>(n), p);
+	}
+}
+
 std::tuple<long, CComBSTR> getRoleLongRoleString(CComPtr<IAccessible2> pacc, CComVariant varChild) {
-	long role = 0;
 	CComBSTR roleString;
-	CComVariant varRole;
-	if (pacc->role(&role) != S_OK) {
-		role = IA2_ROLE_UNKNOWN;
-	}
-	if (role == 0) {
-		if (pacc->get_accRole(varChild, &varRole) != S_OK) {
-			LOG_DEBUG(L"accRole failed");
-		}
-		if (varRole.vt == VT_I4) {
-			role = varRole.lVal;
-		}
-		else if (varRole.vt == VT_BSTR) {
-			roleString = varRole.bstrVal;
-		}
-	}
+	const int childId = (varChild.vt == VT_I4) ? static_cast<int>(varChild.lVal) : 0;
+	long role = static_cast<long>(
+		nvda_ia2_get_role_long_role_string(
+			pacc, childId, &roleString, roleString_cb));
 	return std::make_tuple(role, roleString);
 }
+#endif
 
 
 const vector<wstring>ATTRLIST_ROLES(1, L"IAccessible2::attribute_xml-roles");
