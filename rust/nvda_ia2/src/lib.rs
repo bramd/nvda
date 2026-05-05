@@ -22,5 +22,6 @@ pub mod find_descendant;
 pub mod hyperlink_getter;
 pub mod interfaces;
 pub mod live_regions;
+pub mod selected_item;
 pub mod text;
 pub mod types;
