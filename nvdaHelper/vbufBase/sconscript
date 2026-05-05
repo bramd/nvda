@@ -11,6 +11,7 @@ vbufBaseObjs = [
 		"storage.cpp",
 		"utils.cpp",
 		"backend.cpp",
+		"c_shim.cpp",
 	)
 ]
 
