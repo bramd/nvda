@@ -675,6 +675,96 @@ pub struct IAccessibleHyperlink_Vtbl {
     // Methods deliberately omitted -- this PR only needs the IID for QI.
 }
 
+// --- IAccessibleTable2 ----------------------------------------------------
+//
+// Inherits from IUnknown. Vtable order (from AccessibleTable2.idl):
+//   1.  get_cellAt
+//   2.  get_caption
+//   3.  get_columnDescription
+//   4.  get_nColumns          <-- used
+//   5.  get_nRows             <-- used
+//   6.  get_nSelectedCells
+//   7.  get_nSelectedColumns
+//   8.  get_nSelectedRows
+//   9.  get_rowDescription
+//   10. get_selectedCells
+//   11. get_selectedColumns
+//   12. get_selectedRows
+//   13. get_summary
+//   14. get_isColumnSelected
+//   15. get_isRowSelected
+//   16. selectRow
+//   17. selectColumn
+//   18. unselectRow
+//   19. unselectColumn
+//   20. get_modelChange
+
+windows_core::imp::define_interface!(
+    IAccessibleTable2,
+    IAccessibleTable2_Vtbl,
+    0x6167f295_06f0_4cdd_a1fa_02e25153d869
+);
+impl core::ops::Deref for IAccessibleTable2 {
+    type Target = IUnknown;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+windows_core::imp::interface_hierarchy!(IAccessibleTable2, IUnknown);
+
+#[repr(C)]
+pub struct IAccessibleTable2_Vtbl {
+    pub base__: IUnknown_Vtbl,
+    pub get_cellAt: usize,
+    pub get_caption: usize,
+    pub get_columnDescription: usize,
+    pub get_nColumns: unsafe extern "system" fn(
+        this: *mut core::ffi::c_void,
+        column_count: *mut i32,
+    ) -> HRESULT,
+    pub get_nRows: unsafe extern "system" fn(
+        this: *mut core::ffi::c_void,
+        row_count: *mut i32,
+    ) -> HRESULT,
+    // The remaining slots (get_nSelectedCells through get_modelChange)
+    // are not exercised yet; declared as opaque placeholders to keep
+    // the vtable layout correct when callers cast a server's vptr.
+}
+
+impl IAccessibleTable2 {
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_nColumns(&self) -> windows::core::Result<i32> {
+        let mut out: i32 = 0;
+        let hr = (Interface::vtable(self).get_nColumns)(
+            Interface::as_raw(self),
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok(out)
+    }
+
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_nRows(&self) -> windows::core::Result<i32> {
+        let mut out: i32 = 0;
+        let hr = (Interface::vtable(self).get_nRows)(
+            Interface::as_raw(self),
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok(out)
+    }
+}
+
 // --- IAccessibleTableCell -------------------------------------------------
 //
 // Inherits from IUnknown. Vtable order (from AccessibleTableCell.idl):
