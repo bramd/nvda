@@ -26,4 +26,5 @@ pub mod live_regions;
 pub mod relation_targets;
 pub mod selected_item;
 pub mod text;
+pub mod textbox_in_combobox;
 pub mod types;
