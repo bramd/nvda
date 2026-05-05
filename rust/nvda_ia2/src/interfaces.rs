@@ -73,7 +73,7 @@ pub struct IAccessible2_Vtbl {
     pub get_nRelations: usize,
     pub get_relation: usize,
     pub get_relations: usize,
-    pub role: usize,
+    pub role: unsafe extern "system" fn(this: *mut core::ffi::c_void, role: *mut i32) -> HRESULT,
     pub scrollTo: usize,
     pub scrollToPoint: usize,
     pub get_groupPosition: usize,
@@ -141,6 +141,29 @@ impl IAccessible2 {
         Ok(out)
     }
 
+    /// Returns the IA2 role for this object. See `IA2Role` in
+    /// `include/ia2/api/AccessibleRole.idl` for the IA2-specific role
+    /// values; standard MSAA `ROLE_SYSTEM_*` values are also passed
+    /// through this method for convenience. The IDL names the method
+    /// `role` (not `get_role`) per the comment at
+    /// `include/ia2/api/Accessible2.idl:443`.
+    ///
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn role(&self) -> windows::core::Result<i32> {
+        let mut out: i32 = 0;
+        let hr = (Interface::vtable(self).role)(
+            Interface::as_raw(self),
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok(out)
+    }
+
     /// Returns the IA2 unique ID for this object. See
     /// `include/ia2/api/Accessible2.idl` for the IDL contract.
     ///
@@ -158,6 +181,88 @@ impl IAccessible2 {
             return Err(hr.into());
         }
         Ok(out)
+    }
+}
+
+// --- IAccessible2_2 -------------------------------------------------------
+//
+// Inherits from IAccessible2. Vtable order (from Accessible2_2.idl):
+//   1. get_attribute             -- not used yet
+//   2. get_accessibleWithCaret   -- not used yet
+//   3. get_relationTargetsOfType -- used by gecko_ia2 getRelationElementsOfType
+
+windows_core::imp::define_interface!(
+    IAccessible2_2,
+    IAccessible2_2_Vtbl,
+    0x6c9430e9_299d_4e6f_bd01_a82a1e88d3ff
+);
+impl core::ops::Deref for IAccessible2_2 {
+    type Target = IAccessible2;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+windows_core::imp::interface_hierarchy!(
+    IAccessible2_2,
+    IUnknown,
+    IAccessible,
+    IAccessible2
+);
+
+#[repr(C)]
+pub struct IAccessible2_2_Vtbl {
+    pub base__: IAccessible2_Vtbl,
+    pub get_attribute: usize,
+    pub get_accessibleWithCaret: usize,
+    pub get_relationTargetsOfType: unsafe extern "system" fn(
+        this: *mut core::ffi::c_void,
+        type_: core::mem::ManuallyDrop<BSTR>,
+        max_targets: i32,
+        targets: *mut *mut *mut core::ffi::c_void,
+        n_targets: *mut i32,
+    ) -> HRESULT,
+}
+
+impl IAccessible2_2 {
+    /// Returns the (server-allocated array, count) of relation targets of
+    /// the given relation type. The output array is `IUnknown**`
+    /// allocated with `CoTaskMemAlloc`; callers must free it via
+    /// `CoTaskMemFree` and `Release` each element they keep.
+    ///
+    /// `S_FALSE` is treated as "no targets" (returns `(null, 0)`); the
+    /// caller should not dereference a null pointer.
+    ///
+    /// # Safety
+    ///
+    /// The underlying COM pointer wrapped by `self` must point to a live,
+    /// well-formed `IAccessible2_2` implementation for the duration of
+    /// this call. The caller is responsible for taking ownership of the
+    /// returned `IUnknown` array per the IDL contract.
+    pub unsafe fn get_relationTargetsOfType(
+        &self,
+        relation: &BSTR,
+        max_targets: i32,
+    ) -> windows::core::Result<(*mut *mut core::ffi::c_void, i32)> {
+        let mut targets: *mut *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut count: i32 = 0;
+        // The IDL declares `[in] BSTR type` -- the server does not take
+        // ownership, but the COM ABI passes BSTRs by value with caller-
+        // owned lifetime. We wrap the borrowed BSTR in ManuallyDrop so
+        // it is not freed when the call returns.
+        let raw_bstr =
+            unsafe { core::ptr::read(relation as *const BSTR) };
+        let manual = core::mem::ManuallyDrop::new(raw_bstr);
+        let hr = (Interface::vtable(self).get_relationTargetsOfType)(
+            Interface::as_raw(self),
+            manual,
+            max_targets,
+            &mut targets as *mut _,
+            &mut count as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok((targets, count))
     }
 }
 
