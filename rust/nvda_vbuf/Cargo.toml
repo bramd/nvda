@@ -1,0 +1,11 @@
+[package]
+name = "nvda_vbuf"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# rlib only -- consumed by other Rust crates (nvda_ia2, future nvda_*
+# vbuf backends). The extern "C" symbols this binds are defined by
+# nvdaHelper/vbufBase/c_shim.cpp and reach the final DLL through
+# whichever Rust crate links the consumer.
+crate-type = ["rlib"]

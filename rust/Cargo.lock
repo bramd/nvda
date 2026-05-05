@@ -103,6 +103,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvda_vbuf"
+version = "0.1.0"
+
+[[package]]
 name = "nvda_wasapi"
 version = "0.1.0"
 dependencies = [
