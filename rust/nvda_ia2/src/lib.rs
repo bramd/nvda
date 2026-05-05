@@ -24,6 +24,7 @@ pub mod hyperlink_getter;
 pub mod interfaces;
 pub mod live_regions;
 pub mod relation_targets;
+pub mod role_long_string;
 pub mod selected_item;
 pub mod text;
 pub mod textbox_in_combobox;
