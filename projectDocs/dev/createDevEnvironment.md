@@ -79,10 +79,15 @@ Install the python version listed in [.python-versions](../../.python-versions)
 #### Rust Toolchain
 
 [Rust](https://www.rust-lang.org/tools/install), latest stable version.
-The Rust toolchain is used to build native Rust modules (e.g. `nvdaRust`) that are part of NVDA's audio pipeline.
+The Rust toolchain is used to build native Rust modules (e.g. `nvdaRust`) that are part of NVDA's audio pipeline, and the `nvda_input_hooks` / `nvda_ia2` static libs that link into `nvdaHelperRemote.dll`.
 Install via [rustup](https://rustup.rs/).
 The `nvdaRust` package is a uv workspace member (see `rust/nvda_python/`), so `uv sync` automatically compiles the Rust code via [maturin](https://www.maturin.rs/) and installs it into the virtual environment.
-No additional tools need to be installed beyond the Rust compiler itself.
+
+After installing Rust, install the build targets for the NVDA arches you intend to build (the host triple is installed automatically by rustup; only add what you need):
+
+```cmd
+rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc aarch64-pc-windows-msvc arm64ec-pc-windows-msvc
+```
 
 After editing Rust source files, rebuild with:
 
