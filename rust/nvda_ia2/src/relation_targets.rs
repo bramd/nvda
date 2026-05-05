@@ -26,6 +26,69 @@ pub type RelationTargetCallback = unsafe extern "C" fn(
     iaccessible2_ptr: *mut core::ffi::c_void,
 );
 
+/// Rust-native variant of `getRelationElementsOfType`. Returns the
+/// targets in the same shape as the C++ original: a `Vec` whose entries
+/// are `Some(acc)` for each successful QI to `IAccessible2`, or `None`
+/// where the COM server returned a slot but the QI failed (mirroring
+/// the C++ vector-of-`CComQIPtr` push of a null entry).
+///
+/// Returns an empty `Vec` on any COM failure.
+///
+/// # Safety
+///
+/// `acc` must be a valid `IAccessible2_2`. (Holding a `&` is sufficient
+/// — `windows-rs` lifts the AddRef/Release contract.)
+pub fn get_relation_targets_of_type_native(
+    acc: &IAccessible2_2,
+    relation: &[u16],
+    max_targets: i32,
+    is_chrome: bool,
+) -> Vec<Option<IAccessible2>> {
+    let relation_bstr = match BSTR::from_wide(relation) {
+        Ok(b) => b,
+        Err(_) => return Vec::new(),
+    };
+    let effective_max = if is_chrome { 0 } else { max_targets };
+
+    let (raw_targets, count) = match unsafe {
+        acc.get_relationTargetsOfType(&relation_bstr, effective_max)
+    } {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let count = count.max(0) as usize;
+    if raw_targets.is_null() || count == 0 {
+        unsafe { CoTaskMemFree(Some(raw_targets as *const _)) };
+        return Vec::new();
+    }
+
+    let num_to_return = if max_targets <= 0 {
+        count
+    } else {
+        count.min(max_targets as usize)
+    };
+
+    let mut out: Vec<Option<IAccessible2>> = Vec::with_capacity(num_to_return);
+    for i in 0..count {
+        let raw_iunk = unsafe { core::ptr::read(raw_targets.add(i)) };
+        if i >= num_to_return {
+            if !raw_iunk.is_null() {
+                drop(unsafe { IUnknown::from_raw(raw_iunk) });
+            }
+            continue;
+        }
+        if raw_iunk.is_null() {
+            out.push(None);
+            continue;
+        }
+        let unk: IUnknown = unsafe { IUnknown::from_raw(raw_iunk) };
+        out.push(unk.cast::<IAccessible2>().ok());
+    }
+
+    unsafe { CoTaskMemFree(Some(raw_targets as *const _)) };
+    out
+}
+
 /// C-callable replacement for `getRelationElementsOfType`.
 ///
 /// `pacc2_2` is borrowed (no `Release`). `relation_ptr` + `relation_len`
