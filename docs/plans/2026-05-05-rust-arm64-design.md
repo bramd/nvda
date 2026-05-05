@@ -1,28 +1,28 @@
-# Design: ARM64 build support for the Rust crates
+# Design: cross-arch build support for the Rust crates
 
 **Status:** Draft (2026-05-05)
 
 ## Goal
 
-Make every `nvda_*` Rust crate build for ARM64 in addition to x86_64, and link the resulting libraries into the existing ARM64 NVDA build. Drop the per-port `#ifdef _M_X64` C++ fallbacks once both archs route through Rust on the relevant call paths.
+Make the `nvda_input_hooks` and `nvda_ia2` Rust static libs build for every arch that produces a `nvdaHelperRemote.dll` -- x86, x86_64, arm64, and arm64ec -- and link them into the corresponding C++ DLL builds. Drop the per-port `#ifdef _M_X64` C++ fallbacks once every arch routes through Rust.
 
 ## Non-goals
 
-* Adding 32-bit (`x86`) Rust support. NVDA's `x86` build is the legacy `synthDriverHost32` shim; nothing in our `nvda_*` crates needs to load there.
-* CI for ARM64. The user wants to opt in once the build works locally.
+* Cross-arch builds of the `nvdaRust.pyd` Python extension (the maturin output). NVDA's main Python process is 64-bit on x64 systems and 64-bit on ARM64 systems; the 32-bit `synthDriverHost32` is a separate child Python that does not import `nvdaRust`. Cross-arch maturin is bumped to a separate investigation if/when ARM64 NVDA builds become a target -- see "ARM64 maturin" below.
+* CI for the new arches. The user wants to opt in once the build works locally.
 * Refactoring the Rust crates themselves -- the libraries are already cross-arch via windows-rs.
 
 ## Background — what already works
 
-* **C++ side, ARM64**: `SConstruct:241` clones `envArm64` with `TARGET_ARCH="arm64"` and runs `archBuild_sconscript` with `variant_dir="build/arm64"`. The C++ helper DLLs already build for ARM64 today; they just compile the C++ `#else` branches (the verbatim originals) for every helper we've ported.
-* **Cargo workspace**: `windows-rs` 0.58 is cross-arch; the Rust source has no `#[cfg(target_arch = "x86_64")]` -- everything compiles for ARM64 once the toolchain target is installed.
+* **C++ side, all arches**: `SConstruct:295-318` clones `env32`/`env64`/`envArm64`/`envArm64EC` and runs `archBuild_sconscript` with `variant_dir="build/x86"`/`build/x86_64`/`build/arm64`/`build/arm64ec`. Every flavour of `nvdaHelperRemote.dll` is built today; they just compile the C++ `#else` branches (the verbatim originals) for every helper we've ported. The x86 DLL is injected into 32-bit target processes; the arm64ec DLL is for arm64ec target processes; etc.
+* **Cargo workspace**: `windows-rs` 0.58 is cross-arch; the Rust source has no `#[cfg(target_arch = "x86_64")]` -- everything compiles for x86, arm64, and arm64ec once the toolchain target is installed (probed empirically below).
 * **Python ARM64 support**: `pyproject.toml` requires `>=3.13,<3.14` and `uv` is used for env management. NVDA already ships ARM64 builds with an ARM64 Python interpreter; the maturin extension just hasn't been wired up for it.
 
 ## What's missing
 
 Three pieces, in order of dependency:
 
-1. **`nvda_input_hooks` and `nvda_ia2` static libs for ARM64**: the SCons block in `nvdaHelper/remote/sconscript:130-194` is currently gated `if isX64:` and invokes cargo without a `--target` flag (so it builds for the host triple). We need to broaden the gate to also fire for `arm64` and pass `--target aarch64-pc-windows-msvc` when cross-compiling.
+1. **`nvda_input_hooks` and `nvda_ia2` static libs for x86/arm64/arm64ec**: the SCons block in `nvdaHelper/remote/sconscript:130-194` is currently gated `if isX64:` and invokes cargo without a `--target` flag (so it builds for the host triple). We need to broaden the gate to fire for every arch that produces `nvdaHelperRemote.dll` (x86, x86_64, arm64 native, arm64ec) and pass the matching `--target` triple to cargo.
 2. **`nvdaRust` Python extension for ARM64**: `SConstruct:558-617`'s `buildNvdaRust` calls `uvx maturin develop`, which builds for whatever Python interpreter `uvx` chose. For an ARM64 NVDA build the .pyd has to be ARM64-native; on a non-ARM64 host that means cross-compilation via `maturin build --target aarch64-pc-windows-msvc -i <arm64-python>`.
 3. **Drop `#ifdef _M_X64` fallbacks**: every C++ delegation we've shipped (PR 1-5 + getSelectedItem + IAccessible2FromIdentifier + WASAPI) has the form `#ifdef _M_X64 ... call Rust shim ... #else ... verbatim C++ ... #endif`. Once ARM64 routes through Rust too, the `#ifdef` is conditionally dead. Replace with a single project-level macro and prune the verbatim C++ for files that are fully ported.
 
@@ -54,13 +54,14 @@ if isX64:
 
 Two changes:
 
-1. **Broaden the gate**: `isRustArch = env["TARGET_ARCH"] in ("x86_64", "arm64")`. The 32-bit and arm64ec variants don't get Rust libs (they're not on the path that loads our COM helpers).
-2. **Pass `--target` and adjust output paths**: when `TARGET_ARCH == "arm64"`, append `--target aarch64-pc-windows-msvc` to the cargo invocation and prefix the output paths with `aarch64-pc-windows-msvc/`. For host-arch builds (x86_64 on x64 host) we can keep the current "no `--target`" behaviour, OR normalise both archs to use `--target` so paths are predictable. **Decision:** normalise to always use `--target` -- that way the SCons-managed lib path is always `<rustTargetDir>/<triple>/release/<lib>` regardless of arch, and cross-vs-native cargo behaviour is consistent.
+1. **Broaden the gate**: `isRustArch = env["TARGET_ARCH"] in ("x86", "x86_64", "arm64")`. The arm64ec sub-variant is implied by `TARGET_ARCH == "arm64" and isArm64EC`; both arm64-native and arm64ec link Rust libs (different triples).
+2. **Pass `--target` and adjust output paths**: pick the matching triple per arch and append `--target <triple>` to the cargo invocation, with the output paths under `<rustTargetDir>/<triple>/release/`. The current "no `--target`" host-arch behaviour disappears; every arch goes through `--target` so the SCons-managed lib path is predictable and cross-vs-native cargo behaviour is consistent.
 
 The triple lookup:
 
 | `TARGET_ARCH` | `isArm64EC` | Cargo target triple |
 | --- | --- | --- |
+| `x86` | n/a | `i686-pc-windows-msvc` |
 | `x86_64` | n/a | `x86_64-pc-windows-msvc` |
 | `arm64` | `False` | `aarch64-pc-windows-msvc` |
 | `arm64` | `True` | `arm64ec-pc-windows-msvc` |
@@ -88,7 +89,7 @@ if isRustArch:
     ]
 ```
 
-**Toolchain prerequisite**: `rustup target add aarch64-pc-windows-msvc` must be run on each dev machine that builds ARM64. We document this in the README's build-prereqs section. A graceful-degradation check (`rustc --print target-list | grep aarch64`) before invoking cargo would surface the missing toolchain with a clear error.
+**Toolchain prerequisite**: each non-host triple needs `rustup target add <triple>`. We document this in the README's build-prereqs section -- list the four triples with a one-line `rustup target add ...` command per dev workstation. A graceful-degradation check before invoking cargo (probe `rustc --print sysroot/lib/rustlib/<triple>` exists) would surface a missing toolchain with a clear error.
 
 ### Piece 2: maturin for ARM64
 
@@ -143,14 +144,14 @@ For the `#else` verbatim C++: **drop it** for files where every Rust port alread
 
 | File | Change |
 | --- | --- |
-| `nvdaHelper/remote/sconscript` | broaden `isX64` gate to `isRustArch`, pass `--target` to cargo, normalise lib paths to include the triple |
-| `readme.md` (or `projectDocs/dev/buildingNVDA.md` if that's the canonical build-prereq doc) | add `rustup target add aarch64-pc-windows-msvc` to the prereqs |
+| `nvdaHelper/remote/sconscript` | broaden `isX64` gate to `isRustArch` (covering x86, x86_64, arm64-native, arm64ec); always pass `--target` to cargo; lib paths include the triple |
+| `readme.md` (or `projectDocs/dev/buildingNVDA.md` if that's the canonical build-prereq doc) | add `rustup target add` lines for the four triples to the prereqs |
 
 **Modify (piece 3):**
 
 | File | Change |
 | --- | --- |
-| `nvdaHelper/archBuild_sconscript` | add `NVDA_HAS_RUST_HELPERS` to `CPPDEFINES` when `TARGET_ARCH in ("x86_64", "arm64")` |
+| `nvdaHelper/archBuild_sconscript` | add `NVDA_HAS_RUST_HELPERS` to `CPPDEFINES` when `TARGET_ARCH in ("x86", "x86_64", "arm64")` |
 | Each `*.cpp` we've ported | replace `#ifdef _M_X64` with `#ifdef NVDA_HAS_RUST_HELPERS`; drop `#else` for fully-ported files |
 
 ## Testing
@@ -158,12 +159,13 @@ For the `#else` verbatim C++: **drop it** for files where every Rust port alread
 **Piece 1**:
 
 * Local x64 build still produces an identical-behaviour `nvdaHelperRemote.dll` (maybe a slightly different binary because the cargo `--target` flag may change rustc's default codegen settings; verify by running existing smoke tests).
-* The friend builds on ARM64 VM: `scons source` should produce `source/lib/arm64/nvdaHelperRemote.dll` containing the Rust shims, and ARM64 NVDA should run with no `nvda_ia2` panics in the log.
-* Smoke tests: re-run the manual smoke tests from the recent porting PRs (Firefox heading nav, link reading, live regions, caret nav, audio output) on the ARM64 build.
+* x86 helper DLL builds and links: `scons source` on the local x64 host should produce `source/lib/x86/nvdaHelperRemote.dll` containing the Rust shims for x86 (cross-compiled). Smoke-test by running NVDA against a 32-bit Firefox or other 32-bit Gecko-based app and exercising the same browse-mode commands as the x64 smoke tests.
+* The friend builds on ARM64 VM: `scons source` should produce `source/lib/arm64/nvdaHelperRemote.dll` and `source/lib/arm64ec/nvdaHelperRemote.dll` (both flavours) containing the Rust shims, and ARM64 NVDA should run with no `nvda_ia2` panics in the log.
+* Smoke tests: re-run the manual smoke tests from the recent porting PRs (Firefox heading nav, link reading, live regions, caret nav, audio output) on the ARM64 build. arm64ec coverage is implicit in any 64-bit Edge / arm64ec Edge plugin scenarios.
 
 **Piece 2**: ARM64 NVDA loads and `nvdaRust` is importable. Audio output works (this is the only critical user of `nvdaRust` today since `nvwave.py` requires it).
 
-**Piece 3**: existing x64 binaries should be byte-identical to before piece 3 (the macro substitution doesn't change x64 codegen). ARM64 binaries should now contain Rust call paths.
+**Piece 3**: existing x64 binaries should be byte-identical to before piece 3 (the macro substitution doesn't change x64 codegen). x86, ARM64, and ARM64EC binaries should now contain Rust call paths.
 
 ## Commit plan
 
@@ -184,16 +186,16 @@ NVDA's SCons builds the helper DLLs unconditionally for every arch in `archBuild
 * **Known open issue ([rust-lang/rust#131172](https://github.com/rust-lang/rust/issues/131172))**: arm64ec sets `target_arch = "arm64ec"` rather than `"aarch64"`. Code using `#[cfg(target_arch = "aarch64")]` won't fire on arm64ec. Our `nvda_*` crates have no such gates but **windows-rs internals might** -- this is the main probe-test risk.
 * **PyO3 / maturin / arm64ec**: no issues filed in either repo. PyO3 uses raw-dylib for Python linkage, which should work for any Tier 2 target -- but untested in practice for arm64ec.
 
-**Probe result (2026-05-05):** ran `cargo build --release --target arm64ec-pc-windows-msvc --package nvda_ia2 --package nvda_input_hooks` against windows-rs 0.58 with the existing source. Build succeeds clean; windows-rs routes arm64ec through its `windows_x86_64_msvc` link layer (consistent with arm64ec's x64-ABI outside-the-binary contract). `target_arch = "arm64ec"` quirk does not affect us because our crate uses no `cfg(target_arch=...)` gates and windows-rs's internal gating evidently handles the case correctly. aarch64-pc-windows-msvc also builds clean.
+**Probe result (2026-05-05):** ran `cargo build --release --target <triple> --package nvda_ia2 --package nvda_input_hooks` for all four non-x86_64 triples against windows-rs 0.58 with the existing source. All four build clean. windows-rs routes each triple through the matching `windows_*_msvc` link layer (`windows_i686_msvc`, `windows_aarch64_msvc`, `windows_x86_64_msvc` for arm64ec). The `target_arch = "arm64ec"` quirk ([rust-lang/rust#131172](https://github.com/rust-lang/rust/issues/131172)) does not affect us because our crates have no `cfg(target_arch=...)` gates and windows-rs's internal gating evidently handles the case correctly.
 
-**Updated decision for piece 1:** include arm64ec alongside arm64 in the cargo step. Both targets build the static libs; both link into their respective `nvdaHelperRemote.dll` variants. The `RUST_TARGET_TRIPLE` table grows by one row.
+**Updated decision for piece 1:** include x86, arm64-native, and arm64ec alongside x86_64 in the cargo step. All four targets build the static libs; all four link into their respective `nvdaHelperRemote.dll` variants.
 
 **Updated decision for piece 2 (maturin)**: keep arm64ec OUT of scope. arm64ec Python extensions via PyO3 are uncharted; defer until someone has a concrete reason to need a Rust-built `nvdaRust.pyd` for arm64ec processes (which today is a small slice of the user base on top of an already-small ARM64 slice). The arm64ec NVDA build can use whatever non-Rust audio/text path NVDA had pre-Rust... wait, that's not actually an option since `nvwave.py` requires `nvdaRust.wasapi`. **Revised:** the arm64ec NVDA build needs to load an arm64ec `nvdaRust.pyd`, OR the arm64ec Python in NVDA's bundle needs to load an x64 `nvdaRust.pyd` via x64 emulation. The latter is plausible (arm64ec is built for exactly this kind of cross-arch code in one process) but needs to be verified before committing to either path. **Action:** bump this to a proper open question; treat piece 2 + arm64ec as a separate investigation.
 
 **Updated decision for piece 3:**
 
 * Replace `#ifdef _M_X64` with `#ifdef NVDA_HAS_RUST_HELPERS` ✓
-* Define `NVDA_HAS_RUST_HELPERS` for both `TARGET_ARCH == "x86_64"` and `TARGET_ARCH == "arm64"` (covering both arm64 and arm64ec, since both link the Rust libs per the probe above).
+* Define `NVDA_HAS_RUST_HELPERS` for `TARGET_ARCH in ("x86", "x86_64", "arm64")` (covering arm64 and arm64ec since both link the Rust libs per the probe above).
 * `#else` C++ verbatim can now be safely dropped for fully-ported files because every arch that compiles `nvdaHelperRemote.dll` also routes through Rust.
 
 ## Open questions
