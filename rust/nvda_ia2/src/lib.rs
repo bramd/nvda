@@ -32,6 +32,7 @@ pub mod live_regions;
 pub mod relation_targets;
 pub mod role_long_string;
 pub mod selected_item;
+pub mod table_cell;
 pub mod text;
 pub mod textbox_in_combobox;
 pub mod toolkit_name;

@@ -21,7 +21,7 @@
 //! `windows::Win32::UI::Accessibility`).
 
 use windows::core::{BSTR, HRESULT, IUnknown, IUnknown_Vtbl, Interface};
-use windows::Win32::Foundation::E_POINTER;
+use windows::Win32::Foundation::{E_POINTER, HWND};
 use windows::Win32::UI::Accessibility::{IAccessible, IAccessible_Vtbl};
 
 use crate::types::IA2TextSegment;
@@ -84,7 +84,7 @@ pub struct IAccessible2_Vtbl {
     pub get_extendedStates: usize,
     pub get_localizedExtendedStates: usize,
     pub get_uniqueID: unsafe extern "system" fn(this: *mut core::ffi::c_void, unique_id: *mut i32) -> HRESULT,
-    pub get_windowHandle: usize,
+    pub get_windowHandle: unsafe extern "system" fn(this: *mut core::ffi::c_void, window_handle: *mut HWND) -> HRESULT,
     pub get_indexInParent: usize,
     pub get_locale: usize,
     pub get_attributes: unsafe extern "system" fn(this: *mut core::ffi::c_void, attributes: *mut core::mem::ManuallyDrop<BSTR>) -> HRESULT,
@@ -174,6 +174,24 @@ impl IAccessible2 {
     pub unsafe fn get_uniqueID(&self) -> windows::core::Result<i32> {
         let mut out: i32 = 0;
         let hr = (Interface::vtable(self).get_uniqueID)(
+            Interface::as_raw(self),
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok(out)
+    }
+
+    /// Returns the host window handle for this object.
+    ///
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_windowHandle(&self) -> windows::core::Result<HWND> {
+        let mut out = HWND::default();
+        let hr = (Interface::vtable(self).get_windowHandle)(
             Interface::as_raw(self),
             &mut out as *mut _,
         );
@@ -655,6 +673,180 @@ windows_core::imp::interface_hierarchy!(IAccessibleHyperlink, IUnknown);
 pub struct IAccessibleHyperlink_Vtbl {
     pub base__: IUnknown_Vtbl,
     // Methods deliberately omitted -- this PR only needs the IID for QI.
+}
+
+// --- IAccessibleTableCell -------------------------------------------------
+//
+// Inherits from IUnknown. Vtable order (from AccessibleTableCell.idl):
+//   1. get_columnExtent
+//   2. get_columnHeaderCells     <-- used (table header walk)
+//   3. get_columnIndex
+//   4. get_rowExtent
+//   5. get_rowHeaderCells        <-- used (table header walk)
+//   6. get_rowIndex
+//   7. get_isSelected
+//   8. get_rowColumnExtents      <-- used (cell info)
+//   9. get_table                 <-- used (table-id lookup)
+
+windows_core::imp::define_interface!(
+    IAccessibleTableCell,
+    IAccessibleTableCell_Vtbl,
+    0x594116b1_c99f_4847_ad06_0a7a86ece645
+);
+impl core::ops::Deref for IAccessibleTableCell {
+    type Target = IUnknown;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+windows_core::imp::interface_hierarchy!(IAccessibleTableCell, IUnknown);
+
+#[repr(C)]
+pub struct IAccessibleTableCell_Vtbl {
+    pub base__: IUnknown_Vtbl,
+    pub get_columnExtent: usize,
+    pub get_columnHeaderCells: unsafe extern "system" fn(
+        this: *mut core::ffi::c_void,
+        cell_accessibles: *mut *mut *mut core::ffi::c_void,
+        n_column_header_cells: *mut i32,
+    ) -> HRESULT,
+    pub get_columnIndex: usize,
+    pub get_rowExtent: usize,
+    pub get_rowHeaderCells: unsafe extern "system" fn(
+        this: *mut core::ffi::c_void,
+        cell_accessibles: *mut *mut *mut core::ffi::c_void,
+        n_row_header_cells: *mut i32,
+    ) -> HRESULT,
+    pub get_rowIndex: usize,
+    pub get_isSelected: usize,
+    pub get_rowColumnExtents: unsafe extern "system" fn(
+        this: *mut core::ffi::c_void,
+        row: *mut i32,
+        column: *mut i32,
+        row_extents: *mut i32,
+        column_extents: *mut i32,
+        is_selected: *mut u8,
+    ) -> HRESULT,
+    pub get_table: unsafe extern "system" fn(
+        this: *mut core::ffi::c_void,
+        table: *mut *mut core::ffi::c_void,
+    ) -> HRESULT,
+}
+
+/// Result of `IAccessibleTableCell::get_rowColumnExtents`. The IDL
+/// names the boolean `isSelected` but the IA2 servers we deal with
+/// pass it as a `BOOLEAN` (8-bit) so we expose it as `bool` for
+/// ergonomics.
+#[derive(Clone, Copy, Debug)]
+pub struct RowColumnExtents {
+    pub row: i32,
+    pub column: i32,
+    pub row_extents: i32,
+    pub column_extents: i32,
+    pub is_selected: bool,
+}
+
+impl IAccessibleTableCell {
+    /// Returns the array of header `IUnknown*` pointers for one axis
+    /// (column or row). The array is `CoTaskMemAlloc`'d; the caller
+    /// must `CoTaskMemFree` it and `Release` each entry.
+    ///
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_column_header_cells(
+        &self,
+    ) -> windows::core::Result<(*mut *mut core::ffi::c_void, i32)> {
+        let mut cells: *mut *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut count: i32 = 0;
+        let hr = (Interface::vtable(self).get_columnHeaderCells)(
+            Interface::as_raw(self),
+            &mut cells as *mut _,
+            &mut count as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok((cells, count))
+    }
+
+    /// See [`IAccessibleTableCell::get_column_header_cells`].
+    ///
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_row_header_cells(
+        &self,
+    ) -> windows::core::Result<(*mut *mut core::ffi::c_void, i32)> {
+        let mut cells: *mut *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut count: i32 = 0;
+        let hr = (Interface::vtable(self).get_rowHeaderCells)(
+            Interface::as_raw(self),
+            &mut cells as *mut _,
+            &mut count as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok((cells, count))
+    }
+
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_row_column_extents(
+        &self,
+    ) -> windows::core::Result<RowColumnExtents> {
+        let mut row: i32 = 0;
+        let mut column: i32 = 0;
+        let mut row_extents: i32 = 0;
+        let mut column_extents: i32 = 0;
+        let mut is_selected: u8 = 0;
+        let hr = (Interface::vtable(self).get_rowColumnExtents)(
+            Interface::as_raw(self),
+            &mut row,
+            &mut column,
+            &mut row_extents,
+            &mut column_extents,
+            &mut is_selected,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok(RowColumnExtents {
+            row,
+            column,
+            row_extents,
+            column_extents,
+            is_selected: is_selected != 0,
+        })
+    }
+
+    /// Returns the parent `IUnknown*` (which servers usually expose as
+    /// an `IAccessibleTable2` and clients QI to `IAccessible2`). The
+    /// caller takes ownership of the returned reference.
+    ///
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_table(&self) -> windows::core::Result<IUnknown> {
+        let mut raw: *mut core::ffi::c_void = core::ptr::null_mut();
+        let hr = (Interface::vtable(self).get_table)(
+            Interface::as_raw(self),
+            &mut raw as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        if raw.is_null() {
+            return Err(E_POINTER.into());
+        }
+        Ok(unsafe { IUnknown::from_raw(raw) })
+    }
 }
 
 // --- IAccessibleApplication -----------------------------------------------

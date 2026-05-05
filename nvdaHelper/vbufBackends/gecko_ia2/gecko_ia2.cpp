@@ -116,83 +116,20 @@ static IAccessible2* IAccessible2FromIdentifier(int docHandle, int ID) {
 }
 #endif
 
-inline int getTableIDFromCell(IAccessibleTableCell* tableCell) {
-	IUnknown* unk = NULL;
-	if (tableCell->get_table(&unk) != S_OK || !unk)
-		return 0;
-	IAccessible2* acc = NULL;
-	HRESULT res;
-	res = unk->QueryInterface(IID_IAccessible2, (void**)&acc);
-	unk->Release();
-	if (res != S_OK || !acc)
-		return 0;
-	int id=0;
-	acc->get_uniqueID((long*)&id);
-	acc->Release();
-	return id;
+#ifdef NVDA_HAS_RUST_HELPERS
+extern "C" {
+	int nvda_ia2_get_table_id_from_cell(void* cell);
+	void nvda_ia2_fill_table_cell_info(void* node, void* cell);
 }
 
-typedef HRESULT(STDMETHODCALLTYPE IAccessibleTableCell::*IATableCellGetHeaderCellsFunc)(IUnknown***, long*);
-inline void fillTableHeaders(VBufStorage_controlFieldNode_t* node, IAccessibleTableCell* paccTableCell, const IATableCellGetHeaderCellsFunc getHeaderCells, const wstring& attribName) {
-	wostringstream s;
-	IUnknown** headerCells;
-	long nHeaderCells;
-
-	if ((paccTableCell->*getHeaderCells)(&headerCells, &nHeaderCells) == S_OK && headerCells) {
-		for (int hci = 0; hci < nHeaderCells; hci++) {
-			IAccessible2* headerCellPacc = NULL;
-			if (headerCells[hci]->QueryInterface(IID_IAccessible2, (void**)&headerCellPacc) != S_OK) {
-				headerCells[hci]->Release();
-				continue;
-			}
-			headerCells[hci]->Release();
-			HWND hwnd;
-			if (headerCellPacc->get_windowHandle(&hwnd) != S_OK) {
-				headerCellPacc->Release();
-				continue;
-			}
-			const int headerCellDocHandle = HandleToUlong(hwnd);
-			int headerCellID;
-			if (headerCellPacc->get_uniqueID((long*)&headerCellID) != S_OK) {
-				headerCellPacc->Release();
-				continue;
-			}
-			s << headerCellDocHandle << L"," << headerCellID << L";";
-			headerCellPacc->Release();
-		}
-		if (!s.str().empty())
-			node->addAttribute(attribName, s.str());
-		CoTaskMemFree(headerCells);
-	}
+inline int getTableIDFromCell(IAccessibleTableCell* tableCell) {
+	return nvda_ia2_get_table_id_from_cell(tableCell);
 }
 
 inline void GeckoVBufBackend_t::fillTableCellInfo_IATable2(VBufStorage_controlFieldNode_t* node, IAccessibleTableCell* paccTableCell) {
-	wostringstream s;
-
-	long row, column, rowExtents, columnExtents;
-	boolean isSelected;
-	// Fetch row and column extents and add them as attributes on this node.
-	if (paccTableCell->get_rowColumnExtents(&row, &column, &rowExtents, &columnExtents, &isSelected) == S_OK) {
-		s << row + 1;
-		node->addAttribute(L"table-rownumber", s.str());
-		s.str(L"");
-		s << column + 1;
-		node->addAttribute(L"table-columnnumber", s.str());
-		if (columnExtents > 1) {
-			s.str(L"");
-			s << columnExtents;
-			node->addAttribute(L"table-columnsspanned", s.str());
-		}
-		if (rowExtents > 1) {
-			s.str(L"");
-			s << rowExtents;
-			node->addAttribute(L"table-rowsspanned", s.str());
-		}
-	}
-
-	fillTableHeaders(node, paccTableCell, &IAccessibleTableCell::get_columnHeaderCells, L"table-columnheadercells");
-	fillTableHeaders(node, paccTableCell, &IAccessibleTableCell::get_rowHeaderCells, L"table-rowheadercells");
+	nvda_ia2_fill_table_cell_info(node, paccTableCell);
 }
+#endif
 
 #ifdef NVDA_HAS_RUST_HELPERS
 extern "C" {
