@@ -35,15 +35,6 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 
 using namespace std;
 
-map<wstring,wstring> createMapOfIA2AttributesFromPacc(IAccessible2* pacc) {
-	map<wstring,wstring> IA2AttribsMap;
-	CComBSTR IA2Attributes;
-	if(pacc->get_attributes(&IA2Attributes) == S_OK) {
-		IA2AttribsToMap(IA2Attributes.m_str,IA2AttribsMap);
-	}
-	return IA2AttribsMap;
-}
-
 bool hasXmlRoleAttribContainingValue(const map<wstring,wstring>& attribsMap, const wstring roleName) {
 	const auto attribsMapIt = attribsMap.find(L"xml-roles");
 	return attribsMapIt != attribsMap.end() && attribsMapIt->second.find(roleName) != wstring::npos;
@@ -226,21 +217,6 @@ void GeckoVBufBackend_t::versionSpecificInit(IAccessible2* pacc) {
 	SysFreeString(toolkitName);
 }
 
-optional<int>
-getIAccessible2UniqueID(IAccessible2* targetAcc) {
-	if (targetAcc == nullptr) {
-		LOG_ERROR(L"targetAcc is null, can't getIAccessible2UniqueID");
-		return {};
-	}
-
-	//Get ID -- IAccessible2 uniqueID
-	long ID = 0l;
-	if (targetAcc->get_uniqueID(&ID) != S_OK) {
-		LOG_DEBUG(L"targetAcc->get_uniqueID failed");
-		return {};
-	}
-	return ID;
-}
 
 class LabelInfo {
 public:
@@ -296,9 +272,9 @@ std::vector<int> GeckoVBufBackend_t::getAllRelationIdsForRelationType(LPCOLESTR 
 	auto accTargets = getRelationElementsOfType(ia2TargetRelation, pacc2_2);
 	std::vector<int> ids;
 	for (auto& accTarget : accTargets) {
-		auto ID = getIAccessible2UniqueID(accTarget);
-		if (ID.has_value()) {
-			ids.push_back(ID.value());
+		long id = 0l;
+		if (accTarget && accTarget->get_uniqueID(&id) == S_OK) {
+			ids.push_back(static_cast<int>(id));
 		}
 	}
 
@@ -558,11 +534,11 @@ VBufStorage_fieldNode_t* GeckoVBufBackend_t::fillVBuf(
 	//Get ID -- IAccessible2 uniqueID
 	int ID;
 	{
-		auto opt_id = getIAccessible2UniqueID(pacc);
-		if (!opt_id){
+		long uid = 0l;
+		if (!pacc || pacc->get_uniqueID(&uid) != S_OK) {
 			return nullptr;
 		}
-		ID = opt_id.value();
+		ID = static_cast<int>(uid);
 	}
 
 	//Make sure that we don't already know about this object -- protect from loops
@@ -587,7 +563,8 @@ VBufStorage_fieldNode_t* GeckoVBufBackend_t::fillVBuf(
 
 	//get IA2Attributes -- IAccessible2 attributes;
 	map<wstring,wstring>::const_iterator IA2AttribsMapIt;
-	auto IA2AttribsMap = createMapOfIA2AttributesFromPacc(pacc);
+	map<wstring,wstring> IA2AttribsMap;
+	fetchIA2Attributes(pacc, IA2AttribsMap);
 	// Add all IA2 attributes on the node
 	for(const auto& [key, val]: IA2AttribsMap) {
 		wstring attribName = L"IAccessible2::attribute_";
