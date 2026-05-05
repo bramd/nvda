@@ -249,34 +249,44 @@ public:
 };
 
 using OptionalLabelInfo = optional< LabelInfo >;
-OptionalLabelInfo GeckoVBufBackend_t::getLabelInfo(IAccessible2* pacc2) {
-	CComQIPtr<IAccessible2_2> pacc2_2=pacc2;
-	if (!pacc2_2) return OptionalLabelInfo();
-	constexpr std::size_t maxRelationsToFetch = 1;
-	auto accTargets = getRelationElementsOfType(IA2_RELATION_LABELLED_BY, pacc2_2, maxRelationsToFetch);
+#ifdef NVDA_HAS_RUST_HELPERS
+extern "C" {
+	typedef void (*nvda_ia2_label_info_callback)(
+		void* ctx,
+		bool is_visible,
+		bool has_id,
+		int id);
 
-	if (1 > accTargets.size()) {
-		return OptionalLabelInfo();
-	}
-	auto firstAccTarget = accTargets[0];
-	CComVariant child;
-	child.vt = VT_I4;
-	child.lVal = 0;
-	CComVariant state;
-	HRESULT res = firstAccTarget->get_accState(child, &state);
-	bool isVisible = res == S_OK && !(state.lVal & STATE_SYSTEM_INVISIBLE);
-	// If the label element is visible, also verify it has actual accessible text content.
-	// A label containing only aria-hidden elements would be visible but have no accessible text,
-	// meaning it cannot be the source of the accessible name (e.g. aria-label was used instead).
-	if (isVisible) {
-		wstring labelText;
-		if (!getTextFromIAccessible(labelText, firstAccTarget)) {
-			isVisible = false;
+	bool nvda_ia2_get_label_info(
+		void* pacc2,
+		void* ctx,
+		nvda_ia2_label_info_callback cb);
+}
+
+namespace {
+	struct LabelInfoCtx {
+		LabelInfo info;
+	};
+
+	void labelInfo_cb(void* ctx, bool is_visible, bool has_id, int id) {
+		auto* c = static_cast<LabelInfoCtx*>(ctx);
+		c->info.isVisible = is_visible;
+		if (has_id) {
+			c->info.ID = id;
 		}
 	}
-	auto ID = getIAccessible2UniqueID(firstAccTarget);
-	return LabelInfo { isVisible, ID } ;
 }
+
+OptionalLabelInfo GeckoVBufBackend_t::getLabelInfo(IAccessible2* pacc2) {
+	LabelInfoCtx ctx{};
+	const bool present =
+		nvda_ia2_get_label_info(pacc2, &ctx, labelInfo_cb);
+	if (!present) {
+		return OptionalLabelInfo();
+	}
+	return ctx.info;
+}
+#endif
 
 std::vector<int> GeckoVBufBackend_t::getAllRelationIdsForRelationType(LPCOLESTR ia2TargetRelation, IAccessible2* pacc2) {
 	CComQIPtr<IAccessible2_2> pacc2_2 = pacc2;
