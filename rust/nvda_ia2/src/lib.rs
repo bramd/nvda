@@ -19,6 +19,7 @@
 pub mod acc_description;
 pub mod attribs;
 pub mod child_count;
+pub mod details_roles;
 pub mod fetch;
 pub mod find_descendant;
 pub mod from_identifier;

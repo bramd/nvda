@@ -44,6 +44,7 @@ dependencies = [
 name = "nvda_ia2"
 version = "0.1.0"
 dependencies = [
+ "nvda_vbuf",
  "windows",
  "windows-core",
 ]

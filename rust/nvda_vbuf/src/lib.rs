@@ -13,6 +13,9 @@
 
 use core::ffi::c_void;
 
+#[cfg(feature = "test_stubs")]
+mod test_stubs;
+
 /// Callback invoked once with an OUT string from a `vbuf_node_get_*`
 /// call. The pointer + length describe a wide-string range borrowed
 /// from a `std::wstring` inside the C++ shim and is only valid for the

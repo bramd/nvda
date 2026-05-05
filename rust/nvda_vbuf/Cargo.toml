@@ -9,3 +9,13 @@ edition = "2021"
 # nvdaHelper/vbufBase/c_shim.cpp and reach the final DLL through
 # whichever Rust crate links the consumer.
 crate-type = ["rlib"]
+
+[features]
+# `test_stubs` provides Rust definitions of every `vbuf_*` extern "C"
+# symbol that just panic when called. The real symbols live in the C++
+# shim (`nvdaHelper/vbufBase/c_shim.cpp`), so a stand-alone Rust test
+# binary in a downstream crate can't link without them. Downstream
+# crates enable this feature only in `[dev-dependencies]`, which under
+# `resolver = "2"` activates the stubs solely for their `cargo test`
+# build and never for the staticlib that links into nvdaHelperRemote.
+test_stubs = []

@@ -8,6 +8,17 @@ edition = "2021"
 # `rlib` so the unit tests in this crate can build a test binary.
 crate-type = ["staticlib", "rlib"]
 
+[dependencies.nvda_vbuf]
+path = "../nvda_vbuf"
+
+# Same path-dep, but with the `test_stubs` feature so `cargo test
+# --lib` here can link without the C++ vbuf shim being present.
+# Resolver = "2" keeps the feature scoped to test/bench builds, so the
+# staticlib that links into nvdaHelperRemote.dll never sees the stubs.
+[dev-dependencies.nvda_vbuf]
+path = "../nvda_vbuf"
+features = ["test_stubs"]
+
 [dependencies.windows-core]
 version = "0.58"
 

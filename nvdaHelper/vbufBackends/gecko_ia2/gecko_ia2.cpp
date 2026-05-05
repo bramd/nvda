@@ -412,18 +412,22 @@ const vector<wstring>ATTRLIST_ROLES(1, L"IAccessible2::attribute_xml-roles");
 const wregex REGEX_PRESENTATION_ROLE(L"IAccessible2\\\\:\\\\:attribute_xml-roles:.*\\bpresentation\\b.*;");
 
 
+#ifdef NVDA_HAS_RUST_HELPERS
+extern "C" {
+	void nvda_ia2_extend_details_roles_attribute(
+		void* node,
+		const wchar_t* role_ptr,
+		size_t role_len);
+}
+
 void _extendDetailsRolesAttribute(VBufStorage_controlFieldNode_t& node, const std::wstring& detailsRole)
 {
-	std::wstringstream ss;
-	auto roles = node.getAttribute(L"detailsRoles");
-	if (roles) {
-		ss << *roles << ',' << detailsRole;
-	}
-	else {
-		ss << detailsRole;
-	}
-	node.addAttribute(L"detailsRoles", ss.str());  // addAttribute will replace an attribute that already exists
+	nvda_ia2_extend_details_roles_attribute(
+		&node,
+		detailsRole.data(),
+		detailsRole.size());
 }
+#endif
 
 void GeckoVBufBackend_t::fillVBufAriaDetails(
 	int docHandle,
