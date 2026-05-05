@@ -23,6 +23,7 @@ pub mod from_identifier;
 pub mod hyperlink_getter;
 pub mod interfaces;
 pub mod live_regions;
+pub mod relation_targets;
 pub mod selected_item;
 pub mod text;
 pub mod types;
