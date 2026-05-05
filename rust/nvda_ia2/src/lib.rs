@@ -22,6 +22,7 @@ pub mod find_descendant;
 pub mod from_identifier;
 pub mod hyperlink_getter;
 pub mod interfaces;
+pub mod label_info;
 pub mod live_regions;
 pub mod relation_targets;
 pub mod role_long_string;
