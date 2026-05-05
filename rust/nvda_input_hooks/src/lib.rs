@@ -44,12 +44,18 @@ extern "C" {
         hook_type: i32,
         proc: unsafe extern "system" fn(i32, WPARAM, LPARAM) -> LRESULT,
     );
+    fn isTSFThread() -> u8;
+}
+
+// MIDL-generated RPC client stubs use `__stdcall` on x86 (cdecl on x64).
+// `extern "system"` resolves to the right convention per arch -- using
+// `extern "C"` here would link-fail on x86 with a name-decoration mismatch.
+extern "system" {
     fn nvdaControllerInternal_inputLangChangeNotify(
         thread_id: u32,
         hkl: u32,
         layout_name: *const u16,
     ) -> u32;
-    fn isTSFThread() -> u8;
 }
 
 /// Last-seen LPARAM (the new HKL packed as a pointer-sized integer). Used to

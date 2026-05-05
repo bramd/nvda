@@ -85,11 +85,19 @@ nvdaInProcUtilsRPCHeader, nvdaInProcUtilsRPCServerSource = env.MSRPCStubs(
 
 ia2utilsObj = env.Object("./ia2utils", "../common/ia2utils.cpp")
 
-# x86_64 links Rust staticlibs (nvda_input_hooks, nvda_ia2) instead of the
-# corresponding C++ source. Cargo produces one .lib per crate for the host
-# triple, so non-x86_64 NVDA builds keep using the C++ source. Multi-arch
-# cargo builds are a future de-risking exercise.
-isX64 = env["TARGET_ARCH"] == "x86_64"
+# Every NVDA build that produces an nvdaHelperRemote.dll links the Rust
+# staticlibs (nvda_input_hooks, nvda_ia2) instead of the corresponding
+# C++ source. The cargo target triple is selected per build arch; the
+# arm64ec sub-variant uses its own triple distinct from arm64-native.
+isArm64EC = env.get("isArm64EC", False)
+RUST_TARGET_TRIPLE = {
+	("x86", False): "i686-pc-windows-msvc",
+	("x86_64", False): "x86_64-pc-windows-msvc",
+	("arm64", False): "aarch64-pc-windows-msvc",
+	("arm64", True): "arm64ec-pc-windows-msvc",
+}
+rustTriple = RUST_TARGET_TRIPLE.get((env["TARGET_ARCH"], isArm64EC))
+isRustArch = rustTriple is not None
 
 source = [
 	env["projectResFile"],
@@ -129,19 +137,20 @@ source = [
 ]
 # When the Rust staticlib provides inputLangChange_inProcess_*, drop the C++
 # source on that arch so the linker resolves from Rust instead.
-if isX64:
+if isRustArch:
 	source.remove("inputLangChange.cpp")
 
 cargoStaticLib = None
 ia2StaticLib = None
-if isX64:
+if isRustArch:
 	import os  # noqa: E402
 	import subprocess  # noqa: E402
 
 	rustWorkspaceDir = Dir("#rust")
 	rustTargetDir = Dir("#build/rust")
-	inputHooksLib = rustTargetDir.File("release/nvda_input_hooks.lib")
-	ia2Lib = rustTargetDir.File("release/nvda_ia2.lib")
+	archDir = f"{rustTriple}/release"
+	inputHooksLib = rustTargetDir.File(f"{archDir}/nvda_input_hooks.lib")
+	ia2Lib = rustTargetDir.File(f"{archDir}/nvda_ia2.lib")
 
 	inputHooksCrate = Dir("#rust/nvda_input_hooks")
 	ia2Crate = Dir("#rust/nvda_ia2")
@@ -164,6 +173,8 @@ if isX64:
 				"cargo",
 				"build",
 				"--release",
+				"--target",
+				rustTriple,
 				"--package",
 				"nvda_input_hooks",
 				"--package",
