@@ -305,30 +305,55 @@ std::vector<int> GeckoVBufBackend_t::getAllRelationIdsForRelationType(LPCOLESTR 
 	return ids;
 }
 
-long getChildCount(const bool isAriaHidden, IAccessible2 * const pacc){
-	long rawChildCount = 0;
-	if(!isAriaHidden){
-		auto res = pacc->get_accChildCount(&rawChildCount);
-		if(res != S_OK){
-			rawChildCount = 0;
-		}
-	}
-	return rawChildCount;
+#ifdef NVDA_HAS_RUST_HELPERS
+extern "C" {
+	int nvda_ia2_get_child_count(void* pacc, bool is_aria_hidden);
 }
+
+long getChildCount(const bool isAriaHidden, IAccessible2 * const pacc){
+	return static_cast<long>(nvda_ia2_get_child_count(pacc, isAriaHidden));
+}
+#endif
 
 bool hasAriaHiddenAttribute(const map<wstring,wstring>& IA2AttribsMap){
 	const auto IA2AttribsMapIt = IA2AttribsMap.find(L"hidden");
 	return (IA2AttribsMapIt != IA2AttribsMap.end() && IA2AttribsMapIt->second == L"true");
 }
 
-std::optional<wstring> getAccDescription(IAccessible2* pacc, VARIANT childID) {
-	std::optional<wstring> desc;
-	CComBSTR rawDesc;
-	if (S_OK == pacc->get_accDescription(childID, &rawDesc)) {
-		desc = rawDesc;
-	}
-	return desc;
+#ifdef NVDA_HAS_RUST_HELPERS
+extern "C" {
+	typedef void (*nvda_ia2_acc_description_callback)(
+		void* ctx,
+		const wchar_t* description_ptr,
+		size_t description_len);
+
+	bool nvda_ia2_get_acc_description(
+		void* pacc,
+		int childid,
+		void* ctx,
+		nvda_ia2_acc_description_callback cb);
 }
+
+namespace {
+	void accDescription_cb(void* ctx, const wchar_t* p, size_t n) {
+		auto* out = static_cast<std::wstring*>(ctx);
+		// (p, n) borrows from a BSTR inside the Rust shim and may not
+		// outlive the call; copy the contents into the std::wstring.
+		out->assign(p, n);
+	}
+}
+
+std::optional<wstring> getAccDescription(IAccessible2* pacc, VARIANT childID) {
+	const int childId = (childID.vt == VT_I4) ? static_cast<int>(childID.lVal) : 0;
+	std::wstring buf;
+	const bool present = nvda_ia2_get_acc_description(
+		pacc, childId, &buf, accDescription_cb);
+	if (!present) {
+		return std::optional<std::wstring>();
+	}
+	return buf;
+}
+#endif
 
 /**
  * Get the selected item or the first item if no item is selected.
