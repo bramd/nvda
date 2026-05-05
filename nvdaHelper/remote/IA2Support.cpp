@@ -199,7 +199,7 @@ const long FINDCONTENTDESCENDANT_LAST=2;
 const long FINDCONTENTDESCENDANT_SELECTIONSTART=3;
 const long FINDCONTENTDESCENDANT_SELECTIONEND=4;
 
-#ifdef _M_X64
+#ifdef NVDA_HAS_RUST_HELPERS
 extern "C" {
 	bool nvda_ia2_find_content_descendant(
 		void* pacc2,
@@ -221,91 +221,6 @@ bool findContentDescendant(IAccessible2* pacc2, long what, long* descendantID, l
 		*descendantOffset = off;
 	}
 	return ok;
-}
-#else
-bool findContentDescendant(IAccessible2* pacc2, long what, long* descendantID, long* descendantOffset) {
-	bool foundDescendant=false;
-	IAccessibleText* paccText=NULL;
-	pacc2->QueryInterface(IID_IAccessibleText,(void**)&paccText);
-	if(paccText) {
-		long offset=-1;
-		switch(what) {
-			case FINDCONTENTDESCENDANT_FIRST:
-				offset=0;
-				break;
-			case FINDCONTENTDESCENDANT_CARET:
-				paccText->get_caretOffset(&offset);
-				break;
-			case FINDCONTENTDESCENDANT_LAST:
-				paccText->get_nCharacters(&offset);
-				// If there is no text, last is still valid but should just use 0.
-				if (offset > 0)
-					--offset;
-				break;
-			case FINDCONTENTDESCENDANT_SELECTIONSTART:
-			case FINDCONTENTDESCENDANT_SELECTIONEND:
-				long nSelections=0;
-				paccText->get_nSelections(&nSelections);
-				if(nSelections==0) {
-					offset=-1;
-				} else {
-					long startOffset=0;
-					long endOffset=0;
-					paccText->get_selection(0,&startOffset,&endOffset);
-					offset=(what==FINDCONTENTDESCENDANT_SELECTIONSTART)?startOffset:endOffset-1;
-				}
-				break;
-		}
-		paccText->Release();
-		if(offset==-1) return false;
-		IAccessibleHypertext* paccHypertext=NULL;
-		pacc2->QueryInterface(IID_IAccessibleHypertext,(void**)&paccHypertext);
-		if(paccHypertext) {
-			long hi=-1;
-			paccHypertext->get_hyperlinkIndex(offset,&hi);
-			IAccessibleHyperlink* paccHyperlink=NULL;
-			if(hi>=0) {
-				paccHypertext->get_hyperlink(hi,&paccHyperlink);
-			}
-			paccHypertext->Release();
-			if(paccHyperlink) {
-				IAccessible2* pacc2Child=NULL;
-				paccHyperlink->QueryInterface(IID_IAccessible2,(void**)&pacc2Child);
-				paccHyperlink->Release();
-				if(pacc2Child) {
-					foundDescendant=findContentDescendant(pacc2Child,what,descendantID,descendantOffset);
-					if(!foundDescendant&&what==FINDCONTENTDESCENDANT_CARET) {
-						foundDescendant=findContentDescendant(pacc2Child,FINDCONTENTDESCENDANT_FIRST,descendantID,descendantOffset);
-					}
-					pacc2Child->Release();
-				}
-			}
-		}
-		if(!foundDescendant) {
-			pacc2->get_uniqueID(descendantID);
-			*descendantOffset=offset;
-			foundDescendant=true;
-		}
-	} else {
-		long childCount=0;
-		pacc2->get_accChildCount(&childCount);
-		VARIANT varChild;
-		varChild.vt=VT_I4;
-		for(int i=1;i<=childCount;++i) {
-			varChild.lVal=(what==FINDCONTENTDESCENDANT_LAST||what==FINDCONTENTDESCENDANT_SELECTIONEND)?(childCount-(i-1)):i;
-			IDispatch* pdispatchChild=NULL;
-			pacc2->get_accChild(varChild,&pdispatchChild);
-			if(!pdispatchChild) continue;
-			IAccessible2* pacc2Child=NULL;
-			pdispatchChild->QueryInterface(IID_IAccessible2,(void**)&pacc2Child);
-			pdispatchChild->Release();
-			if(!pacc2Child) continue;
-			foundDescendant=findContentDescendant(pacc2Child,what,descendantID,descendantOffset);
-			pacc2Child->Release();
-			if(foundDescendant) break;
-		}
-	}
-	return foundDescendant;
 }
 #endif
 

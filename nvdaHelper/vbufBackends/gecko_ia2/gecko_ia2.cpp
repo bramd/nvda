@@ -121,7 +121,7 @@ const wchar_t EMBEDDED_OBJ_CHAR = 0xFFFC;
 // text leaf nodes so the user can access them.
 constexpr const wchar_t EMPTY_TEXT_NODE[]{L" "};
 
-#ifdef _M_X64
+#ifdef NVDA_HAS_RUST_HELPERS
 extern "C" {
 	void* nvda_ia2_from_identifier(int doc_handle, int id);
 }
@@ -129,32 +129,6 @@ extern "C" {
 static IAccessible2* IAccessible2FromIdentifier(int docHandle, int ID) {
 	return static_cast<IAccessible2*>(
 		nvda_ia2_from_identifier(docHandle, ID));
-}
-#else
-static IAccessible2* IAccessible2FromIdentifier(int docHandle, int ID) {
-	IAccessible* pacc=NULL;
-	IServiceProvider* pserv=NULL;
-	IAccessible2* pacc2=NULL;
-	VARIANT varChild;
-	if(AccessibleObjectFromEvent((HWND)UlongToHandle(docHandle),OBJID_CLIENT,ID,&pacc,&varChild)!=S_OK) {
-		LOG_DEBUG(L"AccessibleObjectFromEvent failed");
-		return NULL;
-	}
-	if (varChild.lVal!=CHILDID_SELF) {
-		// IAccessible2 can't be implemented on a simple child,
-		// so this object is invalid.
-		pacc->Release();
-		return NULL;
-	}
-	VariantClear(&varChild);
-	if(pacc->QueryInterface(IID_IServiceProvider,(void**)&pserv)!=S_OK) {
-		pacc->Release();
-		return NULL;
-	}
-	pacc->Release();
-	pserv->QueryService(IID_IAccessible,IID_IAccessible2,(void**)&pacc2);
-	pserv->Release();
-	return pacc2;
 }
 #endif
 
@@ -356,7 +330,7 @@ std::optional<wstring> getAccDescription(IAccessible2* pacc, VARIANT childID) {
 /**
  * Get the selected item or the first item if no item is selected.
  */
-#ifdef _M_X64
+#ifdef NVDA_HAS_RUST_HELPERS
 extern "C" {
 	void* nvda_ia2_get_selected_item(void* pacc2);
 }
@@ -371,47 +345,6 @@ CComPtr<IAccessible2> GeckoVBufBackend_t::getSelectedItem(
 	// Attach takes ownership without extra AddRef.
 	result.Attach(raw);
 	return result;
-}
-#else
-CComPtr<IAccessible2> GeckoVBufBackend_t::getSelectedItem(
-	IAccessible2* container, const map<wstring, wstring>& attribs
-) {
-	CComVariant selection;
-	HRESULT hr = container->get_accSelection(&selection);
-	if (FAILED(hr)) {
-		LOG_DEBUGWARNING(L"accSelection failed with " << hr);
-		return nullptr;
-	}
-
-	if (selection.vt == VT_DISPATCH) {
-		// Single selected item, so just return it.
-		return CComQIPtr<IAccessible2>(selection.pdispVal);
-	}
-
-	if (selection.vt == VT_UNKNOWN) {
-		// One or more selected items in an IEnumVARIANT.
-		auto enumVar = CComQIPtr<IEnumVARIANT>(selection.punkVal);
-		if (!enumVar) {
-			return nullptr;
-		}
-		// We only care about the first selected item.
-		CComVariant items[1];
-		if (FAILED(enumVar->Next(1, items, nullptr))) {
-			return nullptr;
-		}
-		if (items[0].vt != VT_DISPATCH) {
-			return nullptr;
-		}
-		return CComQIPtr<IAccessible2>(items[0].pdispVal);
-	}
-
-	// No selection, so return the first child.
-	CComPtr<IDispatch> child;
-	if (SUCCEEDED(container->get_accChild(CComVariant(1), &child))) {
-		return CComQIPtr<IAccessible2>(child);
-	}
-
-	return nullptr;
 }
 #endif
 

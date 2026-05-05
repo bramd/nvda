@@ -19,10 +19,9 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 
 using namespace std;
 
-// Forward declarations of the Rust shims (linked from nvda_ia2.lib on x86_64).
-// Non-x86_64 builds do not link nvda_ia2 -- those builds use the C++ fallback
-// at the bottom of this file (guarded by `#ifndef _M_X64`).
-#ifdef _M_X64
+// Forward declarations of the Rust shims (linked from nvda_ia2.lib on
+// every NVDA arch that produces nvdaHelperRemote.dll).
+#ifdef NVDA_HAS_RUST_HELPERS
 extern "C" {
 	typedef void (*AttribCallback)(
 		void* ctx,
@@ -101,144 +100,6 @@ std::unique_ptr<HyperlinkGetter> makeHyperlinkGetter(IAccessible2* acc) {
 		return nullptr;
 	}
 	return std::make_unique<RustHyperlinkGetter>(handle);
-}
-#else
-// Non-x86_64 fallback: keep the original C++ implementations because cargo
-// only produces a host-triple staticlib. This is the same code as before
-// this PR, kept verbatim. Multi-arch cargo builds are a future exercise.
-
-bool fetchIA2Attributes(IAccessible2* pacc2, map<wstring, wstring>& attribsMap) {
-	BSTR attribs = NULL;
-	pacc2->get_attributes(&attribs);
-	if (!attribs) {
-		return false;
-	}
-	IA2AttribsToMap(attribs, attribsMap);
-	SysFreeString(attribs);
-	return true;
-}
-
-void IA2AttribsToMap(const wstring &attribsString, map<wstring, wstring> &attribsMap) {
-	wstring str, key;
-	bool inEscape = false;
-
-	for (wstring::const_iterator it = attribsString.begin(); it != attribsString.end(); ++it) {
-		if (inEscape) {
-			str.push_back(*it);
-			inEscape = false;
-		} else if (*it == L'\\') {
-			inEscape = true;
-		} else if (*it == L':') {
-			// We're about to move on to the value, so save the key and clear str.
-			key = str;
-			str.clear();
-		} else if (*it == L';') {
-			// We're about to move on to a new attribute.
-			// Add this key/value pair to the map.
-			if (!key.empty())
-				attribsMap[key] = str;
-				key.clear();
-			str.clear();
-		} else {
-			str.push_back(*it);
-		}
-	}
-	// If there was no trailing semi-colon, we need to handle the last attribute.
-	if (!key.empty())
-		attribsMap[key] = str;
-	// Truncate the value of "src" if it contains base64 data
-	map<wstring,wstring>::const_iterator attribsMapIt;
-	if ((attribsMapIt = attribsMap.find(L"src")) != attribsMap.end()) {
-		str = attribsMapIt->second;
-		const wstring prefix = L"data:";
-		if (str.substr(0, prefix.length()) == prefix) {
-			const wstring needle = L"base64,";
-			wstring::size_type pos = str.find(needle);
-			if (pos != wstring::npos) {
-				str.replace(pos + needle.length(), wstring::npos, L"<truncated>");
-				attribsMap[L"src"] = str;
-			}
-		}
-	}
-}
-
-namespace {
-	class HtHyperlinkGetter : public HyperlinkGetter {
-		public:
-		HtHyperlinkGetter(CComPtr<IAccessibleHypertext> hypertext)
-			: hypertext(hypertext) {}
-		CComPtr<IAccessibleHyperlink> next() override;
-
-		private:
-		CComPtr<IAccessibleHypertext> hypertext;
-		long index = 0;
-	};
-
-	class Ht2HyperlinkGetter : public HyperlinkGetter {
-		public:
-		Ht2HyperlinkGetter(CComPtr<IAccessibleHypertext2> hypertext)
-			: hypertext(hypertext), count(-1) {}
-		~Ht2HyperlinkGetter() override {
-			if (this->rawLinks) {
-				CoTaskMemFree(this->rawLinks);
-			}
-		}
-		CComPtr<IAccessibleHyperlink> next() override;
-
-		private:
-		CComPtr<IAccessibleHypertext2> hypertext;
-		IAccessibleHyperlink** rawLinks = nullptr;
-		long count;
-		long index = 0;
-		void maybeFetch();
-	};
-
-	CComPtr<IAccessibleHyperlink> HtHyperlinkGetter::next() {
-		CComPtr<IAccessibleHyperlink> link;
-		// hyperlink will fail or return null if the index is too big.
-		HRESULT res = this->hypertext->get_hyperlink(this->index, &link);
-		++this->index;
-		if (FAILED(res) || !link) {
-			return nullptr;
-		}
-		return link;
-	}
-
-	void Ht2HyperlinkGetter::maybeFetch() {
-		if (this->count >= 0) {
-			return;
-		}
-		if (FAILED(hypertext->get_hyperlinks(&this->rawLinks, &this->count))) {
-			this->count = 0;
-		}
-	}
-
-	CComPtr<IAccessibleHyperlink> Ht2HyperlinkGetter::next() {
-		this->maybeFetch();
-		if (this->index >= this->count) {
-			return nullptr;
-		}
-		// Ensure we don't AddRef this pointer.
-		CComPtr<IAccessibleHyperlink> link;
-		link.Attach(this->rawLinks[this->index]);
-		++this->index;
-		return link;
-	}
-}
-
-std::unique_ptr<HyperlinkGetter> makeHyperlinkGetter(IAccessible2* acc) {
-	// Try IAccessibleHypertext2 first.
-	CComQIPtr<IAccessibleHypertext2> ht2 = acc;
-	if (ht2) {
-		return std::make_unique<Ht2HyperlinkGetter>(ht2);
-	}
-	// Fall back to IAccessibleHypertext.
-	CComQIPtr<IAccessibleHypertext> ht = acc;
-	if (ht) {
-		return std::make_unique<HtHyperlinkGetter>(ht);
-	}
-	// Neither interface is supported.
-	return nullptr;
 }
 #endif
 
