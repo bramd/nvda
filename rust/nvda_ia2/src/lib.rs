@@ -19,6 +19,7 @@
 pub mod attribs;
 pub mod fetch;
 pub mod find_descendant;
+pub mod hyperlink_getter;
 pub mod interfaces;
 pub mod live_regions;
 pub mod text;
