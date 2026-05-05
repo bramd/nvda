@@ -35,6 +35,10 @@ extern "C" {
 
 	bool nvda_ia2_fetch_attributes(
 		void* pacc2, void* ctx, AttribCallback cb);
+
+	void* nvda_ia2_make_hyperlink_getter(void* pacc2);
+	void* nvda_ia2_hyperlink_getter_next(void* handle);
+	void  nvda_ia2_hyperlink_getter_free(void* handle);
 }
 
 namespace {
@@ -58,6 +62,45 @@ void IA2AttribsToMap(const std::wstring& attribsString, std::map<std::wstring, s
 		attribsString.size(),
 		&attribsMap,
 		insert_into_map);
+}
+
+namespace {
+	class RustHyperlinkGetter : public HyperlinkGetter {
+		public:
+		explicit RustHyperlinkGetter(void* h) : handle(h) {}
+		~RustHyperlinkGetter() override {
+			if (handle) {
+				nvda_ia2_hyperlink_getter_free(handle);
+			}
+		}
+		// No copy, no assign.
+		RustHyperlinkGetter(const RustHyperlinkGetter&) = delete;
+		RustHyperlinkGetter& operator=(const RustHyperlinkGetter&) = delete;
+
+		CComPtr<IAccessibleHyperlink> next() override {
+			CComPtr<IAccessibleHyperlink> link;
+			if (!handle) {
+				return link;
+			}
+			auto* raw = static_cast<IAccessibleHyperlink*>(
+				nvda_ia2_hyperlink_getter_next(handle));
+			// raw is already AddRef'd by the Rust side or null;
+			// Attach takes ownership without extra AddRef.
+			link.Attach(raw);
+			return link;
+		}
+
+		private:
+		void* handle;
+	};
+}
+
+std::unique_ptr<HyperlinkGetter> makeHyperlinkGetter(IAccessible2* acc) {
+	void* handle = nvda_ia2_make_hyperlink_getter(acc);
+	if (!handle) {
+		return nullptr;
+	}
+	return std::make_unique<RustHyperlinkGetter>(handle);
 }
 #else
 // Non-x86_64 fallback: keep the original C++ implementations because cargo
