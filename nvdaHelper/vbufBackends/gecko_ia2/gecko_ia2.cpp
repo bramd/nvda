@@ -121,6 +121,16 @@ const wchar_t EMBEDDED_OBJ_CHAR = 0xFFFC;
 // text leaf nodes so the user can access them.
 constexpr const wchar_t EMPTY_TEXT_NODE[]{L" "};
 
+#ifdef _M_X64
+extern "C" {
+	void* nvda_ia2_from_identifier(int doc_handle, int id);
+}
+
+static IAccessible2* IAccessible2FromIdentifier(int docHandle, int ID) {
+	return static_cast<IAccessible2*>(
+		nvda_ia2_from_identifier(docHandle, ID));
+}
+#else
 static IAccessible2* IAccessible2FromIdentifier(int docHandle, int ID) {
 	IAccessible* pacc=NULL;
 	IServiceProvider* pserv=NULL;
@@ -146,6 +156,7 @@ static IAccessible2* IAccessible2FromIdentifier(int docHandle, int ID) {
 	pserv->Release();
 	return pacc2;
 }
+#endif
 
 inline int getTableIDFromCell(IAccessibleTableCell* tableCell) {
 	IUnknown* unk = NULL;
