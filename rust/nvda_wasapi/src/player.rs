@@ -312,7 +312,7 @@ impl WasapiPlayerInner {
 
         while remaining_frames > 0 {
             // --- get padding, handling stop and device changes ---
-            let padding_frames =
+            let mut padding_frames =
                 match self.get_padding_handling_stop_or_dev_change() {
                     PaddingResult::Ok(p) => p,
                     PaddingResult::Stopped => return Ok(0),
@@ -325,22 +325,15 @@ impl WasapiPlayerInner {
                     self.frames_to_ms(padding_frames - self.buffer_frames / 2);
                 self.wait_until_needed(wait_ms);
 
-                // Re-check padding after waiting.
-                match self.get_padding_handling_stop_or_dev_change() {
-                    PaddingResult::Ok(_p) => { /* proceed with fresh state below */ }
+                // Re-check padding after waiting; the helper returns the
+                // fresh value, which we use directly below (mirrors the C++
+                // lambda that captures paddingFrames by reference).
+                padding_frames = match self.get_padding_handling_stop_or_dev_change() {
+                    PaddingResult::Ok(p) => p,
                     PaddingResult::Stopped => return Ok(0),
                     PaddingResult::Err(e) => return Err(e),
                 };
             }
-
-            // Re-read padding after possible wait (the C++ code calls
-            // getPaddingHandlingStopOrDevChange again in the branch above and
-            // falls through with the updated paddingFrames). We do the same
-            // by calling GetCurrentPadding once more.
-            let padding_frames = match self.client_slot.snapshot() {
-                Some(client) => unsafe { client.GetCurrentPadding()? },
-                None => return Ok(0),
-            };
 
             let send_frames =
                 remaining_frames.min(self.buffer_frames.saturating_sub(padding_frames));

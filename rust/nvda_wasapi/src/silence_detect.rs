@@ -57,7 +57,7 @@ fn leading_silence_pcm_i16(data: &[u8]) -> usize {
     let mut pos = 0;
     while pos + BYTES <= data.len() {
         let s = i16::from_le_bytes([data[pos], data[pos + 1]]);
-        if s < -THRESHOLD || s > THRESHOLD {
+        if !(-THRESHOLD..=THRESHOLD).contains(&s) {
             return pos;
         }
         pos += BYTES;
@@ -76,7 +76,7 @@ fn leading_silence_pcm_i24(data: &[u8]) -> usize {
         // Read 3 bytes into i32 and sign-extend.
         let raw = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], 0]);
         let s = ((raw as i32) << 8) >> 8; // sign-extend from bit 23
-        if s < -THRESHOLD || s > THRESHOLD {
+        if !(-THRESHOLD..=THRESHOLD).contains(&s) {
             return pos;
         }
         pos += BYTES;
@@ -91,7 +91,7 @@ fn leading_silence_pcm_i32(data: &[u8]) -> usize {
     let mut pos = 0;
     while pos + BYTES <= data.len() {
         let s = i32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
-        if s < -THRESHOLD || s > THRESHOLD {
+        if !(-THRESHOLD..=THRESHOLD).contains(&s) {
             return pos;
         }
         pos += BYTES;
@@ -110,7 +110,7 @@ fn leading_silence_float_f32(data: &[u8]) -> usize {
     let mut pos = 0;
     while pos + BYTES <= data.len() {
         let s = f32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
-        if s < -THRESHOLD || s > THRESHOLD {
+        if !(-THRESHOLD..=THRESHOLD).contains(&s) {
             return pos;
         }
         pos += BYTES;
@@ -134,7 +134,7 @@ fn leading_silence_float_f64(data: &[u8]) -> usize {
             data[pos + 6],
             data[pos + 7],
         ]);
-        if s < -THRESHOLD || s > THRESHOLD {
+        if !(-THRESHOLD..=THRESHOLD).contains(&s) {
             return pos;
         }
         pos += BYTES;

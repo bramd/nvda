@@ -57,7 +57,13 @@ impl SendPtr {
     /// Get a mutable reference to the inner player.
     ///
     /// # Safety
-    /// The caller must ensure exclusive access to the WasapiPlayerInner.
+    /// The caller must ensure exclusive access to the WasapiPlayerInner --
+    /// the surrounding code holds the player Mutex via a `MutexGuard` that
+    /// outlives the returned reference, so this is sound for our usage.
+    /// The clippy lint is suppressed because this pattern is the standard
+    /// idiom for handing a mutable view across a `py.detach()` closure
+    /// boundary.
+    #[allow(clippy::mut_from_ref)]
     unsafe fn as_mut(&self) -> &mut WasapiPlayerInner {
         &mut *self.0
     }

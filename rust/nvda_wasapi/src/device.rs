@@ -19,12 +19,18 @@ pub struct DeviceChangeCounters {
     pub device_state_change_count: AtomicU32,
 }
 
-impl DeviceChangeCounters {
-    pub fn new() -> Self {
+impl Default for DeviceChangeCounters {
+    fn default() -> Self {
         Self {
             default_device_change_count: AtomicU32::new(0),
             device_state_change_count: AtomicU32::new(0),
         }
+    }
+}
+
+impl DeviceChangeCounters {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -151,10 +157,7 @@ pub fn get_default_device() -> windows::core::Result<IMMDevice> {
 /// This is the Rust equivalent of C++ `audioDucking_shouldDelay()` from
 /// `nvdaHelper/local/mixer.cpp`.
 pub fn is_any_audio_playing() -> bool {
-    match is_any_audio_playing_inner() {
-        Ok(playing) => playing,
-        Err(_) => true,
-    }
+    is_any_audio_playing_inner().unwrap_or(true)
 }
 
 fn is_any_audio_playing_inner() -> windows::core::Result<bool> {
