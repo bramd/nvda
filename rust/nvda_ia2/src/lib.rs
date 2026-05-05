@@ -16,7 +16,9 @@
 // the textFromIAccessible port in the follow-up PR.
 #![allow(dead_code)]
 
+pub mod acc_description;
 pub mod attribs;
+pub mod child_count;
 pub mod fetch;
 pub mod find_descendant;
 pub mod from_identifier;
