@@ -25,6 +25,44 @@ pub type RoleStringCallback = unsafe extern "C" fn(
     role_string_len: usize,
 );
 
+/// Rust-native variant of `getRoleLongRoleString` for in-crate
+/// callers. Returns `(role, optional_role_string_utf16)`. The role
+/// string is `Some` only when the MSAA fallback returned a `VT_BSTR`.
+pub(crate) fn get_role_long_role_string_native(
+    acc: &IAccessible2,
+    childid: i32,
+) -> (i32, Option<Vec<u16>>) {
+    let mut role: i32 = unsafe { acc.role() }.unwrap_or(0);
+    if role != 0 {
+        return (role, None);
+    }
+    let pacc_msaa: &IAccessible = acc;
+    let varchild = VARIANT::from(childid);
+    let varrole = match unsafe { pacc_msaa.get_accRole(&varchild) } {
+        Ok(v) => v,
+        Err(_) => return (role, None),
+    };
+    let raw = varrole.as_raw();
+    let vt = unsafe { raw.Anonymous.Anonymous.vt };
+    if vt == VT_I4_RAW {
+        role = unsafe { raw.Anonymous.Anonymous.Anonymous.lVal };
+        (role, None)
+    } else if vt == VT_BSTR_RAW {
+        let bstr_ptr = unsafe { raw.Anonymous.Anonymous.Anonymous.bstrVal };
+        if bstr_ptr.is_null() {
+            (role, None)
+        } else {
+            let borrowed: BSTR = unsafe { BSTR::from_raw(bstr_ptr) };
+            // VARIANT owns the BSTR; don't drop the borrow.
+            let manual = core::mem::ManuallyDrop::new(borrowed);
+            let slice = manual.as_wide().to_vec();
+            (role, Some(slice))
+        }
+    } else {
+        (role, None)
+    }
+}
+
 /// C-callable replacement for `getRoleLongRoleString`. Returns the long
 /// IA2 role (or `0` / `IA2_ROLE_UNKNOWN` if neither `IAccessible2::role`
 /// nor MSAA `accRole` produced one). If the MSAA fallback returned a
@@ -49,37 +87,9 @@ pub unsafe extern "C" fn nvda_ia2_get_role_long_role_string(
         Some(a) => a,
         None => return 0,
     };
-
-    // Try IAccessible2::role first; on error, fall through with role=0
-    // (== IA2_ROLE_UNKNOWN per AccessibleRole.idl:68).
-    let mut role: i32 = unsafe { acc.role() }.unwrap_or(0);
-    if role != 0 {
-        return role;
-    }
-
-    // Fall back to MSAA accRole. It may return VT_I4 (a long role,
-    // overwriting our zero) or VT_BSTR (a server-allocated role string,
-    // forwarded once via cb).
-    let pacc_msaa: &IAccessible = acc;
-    let varchild = VARIANT::from(childid);
-    if let Ok(varrole) = unsafe { pacc_msaa.get_accRole(&varchild) } {
-        let raw = varrole.as_raw();
-        let vt = unsafe { raw.Anonymous.Anonymous.vt };
-        if vt == VT_I4_RAW {
-            role = unsafe { raw.Anonymous.Anonymous.Anonymous.lVal };
-        } else if vt == VT_BSTR_RAW {
-            // Borrow the BSTR pointer briefly. The VARIANT owns it; we
-            // just hand a slice to the callback. windows-rs's raw VARIANT
-            // exposes `bstrVal` as a raw `*const u16` (BSTR's repr).
-            let bstr_ptr = unsafe { raw.Anonymous.Anonymous.Anonymous.bstrVal };
-            if !bstr_ptr.is_null() {
-                let borrowed: BSTR = unsafe { BSTR::from_raw(bstr_ptr) };
-                // Don't drop the borrowed BSTR -- the VARIANT owns it.
-                let manual = core::mem::ManuallyDrop::new(borrowed);
-                let slice = manual.as_wide();
-                unsafe { cb(ctx, slice.as_ptr(), slice.len()) };
-            }
-        }
+    let (role, role_string) = get_role_long_role_string_native(acc, childid);
+    if let Some(s) = role_string {
+        unsafe { cb(ctx, s.as_ptr(), s.len()) };
     }
     role
 }

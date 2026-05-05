@@ -23,6 +23,7 @@ pub mod attribs;
 pub mod child_count;
 pub mod details_roles;
 pub mod fetch;
+pub mod fill_vbuf;
 pub mod find_descendant;
 pub mod from_identifier;
 pub mod hyperlink_getter;

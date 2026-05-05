@@ -4,9 +4,33 @@
 //! attributes parser, and invokes a per-pair callback so the C++ wrapper
 //! can populate its `std::map<std::wstring, std::wstring>&`.
 
+use std::collections::BTreeMap;
+
 use crate::attribs::{parse_attribs, AttribCallback};
 use crate::interfaces::IAccessible2;
 use windows::core::Interface;
+
+/// Rust-native variant of `fetchIA2Attributes` for in-crate callers.
+/// Returns an empty map when the call fails or returns a NULL BSTR
+/// (mirroring the C++ "no attributes" sentinel).
+pub(crate) fn fetch_ia2_attributes_native(
+    acc: &IAccessible2,
+) -> BTreeMap<String, String> {
+    let bstr = match unsafe { acc.get_attributes() } {
+        Ok(b) => b,
+        Err(_) => return BTreeMap::new(),
+    };
+    // NULL BSTR == no attributes; an empty (non-NULL) BSTR is a
+    // successful empty parse.
+    let raw_ptr: *const u16 = unsafe {
+        *(&bstr as *const _ as *const *const u16)
+    };
+    if raw_ptr.is_null() {
+        return BTreeMap::new();
+    }
+    let s = bstr.to_string();
+    parse_attribs(&s)
+}
 
 /// C-callable replacement for `fetchIA2Attributes`.
 ///
@@ -39,24 +63,17 @@ pub unsafe extern "C" fn nvda_ia2_fetch_attributes(
         Some(a) => a,
         None => return false,
     };
-    let bstr = match acc.get_attributes() {
+    // Distinguish "COM call returned NULL BSTR" (false) from "valid
+    // empty attribute string" (true with zero callbacks). The native
+    // helper collapses both into an empty map, so probe the BSTR
+    // directly here.
+    let bstr = match unsafe { acc.get_attributes() } {
         Ok(b) => b,
         Err(_) => return false,
     };
-    // Mirror C++ ia2utils.cpp:25 (`if (!attribs) return false`): only a
-    // NULL BSTR signals "no attributes", a non-NULL zero-length BSTR is
-    // treated as a successful (but empty) attributes string and parsed
-    // normally (yielding zero callback invocations). `BSTR::is_empty()`
-    // returns true for both NULL and zero-length, so it can't be used here.
-    //
-    // `windows-strings 0.1.0`'s `BSTR` is `#[repr(transparent)]` over a
-    // single `*const u16` field (private, no public accessor). The cleanest
-    // way to inspect the raw pointer without consuming the BSTR is to
-    // reinterpret a `&BSTR` as a `&*const u16` via the transparent layout.
-    // SAFETY: `BSTR` is documented `#[repr(transparent)] (*const u16)` in
-    // windows-strings; reading the pointer through a shared reference is a
-    // valid use of repr(transparent).
-    let raw_ptr: *const u16 = unsafe { *(&bstr as *const _ as *const *const u16) };
+    let raw_ptr: *const u16 = unsafe {
+        *(&bstr as *const _ as *const *const u16)
+    };
     if raw_ptr.is_null() {
         return false;
     }
@@ -65,14 +82,15 @@ pub unsafe extern "C" fn nvda_ia2_fetch_attributes(
     for (k, v) in map {
         let k_utf16: Vec<u16> = k.encode_utf16().collect();
         let v_utf16: Vec<u16> = v.encode_utf16().collect();
-        cb(
-            ctx,
-            k_utf16.as_ptr(),
-            k_utf16.len(),
-            v_utf16.as_ptr(),
-            v_utf16.len(),
-        );
+        unsafe {
+            cb(
+                ctx,
+                k_utf16.as_ptr(),
+                k_utf16.len(),
+                v_utf16.as_ptr(),
+                v_utf16.len(),
+            );
+        }
     }
-    // `bstr` drops here; its Drop calls SysFreeString.
     true
 }
