@@ -849,6 +849,88 @@ impl IAccessibleTableCell {
     }
 }
 
+// --- IAccessibleAction ----------------------------------------------------
+//
+// Inherits from IUnknown. Vtable order (from AccessibleAction.idl):
+//   1. nActions               <-- used (default action exposure)
+//   2. doAction
+//   3. get_description
+//   4. get_keyBinding
+//   5. get_name               <-- used (default action exposure)
+//   6. get_localizedName
+
+windows_core::imp::define_interface!(
+    IAccessibleAction,
+    IAccessibleAction_Vtbl,
+    0xb70d9f59_3b5a_4dba_ab9e_22012f607df5
+);
+impl core::ops::Deref for IAccessibleAction {
+    type Target = IUnknown;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+windows_core::imp::interface_hierarchy!(IAccessibleAction, IUnknown);
+
+#[repr(C)]
+pub struct IAccessibleAction_Vtbl {
+    pub base__: IUnknown_Vtbl,
+    pub nActions: unsafe extern "system" fn(
+        this: *mut core::ffi::c_void,
+        n_actions: *mut i32,
+    ) -> HRESULT,
+    pub doAction: usize,
+    pub get_description: usize,
+    pub get_keyBinding: usize,
+    pub get_name: unsafe extern "system" fn(
+        this: *mut core::ffi::c_void,
+        action_index: i32,
+        name: *mut core::mem::ManuallyDrop<BSTR>,
+    ) -> HRESULT,
+    pub get_localizedName: usize,
+}
+
+impl IAccessibleAction {
+    /// Number of actions exposed by the object.
+    ///
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn nActions(&self) -> windows::core::Result<i32> {
+        let mut out: i32 = 0;
+        let hr = (Interface::vtable(self).nActions)(
+            Interface::as_raw(self),
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok(out)
+    }
+
+    /// Returns the (non-localized) name of the action at `index`.
+    /// Server-allocated BSTR; the wrapper takes ownership.
+    ///
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_name(&self, index: i32) -> windows::core::Result<BSTR> {
+        let mut out = core::mem::ManuallyDrop::new(BSTR::default());
+        let hr = (Interface::vtable(self).get_name)(
+            Interface::as_raw(self),
+            index,
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            let _ = core::mem::ManuallyDrop::into_inner(out);
+            return Err(hr.into());
+        }
+        Ok(core::mem::ManuallyDrop::into_inner(out))
+    }
+}
+
 // --- IAccessibleApplication -----------------------------------------------
 //
 // Inherits from IUnknown. Vtable order (from AccessibleApplication.idl):
