@@ -490,6 +490,41 @@ pub struct IAccessibleHypertext2_Vtbl {
     pub get_hyperlinks: unsafe extern "system" fn(this: *mut core::ffi::c_void, hyperlinks: *mut *mut Option<IAccessibleHyperlink>, n_hyperlinks: *mut i32) -> HRESULT,
 }
 
+impl IAccessibleHypertext2 {
+    /// Returns the (server-allocated array, count) of hyperlinks on this
+    /// hypertext. Each `Option<IAccessibleHyperlink>` in the array is
+    /// AddRef'd; the caller owns them. The caller is also responsible
+    /// for freeing the outer array via
+    /// `windows::Win32::System::Com::CoTaskMemFree`.
+    ///
+    /// On error, returns `Err(hr)` and the out-params are not written.
+    /// On success with zero links, returns `Ok((null, 0))` -- the caller
+    /// should not dereference the array but should still skip the free
+    /// (CoTaskMemFree on null is documented as a no-op, so calling it
+    /// either way is fine).
+    ///
+    /// # Safety
+    ///
+    /// The underlying COM pointer wrapped by `self` must point to a live,
+    /// well-formed `IAccessibleHypertext2` implementation for the duration
+    /// of this call.
+    pub unsafe fn get_hyperlinks(
+        &self,
+    ) -> windows::core::Result<(*mut Option<IAccessibleHyperlink>, i32)> {
+        let mut ptr: *mut Option<IAccessibleHyperlink> = core::ptr::null_mut();
+        let mut count: i32 = 0;
+        let hr = (Interface::vtable(self).get_hyperlinks)(
+            Interface::as_raw(self),
+            &mut ptr as *mut _,
+            &mut count as *mut _,
+        );
+        if hr.is_err() {
+            return Err(hr.into());
+        }
+        Ok((ptr, count))
+    }
+}
+
 // --- IAccessibleHyperlink -------------------------------------------------
 //
 // Inherits from IAccessibleAction in the IDL, but PR 2 only QIs to it and
