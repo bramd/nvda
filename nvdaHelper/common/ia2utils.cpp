@@ -118,6 +118,85 @@ void IA2AttribsToMap(const wstring &attribsString, map<wstring, wstring> &attrib
 		}
 	}
 }
+
+namespace {
+	class HtHyperlinkGetter : public HyperlinkGetter {
+		public:
+		HtHyperlinkGetter(CComPtr<IAccessibleHypertext> hypertext)
+			: hypertext(hypertext) {}
+		CComPtr<IAccessibleHyperlink> next() override;
+
+		private:
+		CComPtr<IAccessibleHypertext> hypertext;
+		long index = 0;
+	};
+
+	class Ht2HyperlinkGetter : public HyperlinkGetter {
+		public:
+		Ht2HyperlinkGetter(CComPtr<IAccessibleHypertext2> hypertext)
+			: hypertext(hypertext), count(-1) {}
+		~Ht2HyperlinkGetter() override {
+			if (this->rawLinks) {
+				CoTaskMemFree(this->rawLinks);
+			}
+		}
+		CComPtr<IAccessibleHyperlink> next() override;
+
+		private:
+		CComPtr<IAccessibleHypertext2> hypertext;
+		IAccessibleHyperlink** rawLinks = nullptr;
+		long count;
+		long index = 0;
+		void maybeFetch();
+	};
+
+	CComPtr<IAccessibleHyperlink> HtHyperlinkGetter::next() {
+		CComPtr<IAccessibleHyperlink> link;
+		// hyperlink will fail or return null if the index is too big.
+		HRESULT res = this->hypertext->get_hyperlink(this->index, &link);
+		++this->index;
+		if (FAILED(res) || !link) {
+			return nullptr;
+		}
+		return link;
+	}
+
+	void Ht2HyperlinkGetter::maybeFetch() {
+		if (this->count >= 0) {
+			return;
+		}
+		if (FAILED(hypertext->get_hyperlinks(&this->rawLinks, &this->count))) {
+			this->count = 0;
+		}
+	}
+
+	CComPtr<IAccessibleHyperlink> Ht2HyperlinkGetter::next() {
+		this->maybeFetch();
+		if (this->index >= this->count) {
+			return nullptr;
+		}
+		// Ensure we don't AddRef this pointer.
+		CComPtr<IAccessibleHyperlink> link;
+		link.Attach(this->rawLinks[this->index]);
+		++this->index;
+		return link;
+	}
+}
+
+std::unique_ptr<HyperlinkGetter> makeHyperlinkGetter(IAccessible2* acc) {
+	// Try IAccessibleHypertext2 first.
+	CComQIPtr<IAccessibleHypertext2> ht2 = acc;
+	if (ht2) {
+		return std::make_unique<Ht2HyperlinkGetter>(ht2);
+	}
+	// Fall back to IAccessibleHypertext.
+	CComQIPtr<IAccessibleHypertext> ht = acc;
+	if (ht) {
+		return std::make_unique<HtHyperlinkGetter>(ht);
+	}
+	// Neither interface is supported.
+	return nullptr;
+}
 #endif
 
 std::pair<std::vector<CComVariant>, HRESULT>
@@ -149,80 +228,4 @@ getAccessibleChildren(IAccessible* pacc, long indexOfFirstChild, long maxChildCo
 			S_FALSE
 		);
 	}
-}
-
-CComPtr<IAccessibleHyperlink> HyperlinkGetter::next() {
-	return this->get(this->index++);
-}
-
-HtHyperlinkGetter::HtHyperlinkGetter(CComPtr<IAccessibleHypertext> hypertext)
-	: hypertext(hypertext)
-{
-}
-
-CComPtr<IAccessibleHyperlink> HtHyperlinkGetter::get(const unsigned long index) {
-	CComPtr<IAccessibleHyperlink> link;
-	// hyperlink will fail or return null if the index is too big. The caller
-	// is probably only calling us when it encounters an embedded object
-	// character anyway.
-	// Thus, we don't need to call nHyperlinks.
-	HRESULT res = this->hypertext->get_hyperlink(index, &link);
-	if (FAILED(res) || !link) {
-		return nullptr;
-	}
-	return link;
-}
-
-Ht2HyperlinkGetter::Ht2HyperlinkGetter(CComPtr<IAccessibleHypertext2> hypertext)
-	: hypertext(hypertext), count(-1)
-{
-	// count -1 means hyperlinks haven't been fetched yet.
-	// See maybeFetch().
-}
-
-void Ht2HyperlinkGetter::maybeFetch() {
-	// We lazily fetch hyperlinks the first time get() is called.
-	// This avoids a pointless COM call in the case where there are no hyperlinks,
-	// since the caller probably only calls when it encounters an
-	// embedded object character.
-	if (this->count >= 0) {
-		// Already fetched.
-		return;
-	}
-	if (FAILED(hypertext->get_hyperlinks(&this->rawLinks, &this->count))) {
-		this->count = 0;
-	}
-}
-
-CComPtr<IAccessibleHyperlink> Ht2HyperlinkGetter::get(const unsigned long index) {
-	this->maybeFetch();
-	if ((long)index >= this->count) {
-		return nullptr;
-	}
-	// Ensure we don't AddRef this pointer.
-	CComPtr<IAccessibleHyperlink> link;
-	link.Attach(this->rawLinks[index]);
-	return link;
-}
-
-Ht2HyperlinkGetter::~Ht2HyperlinkGetter() {
-	if (this->rawLinks) {
-		CoTaskMemFree(this->rawLinks);
-	}
-}
-
-// We use a unique_ptr so we can have a polymorphic, optional return.
-unique_ptr<HyperlinkGetter> makeHyperlinkGetter(IAccessible2* acc) {
-	// Try IAccessibleHypertext2 first.
-	CComQIPtr<IAccessibleHypertext2> ht2 = acc;
-	if (ht2) {
-		return make_unique<Ht2HyperlinkGetter>(ht2);
-	}
-	// Fall back to IAccessibleHypertext.
-	CComQIPtr<IAccessibleHypertext> ht = acc;
-	if (ht) {
-		return make_unique<HtHyperlinkGetter>(ht);
-	}
-	// Neither interface is supported.
-	return nullptr;
 }

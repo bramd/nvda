@@ -45,50 +45,13 @@ getAccessibleChildren(IAccessible* pacc, long indexOfFirstChild, long maxChildCo
 /**
  * Base class to support retrieving hyperlinks (embedded objects) from
  * IAccessibleHypertext or IAccessibleHypertext2.
- * Callers should use the makeHyperlinkGetter factory function,
- * rather than instantiating subclasses directly.
+ * Construct via the makeHyperlinkGetter factory function below.
  */
 class HyperlinkGetter {
 	public:
 	virtual ~HyperlinkGetter() {}
-
-	/** Get the next hyperlink.
-	 */
-	virtual CComPtr<IAccessibleHyperlink> next();
-
-	protected:
-	long index = 0;
-	virtual CComPtr<IAccessibleHyperlink> get(const unsigned long index) = 0;
-};
-
-/** Supports retrieval of hyperlinks from IAccessibleHypertext.
- */
-class HtHyperlinkGetter: public HyperlinkGetter {
-	public:
-	HtHyperlinkGetter(CComPtr<IAccessibleHypertext> hypertext);
-
-	protected:
-	virtual CComPtr<IAccessibleHyperlink> get(const unsigned long index) override;
-
-	private:
-	CComPtr<IAccessibleHypertext> hypertext;
-};
-
-/** Supports retrieval of hyperlinks from IAccessibleHypertext2.
- */
-class Ht2HyperlinkGetter: public HyperlinkGetter {
-	public:
-	Ht2HyperlinkGetter(CComPtr<IAccessibleHypertext2> hypertext);
-	virtual ~Ht2HyperlinkGetter();
-
-	protected:
-	virtual CComPtr<IAccessibleHyperlink> get(const unsigned long index) override;
-
-	private:
-	CComPtr<IAccessibleHypertext2> hypertext;
-	IAccessibleHyperlink** rawLinks = nullptr;
-	long count;
-	void maybeFetch();
+	/** Get the next hyperlink, or null if iteration is exhausted. */
+	virtual CComPtr<IAccessibleHyperlink> next() = 0;
 };
 
 /**
