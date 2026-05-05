@@ -345,6 +345,23 @@ std::optional<wstring> getAccDescription(IAccessible2* pacc, VARIANT childID) {
 /**
  * Get the selected item or the first item if no item is selected.
  */
+#ifdef _M_X64
+extern "C" {
+	void* nvda_ia2_get_selected_item(void* pacc2);
+}
+
+CComPtr<IAccessible2> GeckoVBufBackend_t::getSelectedItem(
+	IAccessible2* container, const map<wstring, wstring>& attribs
+) {
+	CComPtr<IAccessible2> result;
+	auto* raw = static_cast<IAccessible2*>(
+		nvda_ia2_get_selected_item(container));
+	// raw is already AddRef'd by the Rust side or null;
+	// Attach takes ownership without extra AddRef.
+	result.Attach(raw);
+	return result;
+}
+#else
 CComPtr<IAccessible2> GeckoVBufBackend_t::getSelectedItem(
 	IAccessible2* container, const map<wstring, wstring>& attribs
 ) {
@@ -385,6 +402,7 @@ CComPtr<IAccessible2> GeckoVBufBackend_t::getSelectedItem(
 
 	return nullptr;
 }
+#endif
 
 /**
  * Get the text box inside a combo box, if any.
