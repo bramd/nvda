@@ -43,14 +43,25 @@ pub unsafe extern "C" fn nvda_ia2_extend_details_roles_attribute(
         return;
     }
     let role = unsafe { core::slice::from_raw_parts(role_ptr, role_len) };
-    let field_node = VbufFieldNode(node);
+    unsafe { extend_details_roles_attribute(VbufFieldNode(node), role) };
+}
 
-    let existing = unsafe { field_node.get_attribute(ATTR_NAME_DETAILS_ROLES) };
+/// Rust-side variant for callers that already hold a `VbufFieldNode`
+/// handle (e.g. the `aria_details` port).
+///
+/// # Safety
+///
+/// `node` must be a live control field node.
+pub(crate) unsafe fn extend_details_roles_attribute(
+    node: VbufFieldNode,
+    role: &[u16],
+) {
+    let existing = unsafe { node.get_attribute(ATTR_NAME_DETAILS_ROLES) };
     let new_value = combine_details_roles(existing.as_deref(), role);
     // `addAttribute` replaces an attribute that already exists, so a
     // single call covers both the "extend" and "create" cases.
     unsafe {
-        field_node.add_attribute(ATTR_NAME_DETAILS_ROLES, &new_value);
+        node.add_attribute(ATTR_NAME_DETAILS_ROLES, &new_value);
     }
 }
 

@@ -17,6 +17,7 @@
 #![allow(dead_code)]
 
 pub mod acc_description;
+pub mod aria_details;
 pub mod aria_error;
 pub mod attribs;
 pub mod child_count;

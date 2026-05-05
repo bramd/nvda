@@ -264,23 +264,6 @@ OptionalLabelInfo GeckoVBufBackend_t::getLabelInfo(IAccessible2* pacc2) {
 }
 #endif
 
-std::vector<int> GeckoVBufBackend_t::getAllRelationIdsForRelationType(LPCOLESTR ia2TargetRelation, IAccessible2* pacc2) {
-	CComQIPtr<IAccessible2_2> pacc2_2 = pacc2;
-	if (pacc2_2 == nullptr) {
-		return {};
-	}
-	auto accTargets = getRelationElementsOfType(ia2TargetRelation, pacc2_2);
-	std::vector<int> ids;
-	for (auto& accTarget : accTargets) {
-		long id = 0l;
-		if (accTarget && accTarget->get_uniqueID(&id) == S_OK) {
-			ids.push_back(static_cast<int>(id));
-		}
-	}
-
-	return ids;
-}
-
 #ifdef NVDA_HAS_RUST_HELPERS
 extern "C" {
 	int nvda_ia2_get_child_count(void* pacc, bool is_aria_hidden);
@@ -429,6 +412,18 @@ void _extendDetailsRolesAttribute(VBufStorage_controlFieldNode_t& node, const st
 }
 #endif
 
+#ifdef NVDA_HAS_RUST_HELPERS
+extern "C" {
+	void nvda_ia2_fill_vbuf_aria_details(
+		int doc_handle,
+		void* pacc,
+		void* buffer,
+		void* node,
+		const wchar_t* node_role_ptr,
+		size_t node_role_len,
+		bool is_chrome);
+}
+
 void GeckoVBufBackend_t::fillVBufAriaDetails(
 	int docHandle,
 	CComPtr<IAccessible2> pacc,
@@ -436,48 +431,17 @@ void GeckoVBufBackend_t::fillVBufAriaDetails(
 	VBufStorage_controlFieldNode_t& nodeBeingFilled,
 	const std::wstring& nodeBeingFilledRole
 ){
-	/* Set the details role by checking for both IA2_RELATION_DETAILS and IA2_RELATION_DETAILS_FOR as one
-	of the nodes in the relationship will not be in the buffer yet.
-	It is possible that nodeBeingFilled is both the target and origin of multiple details relations.
-	*/
-	// handle case where nodeBeingFilled is the origin of a details relation.
-	auto idOfDetailsTargets = getAllRelationIdsForRelationType(IA2_RELATION_DETAILS, pacc);
-	if (0 < idOfDetailsTargets.size()) {
-		nodeBeingFilled.addAttribute(L"hasDetails", L"true");
-		for (const auto idOfDetailsTarget : idOfDetailsTargets) {
-			auto detailsTargetNode = buffer.getControlFieldNodeWithIdentifier(docHandle, idOfDetailsTarget);
-			if (detailsTargetNode != nullptr) {
-				const std::wstring roleName = L"role";
-				auto targetDetailsRole = detailsTargetNode->getAttribute(roleName);
-				if (targetDetailsRole.has_value()) {
-					_extendDetailsRolesAttribute(nodeBeingFilled, *targetDetailsRole);
-				}
-				else {
-					/*
-					This is not an error, the target may not have a role listed in its attributes.
-					Add "unknown" to the ariaDetailsRoles.
-					Explanation:
-					hasDetail=True is not enough to describe the scenario when there multiple details
-					relations but one has a generic role, EG. a comment and an 'unknown' role.
-					This would then produce attributes 'hasDetail=True detailsRoles="comment"',
-					reported as "has comment" since only one role is listed.
-					Instead prefer 'hasDetail=True detailsRoles="comment, unknown"',
-					reported as "has comment has details" since both roles are listed.
-					*/
-					_extendDetailsRolesAttribute(nodeBeingFilled, L"unknown");
-				}
-			}
-		}
-	}
-	// handle case where nodeBeingFilled is the target of a details relation.
-	auto idOfDetailsOrigins = getAllRelationIdsForRelationType(IA2_RELATION_DETAILS_FOR, pacc);
-	for(const auto idOfDetailsOrigin : idOfDetailsOrigins){
-		auto detailsOriginNode = buffer.getControlFieldNodeWithIdentifier(docHandle, idOfDetailsOrigin);
-		if (detailsOriginNode != nullptr) {
-			_extendDetailsRolesAttribute(*detailsOriginNode, nodeBeingFilledRole);
-		}
-	}
+	const bool isChrome = this->toolkitName.compare(L"Chrome") == 0;
+	nvda_ia2_fill_vbuf_aria_details(
+		docHandle,
+		pacc.p,
+		&buffer,
+		&nodeBeingFilled,
+		nodeBeingFilledRole.data(),
+		nodeBeingFilledRole.size(),
+		isChrome);
 }
+#endif
 
 
 #ifdef NVDA_HAS_RUST_HELPERS
