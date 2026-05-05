@@ -179,7 +179,7 @@ impl WasapiPlayer {
             // accessing inner. This matches the C++ behavior where the GIL
             // is released for all ctypes calls.
             feed_id = py.detach(move || unsafe {
-                player_ptr.as_mut().feed(Some(&data_owned), true)
+                player_ptr.as_mut().feed(&data_owned, true)
             }).map_err(to_os_error)?;
         }
         Ok(feed_id)

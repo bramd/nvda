@@ -33,6 +33,14 @@ fn is_error(hr: &windows::core::Error, code: i32) -> bool {
     hr.code().0 == code
 }
 
+/// Source of frames for [`WasapiPlayerInner::feed_inner`]: real audio
+/// data (`Data`) or `n` frames of silence emitted via
+/// `AUDCLNT_BUFFERFLAGS_SILENT` (`Silence`).
+enum FeedSource<'a> {
+    Data(&'a [u8]),
+    Silence(u32),
+}
+
 /// Thread-safe shared cell holding the current `IAudioClient`.
 ///
 /// The same `Arc<ClientSlot>` is held by `WasapiPlayerInner` and any
@@ -225,14 +233,31 @@ impl WasapiPlayerInner {
         Ok(())
     }
 
-    /// Feed a chunk of audio data.
-    ///
-    /// If `data` is `None`, silence is played (AUDCLNT_BUFFERFLAGS_SILENT).
-    /// If `want_id` is true, the returned u32 is a feed id that will be passed
-    /// to the callback when this chunk finishes playing. Otherwise returns 0.
+    /// Feed a chunk of audio data. Returns a feed id (when `want_id` is
+    /// true) that will be passed to the callback when this chunk finishes
+    /// playing; otherwise returns 0.
     pub fn feed(
         &mut self,
-        data: Option<&[u8]>,
+        data: &[u8],
+        want_id: bool,
+    ) -> windows::core::Result<u32> {
+        self.feed_inner(FeedSource::Data(data), want_id)
+    }
+
+    /// Feed `frame_count` frames of silence using `AUDCLNT_BUFFERFLAGS_SILENT`.
+    ///
+    /// This is what the silence keep-alive thread should call: WASAPI does
+    /// not need to read the buffer (the SILENT flag tells the device to
+    /// emit silence), so there's no memcpy of zero data per buffer cycle.
+    /// Mirrors the C++ `WasapiPlayer::feed(null, SILENCE_BYTES, null)` path.
+    pub fn feed_silence(&mut self, frame_count: u32) -> windows::core::Result<()> {
+        let _ = self.feed_inner(FeedSource::Silence(frame_count), false)?;
+        Ok(())
+    }
+
+    fn feed_inner(
+        &mut self,
+        source: FeedSource<'_>,
         want_id: bool,
     ) -> windows::core::Result<u32> {
         if self.get_play_state() == PlayState::Stopping {
@@ -241,7 +266,10 @@ impl WasapiPlayerInner {
 
         let block_align = self.block_align as usize;
         // Work out how many frames to send and where the data starts.
-        let mut data_slice: Option<&[u8]> = data;
+        let mut data_slice: Option<&[u8]> = match source {
+            FeedSource::Data(d) => Some(d),
+            FeedSource::Silence(_) => None,
+        };
         let mut remaining_frames: u32;
         let mut should_insert_silent_frame = false;
 
@@ -272,9 +300,11 @@ impl WasapiPlayerInner {
                     remaining_frames += 1;
                 }
             }
+        } else if let FeedSource::Silence(n) = source {
+            // Silent feed: produce N frames of silence via the SILENT flag.
+            remaining_frames = n;
         } else {
-            // No data -- caller wants silence.
-            remaining_frames = 0;
+            unreachable!("data_slice is None only when source is Silence");
         }
 
         // Mutable pointer into the remaining data we still need to copy.

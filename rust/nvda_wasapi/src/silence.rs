@@ -183,24 +183,37 @@ impl SilencePlayer {
                     break;
                 }
 
-                // Build the feed data outside the player lock.
-                // Always pass actual data (zeros when volume=0) so that
-                // feed() has a non-zero frame count and blocks waiting for
-                // WASAPI buffer space. Passing None would set
-                // remaining_frames=0, causing a tight CPU-spinning loop.
-                let feed_data: Vec<u8> = {
+                // Pump silence/white-noise into the player. When volume is
+                // zero we use feed_silence(), which routes through
+                // AUDCLNT_BUFFERFLAGS_SILENT and avoids both the per-cycle
+                // memcpy and the Vec allocation. With non-zero volume we
+                // need to actually feed the white-noise samples.
+                let volume_zero = {
                     let s = state.lock().unwrap();
-                    let bytes: &[u8] = unsafe {
-                        std::slice::from_raw_parts(
-                            s.white_noise.as_ptr() as *const u8,
-                            s.white_noise.len() * 2,
-                        )
-                    };
-                    bytes.to_vec()
+                    s.volume == 0.0
                 };
-
                 let mut p = player.lock().unwrap();
-                let _ = p.feed(Some(&feed_data), false);
+                if volume_zero {
+                    let _ = p.feed_silence(SILENCE_SAMPLES as u32);
+                } else {
+                    // Copy the noise outside the feed() call so we don't
+                    // hold the state lock across the COM call. (state and
+                    // player are independent locks; this matches the
+                    // pattern used elsewhere.)
+                    drop(p);
+                    let feed_data: Vec<u8> = {
+                        let s = state.lock().unwrap();
+                        let bytes: &[u8] = unsafe {
+                            std::slice::from_raw_parts(
+                                s.white_noise.as_ptr() as *const u8,
+                                s.white_noise.len() * 2,
+                            )
+                        };
+                        bytes.to_vec()
+                    };
+                    let mut p = player.lock().unwrap();
+                    let _ = p.feed(&feed_data, false);
+                }
             }
 
             // Check if we were asked to terminate while feeding.
