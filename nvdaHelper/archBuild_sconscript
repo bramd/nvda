@@ -102,6 +102,13 @@ env.Append(
 	],
 )
 
+# Rust static libs (nvda_input_hooks, nvda_ia2) link into nvdaHelperRemote.dll
+# for x86, x86_64, arm64 (native), and arm64ec (the last one is a sub-variant
+# of arm64 distinguished by env["isArm64EC"]). C++ files use this macro to
+# guard the thin Rust-shim wrappers that replace verbatim implementations.
+if TARGET_ARCH in ("x86", "x86_64", "arm64"):
+	env.Append(CPPDEFINES=["NVDA_HAS_RUST_HELPERS"])
+
 env.Append(CXXFLAGS=["/EHsc"])
 
 env.Append(CPPPATH=["#/include", "#/include/wil/include", "#/miscDeps/include", Dir(".").abspath])
