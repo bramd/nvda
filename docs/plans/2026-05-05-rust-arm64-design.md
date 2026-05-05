@@ -59,10 +59,11 @@ Two changes:
 
 The triple lookup:
 
-| `TARGET_ARCH` | Cargo target triple |
-| --- | --- |
-| `x86_64` | `x86_64-pc-windows-msvc` |
-| `arm64` | `aarch64-pc-windows-msvc` |
+| `TARGET_ARCH` | `isArm64EC` | Cargo target triple |
+| --- | --- | --- |
+| `x86_64` | n/a | `x86_64-pc-windows-msvc` |
+| `arm64` | `False` | `aarch64-pc-windows-msvc` |
+| `arm64` | `True` | `arm64ec-pc-windows-msvc` |
 
 After the change:
 
@@ -172,8 +173,31 @@ For the `#else` verbatim C++: **drop it** for files where every Rust port alread
 
 PR carve-up: commits 1-2 land as "ARM64 cargo support" (mechanical, no behaviour change on x64). Commit 3 lands as a follow-up ("Drop `_M_X64` fallbacks now that ARM64 supports Rust") once the friend has confirmed the ARM64 build works.
 
+## arm64ec
+
+NVDA's SCons builds the helper DLLs unconditionally for every arch in `archBuild_sconscript:253`, so **arm64ec currently links the C++ verbatim `#else` branches** in every helper we've ported. If we drop the `#else` blocks in piece 3 without thinking about arm64ec, the arm64ec build of `nvdaHelperRemote.dll` loses those symbols. So either we keep the `#else` blocks or we bring arm64ec into the Rust fold.
+
+**Status of `arm64ec-pc-windows-msvc` as of 2026-05-05:**
+
+* **Tier 2** stable, available via `rustup target add arm64ec-pc-windows-msvc`. std is supported; static and dynamic libs build. (Promoted from Tier 3 in 2024.)
+* The target presents as x86_64 to the OS, has its own name mangling, requires entry/exit thunks for some functions, and uses a different call-checker. LLVM 18.1.4+ required (any current rustc satisfies this).
+* **Known open issue ([rust-lang/rust#131172](https://github.com/rust-lang/rust/issues/131172))**: arm64ec sets `target_arch = "arm64ec"` rather than `"aarch64"`. Code using `#[cfg(target_arch = "aarch64")]` won't fire on arm64ec. Our `nvda_*` crates have no such gates but **windows-rs internals might** -- this is the main probe-test risk.
+* **PyO3 / maturin / arm64ec**: no issues filed in either repo. PyO3 uses raw-dylib for Python linkage, which should work for any Tier 2 target -- but untested in practice for arm64ec.
+
+**Probe result (2026-05-05):** ran `cargo build --release --target arm64ec-pc-windows-msvc --package nvda_ia2 --package nvda_input_hooks` against windows-rs 0.58 with the existing source. Build succeeds clean; windows-rs routes arm64ec through its `windows_x86_64_msvc` link layer (consistent with arm64ec's x64-ABI outside-the-binary contract). `target_arch = "arm64ec"` quirk does not affect us because our crate uses no `cfg(target_arch=...)` gates and windows-rs's internal gating evidently handles the case correctly. aarch64-pc-windows-msvc also builds clean.
+
+**Updated decision for piece 1:** include arm64ec alongside arm64 in the cargo step. Both targets build the static libs; both link into their respective `nvdaHelperRemote.dll` variants. The `RUST_TARGET_TRIPLE` table grows by one row.
+
+**Updated decision for piece 2 (maturin)**: keep arm64ec OUT of scope. arm64ec Python extensions via PyO3 are uncharted; defer until someone has a concrete reason to need a Rust-built `nvdaRust.pyd` for arm64ec processes (which today is a small slice of the user base on top of an already-small ARM64 slice). The arm64ec NVDA build can use whatever non-Rust audio/text path NVDA had pre-Rust... wait, that's not actually an option since `nvwave.py` requires `nvdaRust.wasapi`. **Revised:** the arm64ec NVDA build needs to load an arm64ec `nvdaRust.pyd`, OR the arm64ec Python in NVDA's bundle needs to load an x64 `nvdaRust.pyd` via x64 emulation. The latter is plausible (arm64ec is built for exactly this kind of cross-arch code in one process) but needs to be verified before committing to either path. **Action:** bump this to a proper open question; treat piece 2 + arm64ec as a separate investigation.
+
+**Updated decision for piece 3:**
+
+* Replace `#ifdef _M_X64` with `#ifdef NVDA_HAS_RUST_HELPERS` ✓
+* Define `NVDA_HAS_RUST_HELPERS` for both `TARGET_ARCH == "x86_64"` and `TARGET_ARCH == "arm64"` (covering both arm64 and arm64ec, since both link the Rust libs per the probe above).
+* `#else` C++ verbatim can now be safely dropped for fully-ported files because every arch that compiles `nvdaHelperRemote.dll` also routes through Rust.
+
 ## Open questions
 
-* **Maturin cross-compile**: piece 2 deliberately punts. If x64-host-builds-ARM64-NVDA becomes a workflow we want to support (e.g. for our own CI on x64 runners, or for releasing), revisit Option C with `PYO3_CROSS_LIB_DIR`. For now, ARM64 builds happen on ARM64 hosts.
-* **arm64ec**: NVDA has an `envArm64EC` clone that builds the helper DLL with x64 emulation-compatible ABI. arm64ec is for Windows 11 emulation interop with x64 binaries -- it's a hybrid arch where some objects are arm64-native and others are x64. Do we need cargo for arm64ec? **Decision:** no for v1. arm64ec consumers can call the x64 nvdaHelper variant. Revisit if we get a concrete reason to ship Rust binaries for arm64ec.
+* **arm64ec maturin / PyO3**: can we build `nvdaRust.pyd` for arm64ec? Or does the arm64ec NVDA bundle need to load an x64 `nvdaRust.pyd` via emulation? Non-trivial investigation -- defer until arm64 (non-EC) support is shipped and we have a concrete need.
+* **Maturin cross-compile (arm64 from x64 host)**: piece 2 deliberately punts. If x64-host-builds-ARM64-NVDA becomes a workflow we want to support (e.g. for our own CI on x64 runners, or for releasing), revisit Option C with `PYO3_CROSS_LIB_DIR`. For now, ARM64 builds happen on ARM64 hosts.
 * **CI**: turning on ARM64 in `.github/workflows/testAndPublish.yml` (`supportedArchitectures: '["x64"]'` -> `'["x64", "arm64"]'`) doubles runner-minute usage. Out of scope for this design; the user can flip the switch when they're comfortable with the runner-minute cost.
