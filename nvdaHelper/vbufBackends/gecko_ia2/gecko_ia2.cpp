@@ -344,34 +344,23 @@ CComPtr<IAccessible2> GeckoVBufBackend_t::getSelectedItem(
 /**
  * Get the text box inside a combo box, if any.
  */
+#ifdef NVDA_HAS_RUST_HELPERS
+extern "C" {
+	void* nvda_ia2_get_text_box_in_combo_box(void* combo_box);
+}
+
 CComPtr<IAccessible2> getTextBoxInComboBox(
 	IAccessible2* comboBox
 ) {
-	CComPtr<IDispatch> childDisp;
-	// We only check the first child.
-	if (FAILED(comboBox->get_accChild(CComVariant(1), &childDisp))) {
-		return nullptr;
-	}
-	CComQIPtr<IAccessible2> child{childDisp};
-	if (!child) {
-		return nullptr;
-	}
-	long role;
-	if (FAILED(child->role(&role))) {
-		return nullptr;
-	}
-	if (role != ROLE_SYSTEM_TEXT) {
-		return nullptr;
-	}
-	CComVariant state;
-	if (FAILED(child->get_accState(CComVariant(CHILDID_SELF), &state))) {
-		return nullptr;
-	}
-	if (state.vt != VT_I4 || !(state.lVal & STATE_SYSTEM_FOCUSABLE)) {
-		return nullptr;
-	}
-	return child;
+	CComPtr<IAccessible2> result;
+	auto* raw = static_cast<IAccessible2*>(
+		nvda_ia2_get_text_box_in_combo_box(comboBox));
+	// raw is already AddRef'd by the Rust side or null;
+	// Attach takes ownership without extra AddRef.
+	result.Attach(raw);
+	return result;
 }
+#endif
 
 
 std::tuple<long, CComBSTR> getRoleLongRoleString(CComPtr<IAccessible2> pacc, CComVariant varChild) {
