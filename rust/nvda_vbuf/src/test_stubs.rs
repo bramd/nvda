@@ -184,3 +184,14 @@ pub unsafe extern "C" fn vbuf_backend_invalidate_subtree(
 ) -> i32 {
     unimplemented!("vbuf_backend_invalidate_subtree test stub");
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn vbuf_backend_reuse_existing_node(
+    _backend: *mut c_void,
+    _parent: *mut c_void,
+    _previous: *mut c_void,
+    _doc_handle: i32,
+    _id: i32,
+) -> *mut c_void {
+    unimplemented!("vbuf_backend_reuse_existing_node test stub");
+}

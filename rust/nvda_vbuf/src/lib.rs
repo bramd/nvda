@@ -116,6 +116,14 @@ unsafe extern "C" {
         backend: *mut c_void,
         node: *mut c_void,
     ) -> i32;
+
+    pub fn vbuf_backend_reuse_existing_node(
+        backend: *mut c_void,
+        parent: *mut c_void,
+        previous: *mut c_void,
+        doc_handle: i32,
+        id: i32,
+    ) -> *mut c_void;
 }
 
 // ---------------------------------------------------------------------
@@ -471,5 +479,39 @@ impl VbufBackend {
         node: VbufControlFieldNode,
     ) -> bool {
         unsafe { vbuf_backend_invalidate_subtree(self.0, node.0) != 0 }
+    }
+
+    /// Look up an existing control field node on this backend that is
+    /// safe to reuse during a partial re-render. Returns `None` when no
+    /// matching node exists, when the backend has been told to always
+    /// rerender that subtree, or when the node refused reuse.
+    /// See `VBufBackend_t::reuseExistingNodeInRender` in
+    /// `nvdaHelper/vbufBase/backend.cpp` for the full reuse contract.
+    ///
+    /// # Safety
+    ///
+    /// `self` must be a live backend; `parent` and `previous`, when
+    /// `Some`, must be live nodes belonging to a buffer in mid-render.
+    pub unsafe fn reuse_existing_node(
+        self,
+        parent: Option<VbufControlFieldNode>,
+        previous: Option<VbufFieldNode>,
+        doc_handle: i32,
+        id: i32,
+    ) -> Option<VbufControlFieldNode> {
+        let raw = unsafe {
+            vbuf_backend_reuse_existing_node(
+                self.0,
+                parent.map(|p| p.0).unwrap_or(core::ptr::null_mut()),
+                previous.map(|p| p.0).unwrap_or(core::ptr::null_mut()),
+                doc_handle,
+                id,
+            )
+        };
+        if raw.is_null() {
+            None
+        } else {
+            Some(VbufControlFieldNode(raw))
+        }
     }
 }

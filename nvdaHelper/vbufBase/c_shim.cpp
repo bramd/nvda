@@ -201,3 +201,17 @@ extern "C" int vbuf_backend_invalidate_subtree(void* backend, void* node) {
 	return static_cast<VBufBackend_t*>(backend)->invalidateSubtree(
 		static_cast<VBufStorage_controlFieldNode_t*>(node)) ? 1 : 0;
 }
+
+extern "C" void* vbuf_backend_reuse_existing_node(
+	void* backend,
+	void* parent,
+	void* previous,
+	int doc_handle,
+	int id
+) {
+	return static_cast<VBufBackend_t*>(backend)->reuseExistingNodeInRender(
+		static_cast<VBufStorage_controlFieldNode_t*>(parent),
+		static_cast<VBufStorage_fieldNode_t*>(previous),
+		doc_handle,
+		id);
+}
