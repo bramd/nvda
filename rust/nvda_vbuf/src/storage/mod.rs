@@ -400,6 +400,118 @@ impl Buffer {
         self.working_invalid.is_empty()
     }
 
+    /// Move a subtree rooted at `source_root` from `source` into
+    /// `self`. The subtree is detached from any tree links in
+    /// `source` (the caller must have already unlinked
+    /// `source_root` from its parent / siblings or `source_root`
+    /// must have been a free root) and inserted into `self` at the
+    /// `(parent, previous)` anchor. Returns the new root key in
+    /// `self`, or `None` on validation failure.
+    ///
+    /// All descendant nodes of `source_root` are also moved. Their
+    /// keys change (slotmap keys are arena-scoped); a key remapping
+    /// table is built and used to translate every parent / sibling
+    /// / child pointer to the new arena.
+    ///
+    /// `by_identifier` entries for moved control / reference nodes
+    /// are transferred from `source` to `self`. **Identifier
+    /// collisions are not handled here -- the caller must remove
+    /// the colliding node in `self` before calling.** When a
+    /// collision occurs, the existing entry in `self.by_identifier`
+    /// is silently overwritten, which leaves the previously-
+    /// existing node orphaned in the arena.
+    pub fn move_subtree_from(
+        &mut self,
+        source: &mut Buffer,
+        source_root: NodeKey,
+        parent: Option<NodeKey>,
+        previous: Option<NodeKey>,
+    ) -> Option<NodeKey> {
+        if !source.contains(source_root) {
+            return None;
+        }
+        // The new parent must be an existing control field in self
+        // (or None for root), and previous (if Some) must be a
+        // current child of parent in self.
+        if !self.validate_insertion_anchor(parent, previous) {
+            return None;
+        }
+
+        // 1. Collect source keys depth-first.
+        let mut source_keys: Vec<NodeKey> = Vec::new();
+        let mut stack: Vec<NodeKey> = vec![source_root];
+        while let Some(k) = stack.pop() {
+            source_keys.push(k);
+            let mut child = source.nodes[k].first_child;
+            while let Some(ck) = child {
+                stack.push(ck);
+                child = source.nodes[ck].next;
+            }
+        }
+
+        // 2. Drain source -> insert into self, building a remap.
+        let mut remap: BTreeMap<NodeKey, NodeKey> = BTreeMap::new();
+        for src_key in &source_keys {
+            let node = source
+                .nodes
+                .remove(*src_key)
+                .expect("collected key must still exist");
+            // Pull the identifier (if any) from source and forward
+            // it to self below.
+            let ident = match &node.kind {
+                FieldNodeKind::Control(d) => Some(d.identifier),
+                FieldNodeKind::Reference(d) => Some(d.identifier),
+                FieldNodeKind::Text(_) => None,
+            };
+            if let Some(i) = ident {
+                source.by_identifier.remove(&i);
+            }
+            let new_key = self.nodes.insert(node);
+            remap.insert(*src_key, new_key);
+            if let Some(i) = ident {
+                self.by_identifier.insert(i, new_key);
+            }
+        }
+
+        // 3. Re-link parent/sibling/child pointers via remap. Only
+        // links that point to keys in `source_keys` (i.e. inside the
+        // moved subtree) get translated; links to nodes outside the
+        // subtree are cleared (the C++ caller normally orphans the
+        // subtree before move so external links are already None,
+        // but defend against stale pointers).
+        for src_key in &source_keys {
+            let new_key = remap[src_key];
+            let n = &mut self.nodes[new_key];
+            n.parent = translate_link(n.parent, &remap);
+            n.previous = translate_link(n.previous, &remap);
+            n.next = translate_link(n.next, &remap);
+            n.first_child = translate_link(n.first_child, &remap);
+            n.last_child = translate_link(n.last_child, &remap);
+        }
+
+        // 4. Source's root may have been the moved subtree's root;
+        // clear it.
+        if source.root == Some(source_root) {
+            source.root = None;
+        }
+
+        // 5. Reset the new root's external links (parent/prev/next)
+        // before linking it into self. These would have pointed at
+        // siblings or parent in source; in self they're determined
+        // by the (parent, previous) anchor.
+        let new_root = remap[&source_root];
+        {
+            let n = &mut self.nodes[new_root];
+            n.parent = None;
+            n.previous = None;
+            n.next = None;
+        }
+        self.link(parent, previous, new_root);
+        let length = self.nodes[new_root].length;
+        self.bump_ancestor_lengths(new_root, length);
+        Some(new_root)
+    }
+
     /// Mark `key` as invalidated, scheduling its subtree for
     /// re-render on the next update tick. Mirrors
     /// `VBufBackend_t::invalidateSubtree` exactly:
@@ -1425,6 +1537,16 @@ struct NodeSnapshot {
     last_child: Option<NodeKey>,
 }
 
+/// Translate an optional `NodeKey` link via the `remap` table. Keys
+/// not in the remap (i.e. pointing outside the moved subtree) are
+/// returned as `None`.
+fn translate_link(
+    key: Option<NodeKey>,
+    remap: &BTreeMap<NodeKey, NodeKey>,
+) -> Option<NodeKey> {
+    key.and_then(|k| remap.get(&k).copied())
+}
+
 /// Walk back from `start` via `previous` pointers in `buffer` until
 /// a control-field-like node (Control or Reference variant) is
 /// encountered. Returns `None` when the chain ends without finding
@@ -2195,6 +2317,110 @@ mod tests {
         assert!(b.remove_from_working(root));
         assert!(b.working_invalid_empty());
         assert!(!b.remove_from_working(root)); // already removed
+    }
+
+    #[test]
+    fn move_subtree_from_simple_root() {
+        let mut dest = Buffer::new();
+        let dest_root = dest
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+
+        // Build a small tree in source.
+        let mut source = Buffer::new();
+        let s_root = source
+            .add_control_field_node(None, None, cf(2, 1), true)
+            .unwrap();
+        let _s_t1 = source
+            .add_text_field_node(Some(s_root), None, w("hello"))
+            .unwrap();
+        // Move source's root under dest_root.
+        let new_key = dest
+            .move_subtree_from(&mut source, s_root, Some(dest_root), None)
+            .expect("move");
+        // Source is now empty.
+        assert_eq!(source.root(), None);
+        assert!(!source.contains(s_root));
+        // Dest has the moved subtree as a child of dest_root.
+        assert_eq!(dest.get(dest_root).unwrap().first_child, Some(new_key));
+        assert_eq!(dest.get(new_key).unwrap().parent, Some(dest_root));
+        // Identifier (2,1) is now in dest, gone from source.
+        assert_eq!(
+            dest.get_control_field_node_with_identifier(2, 1),
+            Some(new_key)
+        );
+        assert_eq!(
+            source.get_control_field_node_with_identifier(2, 1),
+            None
+        );
+        // Length propagated -- "hello" is 5 chars.
+        assert_eq!(dest.get(new_key).unwrap().length, 5);
+        // dest_root's length is also 5 now.
+        assert_eq!(dest.get(dest_root).unwrap().length, 5);
+    }
+
+    #[test]
+    fn move_subtree_from_preserves_descendant_links() {
+        let mut dest = Buffer::new();
+        let dest_root = dest
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let mut source = Buffer::new();
+        let s_root = source
+            .add_control_field_node(None, None, cf(2, 1), true)
+            .unwrap();
+        let s_mid = source
+            .add_control_field_node(Some(s_root), None, cf(2, 2), false)
+            .unwrap();
+        let s_leaf = source
+            .add_text_field_node(Some(s_mid), None, w("ab"))
+            .unwrap();
+
+        let new_root = dest
+            .move_subtree_from(&mut source, s_root, Some(dest_root), None)
+            .unwrap();
+
+        // Walk from the new root and verify the moved subtree.
+        let new_mid = dest.get(new_root).unwrap().first_child.unwrap();
+        let new_leaf = dest.get(new_mid).unwrap().first_child.unwrap();
+        // Old keys are gone from source (they belonged to source's
+        // arena originally; slotmap keys are arena-scoped).
+        assert!(!source.contains(s_root));
+        assert!(!source.contains(s_mid));
+        assert!(!source.contains(s_leaf));
+        // New keys are connected correctly.
+        assert_eq!(dest.get(new_mid).unwrap().parent, Some(new_root));
+        assert_eq!(dest.get(new_leaf).unwrap().parent, Some(new_mid));
+        // Length: leaf=2, mid=2 (carries leaf's length), new_root=2,
+        // dest_root=2 (after bump_ancestor_lengths).
+        assert_eq!(dest.get(new_leaf).unwrap().length, 2);
+        assert_eq!(dest.get(new_mid).unwrap().length, 2);
+        assert_eq!(dest.get(new_root).unwrap().length, 2);
+        assert_eq!(dest.get(dest_root).unwrap().length, 2);
+        // Text is reachable via dest's tree.
+        let mut buf: Vec<u16> = Vec::new();
+        dest.get_text_in_range(dest_root, 0, 2, &mut buf);
+        assert_eq!(String::from_utf16(&buf).unwrap(), "ab");
+    }
+
+    #[test]
+    fn move_subtree_from_invalid_anchor_returns_none() {
+        let mut dest = Buffer::new();
+        let dest_root = dest
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let mut source = Buffer::new();
+        let s_root = source
+            .add_control_field_node(None, None, cf(2, 1), true)
+            .unwrap();
+        // Try moving as a *new* root when one already exists.
+        assert_eq!(
+            dest.move_subtree_from(&mut source, s_root, None, None),
+            None
+        );
+        // Source should still have its content; dest unchanged.
+        assert_eq!(source.root(), Some(s_root));
+        assert_eq!(dest.get(dest_root).unwrap().first_child, None);
     }
 
     #[test]
