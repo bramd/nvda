@@ -2,25 +2,42 @@
 //! `nvdaHelper/vbufBackends/gecko_ia2/gecko_ia2.cpp:408`.
 //!
 //! Carved into blocks per the design doc at
-//! `docs/plans/2026-05-06-rust-fill-vbuf-design.md`. This module
-//! currently contains only Block 1 (entry, identity, IA2 attributes,
-//! role normalization). Subsequent blocks land in follow-up commits
-//! as the FFI integration shape is decided.
+//! `docs/plans/2026-05-06-rust-fill-vbuf-design.md`. The single
+//! C-callable entry point [`nvda_ia2_fill_vbuf`] is the integration
+//! contract — it replaces the *body* of the C++ `fillVBuf` method on
+//! the final flip. The C++ method shrinks to a one-liner that
+//! converts member state to FFI args.
 //!
-//! These functions are not yet wired into the C++ side; the existing
-//! C++ `fillVBuf` continues to do all of the work at runtime. Once the
-//! integration design is settled we'll either expose a single
-//! C-callable entry point that runs the whole port, or keep the carve
-//! and FFI block-by-block. Until then this module is build-tested,
-//! unit-tested in isolation, and reviewed-only.
+//! Recursion stays Rust-side: [`fill_vbuf`] (the Rust internal
+//! function) calls itself directly. The C++ side does not see the
+//! recursive calls.
+//!
+//! Implementation status (block-by-block per the design doc):
+//!
+//! | Block | Title                              | Status |
+//! | :---: | ---------------------------------- | ------ |
+//! |   1   | entry, identity, IA2 attribs, role | done   |
+//! |   2   | name / value / desc / locale / states | TODO |
+//! |   3   | IA2 text segmentation              | TODO   |
+//! |   4   | table state plumbing               | TODO   |
+//! |   5   | non-text children walk             | TODO   |
+//! |   6   | empty-content fallbacks            | TODO   |
+//! |   7   | name attr / desc-is-content / aria | TODO   |
+//!
+//! Until all blocks land, [`fill_vbuf`] panics in the unimplemented
+//! tail. The extern shim is therefore unsafe to wire into C++ until
+//! every block is in place; gecko_ia2.cpp's `fillVBuf` keeps running
+//! the C++ implementation at runtime in the meantime.
 #![allow(dead_code)]
 
+use core::ffi::c_void;
 use std::collections::BTreeMap;
 
 use crate::fetch::fetch_ia2_attributes_native;
-use crate::interfaces::IAccessible2;
+use crate::interfaces::{IAccessible2, IAccessibleTable2};
 use crate::role_long_string::get_role_long_role_string_native;
 use nvda_vbuf::{VbufBackend, VbufBuffer, VbufControlFieldNode, VbufFieldNode};
+use windows::core::Interface;
 
 /// MSAA `ROLE_SYSTEM_OUTLINE` — listed in `oleacc.h` as `0x23` (35).
 /// Hard-coded to avoid pulling another windows-rs feature in for a
@@ -254,6 +271,187 @@ pub(crate) fn has_aria_hidden_attribute(
     attribs: &BTreeMap<String, String>,
 ) -> bool {
     attribs.get("hidden").map(|v| v.as_str()) == Some("true")
+}
+
+// ----- entry point ---------------------------------------------------
+
+/// Per-render context the recursion threads through. Carries the
+/// pieces of `GeckoVBufBackend_t` state that fillVBuf consults beyond
+/// its formal arguments.
+///
+/// Constructed once at the C++ entry point, then borrowed by every
+/// recursive Rust frame.
+pub struct FillVBufCtx {
+    /// The vbuf backend handle, used for cross-buffer reuse via
+    /// [`VbufBackend::reuse_existing_node`]. Equivalent to `this` in
+    /// the C++ original.
+    pub backend: VbufBackend,
+    /// The IA2 unique ID of the document root node. Used for the
+    /// `isRoot` check (gecko_ia2.cpp:620). Equivalent to
+    /// `this->rootID`.
+    pub root_id: i32,
+    /// `true` when the toolkit name is `"Chrome"`. Threaded down to
+    /// `fill_vbuf_aria_details` / `fill_vbuf_aria_error` for the
+    /// Chrome-specific `IAccessible2_2::get_relationTargetsOfType`
+    /// workaround. Equivalent to `this->toolkitName == L"Chrome"`.
+    pub is_chrome: bool,
+}
+
+/// Rust-internal entry point. Recursion uses this directly; the
+/// extern C shim ([`nvda_ia2_fill_vbuf`]) constructs the inputs from
+/// raw pointers and forwards.
+///
+/// `parent_pres_row_num` mirrors `parentPresentationalRowNumber` in
+/// the C++ original — `None` means the parent does not propagate a
+/// presentational row number; `Some(slice)` carries the wide-char
+/// digits.
+///
+/// # Safety
+///
+/// * `pacc` must be live for the duration of the call.
+/// * `buffer`, `parent`, `previous`, and `ctx.backend` must point at
+///   live vbuf nodes / backends.
+/// * `pacc_table2`, when `Some`, must be live for the duration.
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn fill_vbuf(
+    pacc: &IAccessible2,
+    buffer: VbufBuffer,
+    parent: Option<VbufControlFieldNode>,
+    previous: Option<VbufFieldNode>,
+    pacc_table2: Option<&IAccessibleTable2>,
+    table_id: i32,
+    parent_pres_row_num: Option<&[u16]>,
+    ignore_interactive_unlabelled_graphics: bool,
+    ctx: &FillVBufCtx,
+) -> Option<VbufFieldNode> {
+    // Block 1.
+    let cont = match unsafe {
+        block1(pacc, buffer, ctx.backend, parent, previous)
+    } {
+        Block1Outcome::Bail => return None,
+        Block1Outcome::Reused(reference) => return Some(reference),
+        Block1Outcome::Continue(c) => c,
+    };
+
+    // TODO Block 2 — name / value / description / locale / states.
+    // TODO Block 3 — IA2 text segmentation loop.
+    // TODO Block 4 — table state plumbing (uses pacc_table2 / table_id).
+    // TODO Block 5 — AccessibleChildren recursion (calls back into
+    //                fill_vbuf).
+    // TODO Block 6 — graphic / progressbar / link content fallbacks.
+    // TODO Block 7 — name-as-attribute, descriptionIsContent, calls to
+    //                aria_details::fill_vbuf_aria_details and
+    //                aria_error::fill_vbuf_aria_error using ctx.is_chrome.
+
+    // Until those land, exercising the entry point is a bug; the C++
+    // `fillVBuf` is the live implementation. Touch every parameter so
+    // the unused-variable lints stay quiet without `#[allow]`.
+    let _ = (
+        cont,
+        pacc_table2,
+        table_id,
+        parent_pres_row_num,
+        ignore_interactive_unlabelled_graphics,
+        ctx,
+    );
+    unimplemented!("fill_vbuf blocks 2-7 not yet ported")
+}
+
+/// Single C-callable entry point. Replaces the *body* of
+/// `GeckoVBufBackend_t::fillVBuf` once every block is implemented.
+/// The C++ method itself stays as a one-liner that unpacks `this`-
+/// owned state into the FFI arguments.
+///
+/// Returns the resulting field node pointer, or `NULL` on bail.
+/// Caller does not own the returned pointer; vbufBase manages node
+/// lifetime through the buffer.
+///
+/// # Safety
+///
+/// * `pacc` must be a valid `IAccessible2*`; not consumed.
+/// * `buffer` must be a valid `VBufStorage_buffer_t*`.
+/// * `parent_node`, `previous_node`, `pacc_table2` may be `NULL` to
+///   indicate "absent"; otherwise must be valid pointers of their
+///   respective C++ types.
+/// * `parent_pres_row_num_ptr` may be `NULL` (with `_len == 0`) for
+///   absent; otherwise must point to `_len` valid `u16`s.
+/// * `backend` must be a valid `VBufBackend_t*`.
+/// * Caller (the C++ `fillVBuf` shim) must hold the render-thread
+///   invariants vbufBase requires.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn nvda_ia2_fill_vbuf(
+    pacc: *mut c_void,
+    buffer: *mut c_void,
+    parent_node: *mut c_void,
+    previous_node: *mut c_void,
+    pacc_table2: *mut c_void,
+    table_id: i32,
+    parent_pres_row_num_ptr: *const u16,
+    parent_pres_row_num_len: usize,
+    ignore_interactive_unlabelled_graphics: bool,
+    backend: *mut c_void,
+    root_id: i32,
+    is_chrome: bool,
+) -> *mut c_void {
+    if pacc.is_null() || buffer.is_null() || backend.is_null() {
+        return core::ptr::null_mut();
+    }
+    let acc: &IAccessible2 = match IAccessible2::from_raw_borrowed(&pacc) {
+        Some(a) => a,
+        None => return core::ptr::null_mut(),
+    };
+    let table2: Option<&IAccessibleTable2> = if pacc_table2.is_null() {
+        None
+    } else {
+        IAccessibleTable2::from_raw_borrowed(&pacc_table2)
+    };
+
+    let buffer = VbufBuffer(buffer);
+    let backend = VbufBackend(backend);
+    let parent = if parent_node.is_null() {
+        None
+    } else {
+        Some(VbufControlFieldNode(parent_node))
+    };
+    let previous = if previous_node.is_null() {
+        None
+    } else {
+        Some(VbufFieldNode(previous_node))
+    };
+    let pres_row: Option<&[u16]> =
+        if parent_pres_row_num_ptr.is_null() || parent_pres_row_num_len == 0 {
+            None
+        } else {
+            Some(unsafe {
+                core::slice::from_raw_parts(
+                    parent_pres_row_num_ptr,
+                    parent_pres_row_num_len,
+                )
+            })
+        };
+
+    let ctx = FillVBufCtx {
+        backend,
+        root_id,
+        is_chrome,
+    };
+    match unsafe {
+        fill_vbuf(
+            acc,
+            buffer,
+            parent,
+            previous,
+            table2,
+            table_id,
+            pres_row,
+            ignore_interactive_unlabelled_graphics,
+            &ctx,
+        )
+    } {
+        Some(node) => node.0,
+        None => core::ptr::null_mut(),
+    }
 }
 
 #[cfg(test)]
