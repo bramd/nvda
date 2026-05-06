@@ -437,6 +437,35 @@ impl Buffer {
             return None;
         }
 
+        // 0. Unlink source_root from its parent / siblings in source
+        // so source's tree stays consistent after the move. When
+        // source_root is source.root, this is a no-op (no parent or
+        // sibling links to fix); otherwise we splice neighbours.
+        let s_parent = source.nodes[source_root].parent;
+        let s_prev = source.nodes[source_root].previous;
+        let s_next = source.nodes[source_root].next;
+        if let Some(prev_key) = s_prev {
+            source.nodes[prev_key].next = s_next;
+        } else if let Some(parent_key) = s_parent {
+            source.nodes[parent_key].first_child = s_next;
+        }
+        if let Some(next_key) = s_next {
+            source.nodes[next_key].previous = s_prev;
+        } else if let Some(parent_key) = s_parent {
+            source.nodes[parent_key].last_child = s_prev;
+        }
+        // Collapse ancestor lengths in source.
+        let moved_length = source.nodes[source_root].length;
+        if moved_length > 0 {
+            let mut a = s_parent;
+            while let Some(akey) = a {
+                let n = &mut source.nodes[akey];
+                n.length -= moved_length;
+                debug_assert!(n.length >= 0);
+                a = n.parent;
+            }
+        }
+
         // 1. Collect source keys depth-first.
         let mut source_keys: Vec<NodeKey> = Vec::new();
         let mut stack: Vec<NodeKey> = vec![source_root];
@@ -2401,6 +2430,48 @@ mod tests {
         let mut buf: Vec<u16> = Vec::new();
         dest.get_text_in_range(dest_root, 0, 2, &mut buf);
         assert_eq!(String::from_utf16(&buf).unwrap(), "ab");
+    }
+
+    #[test]
+    fn move_subtree_from_mid_tree_unlinks_neighbours() {
+        let mut dest = Buffer::new();
+        let dest_root = dest
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        // Source has: S_root -> [S_a, S_b, S_c] where S_b has its
+        // own subtree.
+        let mut source = Buffer::new();
+        let s_root = source
+            .add_control_field_node(None, None, cf(2, 1), true)
+            .unwrap();
+        let s_a = source.add_text_field_node(Some(s_root), None, w("AAA")).unwrap();
+        let s_b = source
+            .add_control_field_node(Some(s_root), Some(s_a), cf(2, 2), false)
+            .unwrap();
+        let _s_b_leaf = source
+            .add_text_field_node(Some(s_b), None, w("BB"))
+            .unwrap();
+        let s_c = source.add_text_field_node(Some(s_root), Some(s_b), w("C")).unwrap();
+        // s_root.length should be 3+2+1 = 6.
+        assert_eq!(source.get(s_root).unwrap().length, 6);
+
+        // Move s_b's subtree from source to dest.
+        let new_b = dest
+            .move_subtree_from(&mut source, s_b, Some(dest_root), None)
+            .unwrap();
+
+        // Source's s_root should now have just s_a and s_c, length
+        // = 3+1 = 4.
+        assert_eq!(source.get(s_root).unwrap().length, 4);
+        assert_eq!(source.get(s_a).unwrap().next, Some(s_c));
+        assert_eq!(source.get(s_c).unwrap().previous, Some(s_a));
+        assert_eq!(source.get(s_root).unwrap().first_child, Some(s_a));
+        assert_eq!(source.get(s_root).unwrap().last_child, Some(s_c));
+
+        // Dest has the moved subtree; its leaf is "BB".
+        let mut buf: Vec<u16> = Vec::new();
+        dest.get_text_in_range(new_b, 0, 2, &mut buf);
+        assert_eq!(String::from_utf16(&buf).unwrap(), "BB");
     }
 
     #[test]
