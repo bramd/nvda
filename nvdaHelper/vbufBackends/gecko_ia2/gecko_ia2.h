@@ -46,8 +46,6 @@ class GeckoVBufBackend_t: public VBufBackend_t {
 
 	bool isRootDocAlive();
 
-	CComPtr<IAccessible2> rootDocAcc;
-
 	protected:
 
 	static void CALLBACK renderThread_winEventProcHook(HWINEVENTHOOK hookID, DWORD eventID, HWND hwnd, long objectID, long childID, DWORD threadID, DWORD time);

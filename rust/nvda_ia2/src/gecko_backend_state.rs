@@ -25,12 +25,21 @@ use nvda_vbuf::{VbufBackend, VbufBuffer};
 /// `void*` to the C++ class.
 pub struct GeckoBackendState {
     pub toolkit_name: Vec<u16>,
+    /// Cached `IAccessible2` for the root document. Set up by
+    /// `renderThread_initialize`, released by
+    /// `renderThread_terminate`. Holds an AddRef'd reference; on
+    /// drop the [`Drop`] impl deliberately *leaks* a non-`None`
+    /// value (mirrors `CComPtr::Detach()` in the C++ destructor)
+    /// because the Rust drop path may run on a thread different
+    /// from the one that created the COM pointer.
+    pub root_doc_acc: Option<IAccessible2>,
 }
 
 impl GeckoBackendState {
     pub fn new() -> Self {
         Self {
             toolkit_name: Vec::new(),
+            root_doc_acc: None,
         }
     }
 
@@ -44,6 +53,19 @@ impl GeckoBackendState {
 impl Default for GeckoBackendState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for GeckoBackendState {
+    fn drop(&mut self) {
+        // Mirror the C++ destructor's `nhAssert(!rootDocAcc); if
+        // (this->rootDocAcc) this->rootDocAcc.Detach();` -- if the
+        // root accessible was never released by terminate, leak the
+        // AddRef. Releasing a COM pointer from the wrong thread can
+        // crash; see https://issues.chromium.org/issues/41487612.
+        if let Some(acc) = self.root_doc_acc.take() {
+            core::mem::forget(acc);
+        }
     }
 }
 
@@ -181,3 +203,99 @@ pub unsafe extern "C" fn nvda_ia2_gecko_backend_render(
     // `acc` drops here -- IAccessible2's Drop runs Release, balancing
     // the AddRef from from_identifier.
 }
+
+/// C-callable replacement for the body of
+/// `GeckoVBufBackend_t::renderThread_initialize` past the parent-
+/// class call: resolves the root `(doc_handle, id)` to an
+/// `IAccessible2` and stashes it on the state. Subsequent calls
+/// replace the cached value (which is unusual but matches the C++
+/// `CComPtr::operator=` behavior).
+///
+/// # Safety
+///
+/// `state` must be a valid `GeckoBackendState*`. Caller must hold
+/// the render-thread invariants vbufBase requires.
+#[no_mangle]
+pub unsafe extern "C" fn nvda_ia2_gecko_backend_render_thread_initialize(
+    state: *mut c_void,
+    doc_handle: i32,
+    id: i32,
+) {
+    if state.is_null() {
+        return;
+    }
+    let state = unsafe { &mut *(state as *mut GeckoBackendState) };
+    state.root_doc_acc = unsafe { from_identifier(doc_handle, id) };
+}
+
+/// C-callable replacement for the body of
+/// `GeckoVBufBackend_t::renderThread_terminate` past the parent-
+/// class call: releases the cached root `IAccessible2`.
+///
+/// Must be called on the same thread that invoked
+/// `nvda_ia2_gecko_backend_render_thread_initialize` -- COM
+/// `Release` is thread-affine for the kinds of object Gecko / Chrome
+/// expose here.
+///
+/// # Safety
+///
+/// `state` must be a valid `GeckoBackendState*`.
+#[no_mangle]
+pub unsafe extern "C" fn nvda_ia2_gecko_backend_render_thread_terminate(
+    state: *mut c_void,
+) {
+    if state.is_null() {
+        return;
+    }
+    let state = unsafe { &mut *(state as *mut GeckoBackendState) };
+    // Take + drop releases on this thread.
+    let _ = state.root_doc_acc.take();
+}
+
+/// State-aware `isRootDocAlive`: reads `root_doc_acc` from the
+/// per-instance state, runs the pending-update short-circuit + the
+/// `IA2_STATE_DEFUNCT` check, and clears `root_doc_acc` when the
+/// document is dead (matching the C++ original which set
+/// `this->rootDocAcc = nullptr`).
+///
+/// Returns `1` (alive) or `0` (dead).
+///
+/// # Safety
+///
+/// `state` must be a valid `GeckoBackendState*`. `backend` must be a
+/// valid `VBufBackend_t*` for the duration.
+#[no_mangle]
+pub unsafe extern "C" fn nvda_ia2_gecko_backend_is_root_doc_alive(
+    state: *mut c_void,
+    backend: *mut c_void,
+) -> i32 {
+    if state.is_null() || backend.is_null() {
+        return 0;
+    }
+    // Pending update -> short-circuit alive.
+    let backend_h = VbufBackend(backend);
+    if !unsafe { backend_h.pending_invalid_subtrees_empty() } {
+        return 1;
+    }
+
+    let state = unsafe { &mut *(state as *mut GeckoBackendState) };
+    let alive = match state.root_doc_acc.as_ref() {
+        Some(acc) => match unsafe { acc.get_states() } {
+            Ok(s) => (s & IA2_STATE_DEFUNCT) == 0,
+            Err(_) => false,
+        },
+        None => false,
+    };
+    if !alive {
+        // Take + drop releases on the calling thread.
+        let _ = state.root_doc_acc.take();
+    }
+    if alive {
+        1
+    } else {
+        0
+    }
+}
+
+/// `IA2_STATE_DEFUNCT` from `AccessibleStates.idl:93`.
+const IA2_STATE_DEFUNCT: i32 = 0x4;

@@ -37,17 +37,6 @@ using namespace std;
 
 #ifdef NVDA_HAS_RUST_HELPERS
 extern "C" {
-	void* nvda_ia2_from_identifier(int doc_handle, int id);
-}
-
-static IAccessible2* IAccessible2FromIdentifier(int docHandle, int ID) {
-	return static_cast<IAccessible2*>(
-		nvda_ia2_from_identifier(docHandle, ID));
-}
-#endif
-
-#ifdef NVDA_HAS_RUST_HELPERS
-extern "C" {
 	void* nvda_ia2_gecko_backend_create();
 	void nvda_ia2_gecko_backend_destroy(void* state);
 	int nvda_ia2_gecko_backend_is_chrome(void* state);
@@ -62,6 +51,14 @@ extern "C" {
 		int id,
 		bool is_root_call,
 		int root_id);
+	void nvda_ia2_gecko_backend_render_thread_initialize(
+		void* state,
+		int doc_handle,
+		int id);
+	void nvda_ia2_gecko_backend_render_thread_terminate(void* state);
+	int nvda_ia2_gecko_backend_is_root_doc_alive(
+		void* state,
+		void* backend);
 }
 
 void GeckoVBufBackend_t::versionSpecificInit(IAccessible2* pacc) {
@@ -121,19 +118,10 @@ VBufStorage_fieldNode_t* GeckoVBufBackend_t::fillVBuf(
 #endif
 
 
-#ifdef NVDA_HAS_RUST_HELPERS
-extern "C" {
-	int nvda_ia2_is_root_doc_alive(void* backend, void* root_doc_acc);
-}
-
 bool GeckoVBufBackend_t::isRootDocAlive() {
-	const bool alive = nvda_ia2_is_root_doc_alive(this, this->rootDocAcc.p) != 0;
-	if (!alive) {
-		this->rootDocAcc = nullptr;
-	}
-	return alive;
+	return nvda_ia2_gecko_backend_is_root_doc_alive(
+		this->rustState, this) != 0;
 }
-#endif
 
 void CALLBACK GeckoVBufBackend_t::renderThread_winEventProcHook(HWINEVENTHOOK hookID, DWORD eventID, HWND hwnd, long objectID, long childID, DWORD threadID, DWORD time) {
 	switch(eventID) {
@@ -225,7 +213,8 @@ void CALLBACK GeckoVBufBackend_t::renderThread_winEventProcHook(HWINEVENTHOOK ho
 void GeckoVBufBackend_t::renderThread_initialize() {
 	registerWinEventHook(renderThread_winEventProcHook);
 	VBufBackend_t::renderThread_initialize();
-	this->rootDocAcc = IAccessible2FromIdentifier(this->rootDocHandle, this->rootID);
+	nvda_ia2_gecko_backend_render_thread_initialize(
+		this->rustState, this->rootDocHandle, this->rootID);
 }
 
 void GeckoVBufBackend_t::renderThread_terminate() {
@@ -234,9 +223,7 @@ void GeckoVBufBackend_t::renderThread_terminate() {
 	// The backend holds a reference to the root accessible of the document.
 	// This must be specifically released here, in the UI thread where it was created.
 	// See https://issues.chromium.org/issues/41487612
-	if (this->rootDocAcc) {
-		this->rootDocAcc.Release();
-	}
+	nvda_ia2_gecko_backend_render_thread_terminate(this->rustState);
 }
 
 void GeckoVBufBackend_t::render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode) {
@@ -257,18 +244,13 @@ GeckoVBufBackend_t::GeckoVBufBackend_t(int docHandle, int ID):
 }
 
 GeckoVBufBackend_t::~GeckoVBufBackend_t() {
-	// The backend holds a reference to the root accessible of the document.
-	// This must be specifically released in the UI thread where it was created.
-	// See https://issues.chromium.org/issues/41487612
-	// In most cases this will be released in renderThread_terminate.
-	// However in the unlikely case terminate can't run,
-	// we must detach and leak the COM pointer here.
-	// Otherwise it would be automatically deleted along with the backend which would cause a crash,
-	// as the COM object would be released from within an RPC worker thread.
-	nhAssert(!rootDocAcc);
-	if (this->rootDocAcc) {
-		this->rootDocAcc.Detach();
-	}
+	// The Rust state may still hold an AddRef'd reference to the
+	// root IAccessible2. Releasing that pointer from the wrong
+	// thread can crash (see https://issues.chromium.org/issues/41487612).
+	// nvda_ia2_gecko_backend_destroy's Drop impl deliberately leaks
+	// any non-null root_doc_acc by mem::forget'ing it -- mirrors the
+	// CComPtr::Detach() fallback the previous C++ destructor used
+	// when renderThread_terminate didn't run.
 	nvda_ia2_gecko_backend_destroy(this->rustState);
 	this->rustState = nullptr;
 }
