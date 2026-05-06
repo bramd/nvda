@@ -126,20 +126,19 @@ VBufStorage_fieldNode_t* GeckoVBufBackend_t::fillVBuf(
 #endif
 
 
-bool GeckoVBufBackend_t::isRootDocAlive() {
-	if (!this->pendingInvalidSubtreesList.empty()) {
-		// There is a pending update. We only want to check this once per update tick
-		// to avoid unnecessary COM calls.
-		return true;
-	}
-	AccessibleStates states;
-	if (!this->rootDocAcc || FAILED(this->rootDocAcc->get_states(&states)) ||
-			states & IA2_STATE_DEFUNCT) {
-		this->rootDocAcc = nullptr;
-		return false;
-	}
-	return true;
+#ifdef NVDA_HAS_RUST_HELPERS
+extern "C" {
+	int nvda_ia2_is_root_doc_alive(void* backend, void* root_doc_acc);
 }
+
+bool GeckoVBufBackend_t::isRootDocAlive() {
+	const bool alive = nvda_ia2_is_root_doc_alive(this, this->rootDocAcc.p) != 0;
+	if (!alive) {
+		this->rootDocAcc = nullptr;
+	}
+	return alive;
+}
+#endif
 
 void CALLBACK GeckoVBufBackend_t::renderThread_winEventProcHook(HWINEVENTHOOK hookID, DWORD eventID, HWND hwnd, long objectID, long childID, DWORD threadID, DWORD time) {
 	switch(eventID) {

@@ -226,6 +226,11 @@ extern "C" int vbuf_node_content_matches_string(
 		static_cast<VBufStorage_fieldNode_t*>(node), s) ? 1 : 0;
 }
 
+extern "C" int vbuf_backend_pending_invalid_subtrees_empty(void* backend) {
+	return static_cast<VBufBackend_t*>(backend)
+		->pendingInvalidSubtreesList.empty() ? 1 : 0;
+}
+
 extern "C" void* vbuf_backend_reuse_existing_node(
 	void* backend,
 	void* parent,

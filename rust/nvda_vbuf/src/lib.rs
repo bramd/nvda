@@ -132,6 +132,10 @@ unsafe extern "C" {
         doc_handle: i32,
         id: i32,
     ) -> *mut c_void;
+
+    pub fn vbuf_backend_pending_invalid_subtrees_empty(
+        backend: *mut c_void,
+    ) -> i32;
 }
 
 // ---------------------------------------------------------------------
@@ -524,6 +528,17 @@ impl VbufBackend {
         node: VbufControlFieldNode,
     ) -> bool {
         unsafe { vbuf_backend_invalidate_subtree(self.0, node.0) != 0 }
+    }
+
+    /// `true` when the backend has no pending invalid subtrees waiting
+    /// to be re-rendered. Used to short-circuit `isRootDocAlive`'s COM
+    /// check when an update is already pending.
+    ///
+    /// # Safety
+    ///
+    /// `self` must be a live backend.
+    pub unsafe fn pending_invalid_subtrees_empty(self) -> bool {
+        unsafe { vbuf_backend_pending_invalid_subtrees_empty(self.0) != 0 }
     }
 
     /// Look up an existing control field node on this backend that is

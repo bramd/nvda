@@ -227,3 +227,10 @@ pub unsafe extern "C" fn vbuf_backend_reuse_existing_node(
 ) -> *mut c_void {
     unimplemented!("vbuf_backend_reuse_existing_node test stub");
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn vbuf_backend_pending_invalid_subtrees_empty(
+    _backend: *mut c_void,
+) -> i32 {
+    unimplemented!("vbuf_backend_pending_invalid_subtrees_empty test stub");
+}

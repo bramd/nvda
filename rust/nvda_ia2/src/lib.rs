@@ -28,6 +28,7 @@ pub mod find_descendant;
 pub mod from_identifier;
 pub mod hyperlink_getter;
 pub mod interfaces;
+pub mod is_root_doc_alive;
 pub mod label_info;
 pub mod live_regions;
 pub mod name_for_url;
