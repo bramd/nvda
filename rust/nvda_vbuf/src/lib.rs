@@ -92,6 +92,12 @@ unsafe extern "C" {
     pub fn vbuf_node_set_is_block(node: *mut c_void, value: i32);
     pub fn vbuf_node_is_hidden(node: *mut c_void) -> i32;
     pub fn vbuf_node_set_is_hidden(node: *mut c_void, value: i32);
+    pub fn vbuf_node_has_useful_content(node: *mut c_void) -> i32;
+    pub fn vbuf_node_content_matches_string(
+        node: *mut c_void,
+        str_ptr: *const u16,
+        str_len: usize,
+    ) -> i32;
 
     pub fn vbuf_node_set_always_rerender_descendants(
         node: *mut c_void,
@@ -397,6 +403,29 @@ impl VbufFieldNode {
     /// `self` must be a live field node.
     pub unsafe fn set_is_hidden(self, value: bool) {
         unsafe { vbuf_node_set_is_hidden(self.0, value as i32) }
+    }
+
+    /// `true` when the node has rendered content beyond purely
+    /// whitespace / private characters. See `nodeHasUsefulContent` in
+    /// `nvdaHelper/vbufBase/utils.cpp`.
+    ///
+    /// # Safety
+    ///
+    /// `self` must be a live field node.
+    pub unsafe fn has_useful_content(self) -> bool {
+        unsafe { vbuf_node_has_useful_content(self.0) != 0 }
+    }
+
+    /// `true` when the node's rendered text content equals `s`. See
+    /// `nodeContentMatchesString` in `nvdaHelper/vbufBase/utils.cpp`.
+    ///
+    /// # Safety
+    ///
+    /// `self` must be a live field node.
+    pub unsafe fn content_matches_string(self, s: &[u16]) -> bool {
+        unsafe {
+            vbuf_node_content_matches_string(self.0, s.as_ptr(), s.len()) != 0
+        }
     }
 }
 

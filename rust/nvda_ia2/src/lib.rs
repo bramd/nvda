@@ -30,6 +30,7 @@ pub mod hyperlink_getter;
 pub mod interfaces;
 pub mod label_info;
 pub mod live_regions;
+pub mod name_for_url;
 pub mod relation_targets;
 pub mod role_long_string;
 pub mod selected_item;

@@ -136,6 +136,22 @@ pub unsafe extern "C" fn vbuf_node_set_is_hidden(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn vbuf_node_has_useful_content(
+    _node: *mut c_void,
+) -> i32 {
+    unimplemented!("vbuf_node_has_useful_content test stub");
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn vbuf_node_content_matches_string(
+    _node: *mut c_void,
+    _str_ptr: *const u16,
+    _str_len: usize,
+) -> i32 {
+    unimplemented!("vbuf_node_content_matches_string test stub");
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn vbuf_node_set_always_rerender_descendants(
     _node: *mut c_void,
     _value: i32,

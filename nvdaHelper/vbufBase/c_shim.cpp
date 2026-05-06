@@ -36,6 +36,7 @@ Conventions:
 #include <string>
 #include <vbufBase/storage.h>
 #include <vbufBase/backend.h>
+#include <vbufBase/utils.h>
 
 /* --- string OUT callback ------------------------------------------- */
 
@@ -208,6 +209,21 @@ extern "C" void vbuf_backend_force_update(void* backend) {
 extern "C" int vbuf_backend_invalidate_subtree(void* backend, void* node) {
 	return static_cast<VBufBackend_t*>(backend)->invalidateSubtree(
 		static_cast<VBufStorage_controlFieldNode_t*>(node)) ? 1 : 0;
+}
+
+extern "C" int vbuf_node_has_useful_content(void* node) {
+	return nodeHasUsefulContent(
+		static_cast<VBufStorage_fieldNode_t*>(node)) ? 1 : 0;
+}
+
+extern "C" int vbuf_node_content_matches_string(
+	void* node,
+	const wchar_t* str_ptr,
+	size_t str_len
+) {
+	std::wstring s(str_ptr, str_len);
+	return nodeContentMatchesString(
+		static_cast<VBufStorage_fieldNode_t*>(node), s) ? 1 : 0;
 }
 
 extern "C" void* vbuf_backend_reuse_existing_node(

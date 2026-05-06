@@ -44,6 +44,7 @@ use crate::interfaces::{
     IAccessibleText,
 };
 use crate::label_info::{get_label_info_native, LabelInfo};
+use crate::name_for_url::get_name_for_url;
 use crate::role_long_string::get_role_long_role_string_native;
 use crate::selected_item::get_selected_item;
 use crate::table_cell::{fill_table_cell_info_native, get_table_id_from_cell};
@@ -112,6 +113,18 @@ const STATE_SYSTEM_LINKED: i32 = 0x40_0000;
 const STATE_SYSTEM_FOCUSABLE: i32 = 0x10_0000;
 const STATE_SYSTEM_UNAVAILABLE: i32 = 0x1;
 const STATE_SYSTEM_READONLY: i32 = 0x40;
+const STATE_SYSTEM_INDETERMINATE: i32 = 0x20;
+
+/// `ROLE_SYSTEM_PROGRESSBAR` — `oleacc.h` value `0x30` (48).
+const ROLE_SYSTEM_PROGRESSBAR: i32 = 0x30;
+/// `ROLE_SYSTEM_ROWHEADER` — `oleacc.h` value `0x1a` (26).
+const ROLE_SYSTEM_ROWHEADER: i32 = 0x1a;
+/// `ROLE_SYSTEM_COLUMNHEADER` — `oleacc.h` value `0x19` (25).
+const ROLE_SYSTEM_COLUMNHEADER: i32 = 0x19;
+
+/// Single-space text used as the "empty content" placeholder. Mirrors
+/// `EMPTY_TEXT_NODE` in gecko_ia2.cpp.
+const EMPTY_TEXT_NODE: &[u16] = &[b' ' as u16];
 
 /// IA2 state bits from `AccessibleStates.idl`.
 const IA2_STATE_EDITABLE: i32 = 0x8;
@@ -1547,6 +1560,195 @@ fn make_hyperlink_getter(pacc: &IAccessible2) -> Option<HyperlinkGetter> {
     None
 }
 
+// ----- block 6 ------------------------------------------------------
+
+/// Outcome of [`block6`]: the (possibly mutated) `previous_node`.
+pub struct Block6Outcome {
+    pub previous_node: Option<VbufFieldNode>,
+}
+
+/// Block 6 of `fillVBuf`: the GRAPHIC / PROGRESSBAR / value
+/// non-recursive content branches (run only when block 5 didn't
+/// fire), and the trailing always-fires fallbacks for nodes with no
+/// useful content. Mirrors lines 1131-1202 of gecko_ia2.cpp.
+///
+/// Mutates `block2.is_interactive` in the GRAPHIC alt="" branch.
+///
+/// # Safety
+///
+/// `parent_node` must be a live control field node; `buffer` live.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn block6(
+    parent_node: VbufControlFieldNode,
+    role: i32,
+    attribs: &BTreeMap<String, String>,
+    block2: &mut Block2State,
+    block3: &Block3State,
+    block4: &Block4State,
+    buffer: VbufBuffer,
+    block5_handled: bool,
+    ignore_interactive_unlabelled_graphics: bool,
+    mut previous_node: Option<VbufFieldNode>,
+) -> Block6Outcome {
+    // Branches that continue block 5's else-if chain. Only run when
+    // block 5 didn't already fire.
+    if !block5_handled {
+        if role == ROLE_SYSTEM_GRAPHIC {
+            // Graphic name handling.
+            let name = block2.name.as_deref();
+            if name.map(|n| !n.is_empty()).unwrap_or(false) {
+                // Has a non-empty label.
+                previous_node = add_text_node_with_locale(
+                    buffer,
+                    parent_node,
+                    previous_node,
+                    name.unwrap(),
+                    &block2.locale,
+                );
+            } else if (name.map(|n| n.is_empty()).unwrap_or(false))
+                || ignore_interactive_unlabelled_graphics
+            {
+                // alt="" or we've decided to ignore unlabelled graphics.
+                block2.is_interactive = false;
+            } else if block2.is_interactive {
+                // Unlabelled but interactive -- derive a label from the
+                // link URL or the graphic's src attribute.
+                if block2.in_link {
+                    if let Some(value) = block4.value.as_deref() {
+                        let derived = get_name_for_url(value);
+                        if !derived.is_empty() {
+                            previous_node = add_text_node_with_locale(
+                                buffer,
+                                parent_node,
+                                previous_node,
+                                &derived,
+                                &block2.locale,
+                            );
+                        }
+                    }
+                } else if let Some(src) = attribs.get("src") {
+                    let src_u16: Vec<u16> = src.encode_utf16().collect();
+                    let derived = get_name_for_url(&src_u16);
+                    if !derived.is_empty() {
+                        previous_node = add_text_node_with_locale(
+                            buffer,
+                            parent_node,
+                            previous_node,
+                            &derived,
+                            &block2.locale,
+                        );
+                    }
+                }
+            }
+        } else if role == ROLE_SYSTEM_PROGRESSBAR
+            && (block2.states & STATE_SYSTEM_INDETERMINATE) != 0
+        {
+            // Indeterminate progress bar -> render a single space.
+            previous_node = add_text_node_with_locale(
+                buffer,
+                parent_node,
+                previous_node,
+                EMPTY_TEXT_NODE,
+                &block2.locale,
+            );
+        } else if !block3.name_is_content {
+            if let Some(value) = block4.value.as_deref() {
+                previous_node = add_text_node_with_locale(
+                    buffer,
+                    parent_node,
+                    previous_node,
+                    value,
+                    &block2.locale,
+                );
+            }
+        }
+    }
+
+    // ----- trailing fallbacks (always run inside isVisible) -----
+
+    // Fallback 1: useful-content rescue. If the node has no useful
+    // content and its name can serve as content, render the name (or
+    // derive from URL for links).
+    let needs_content_rescue = !block2.is_editable
+        && (block3.name_is_content
+            || role == IA2_ROLE_SECTION
+            || role == IA2_ROLE_TEXT_FRAME)
+        && !unsafe { parent_node.as_field_node().has_useful_content() };
+    if needs_content_rescue {
+        if let Some(name) = block2.name.as_deref() {
+            // C++ passes NULL for `previous` here.
+            if let Some(text_node) = unsafe {
+                buffer.add_text_field_node(Some(parent_node), None, name)
+            } {
+                if !block2.locale.is_empty() {
+                    let lang_attr: Vec<u16> =
+                        "language".encode_utf16().collect();
+                    unsafe { text_node.add_attribute(&lang_attr, &block2.locale) };
+                }
+            }
+        } else if role == ROLE_SYSTEM_LINK {
+            if let Some(value) = block4.value.as_deref() {
+                let derived = get_name_for_url(value);
+                if !derived.is_empty() {
+                    // C++ doesn't capture the resulting node.
+                    let _ = unsafe {
+                        buffer.add_text_field_node(
+                            Some(parent_node),
+                            None,
+                            &derived,
+                        )
+                    };
+                }
+            }
+        }
+    }
+
+    // Fallback 2: empty cells / unknown roles get a single space and
+    // are forced to inline (isBlock = false).
+    let is_table_cell_role = role == ROLE_SYSTEM_CELL
+        || role == ROLE_SYSTEM_ROWHEADER
+        || role == ROLE_SYSTEM_COLUMNHEADER
+        || role == IA2_ROLE_UNKNOWN;
+    let parent_length = unsafe { parent_node.as_field_node().get_length() };
+    if is_table_cell_role && parent_length == 0 {
+        previous_node = add_text_node_with_locale(
+            buffer,
+            parent_node,
+            previous_node,
+            EMPTY_TEXT_NODE,
+            &block2.locale,
+        );
+        unsafe { parent_node.as_field_node().set_is_block(false) };
+    }
+
+    // Fallback 3: interactive / nameable / described nodes that
+    // would otherwise be empty also get a single space, so the user
+    // can land on them.
+    let parent_length_2 = unsafe { parent_node.as_field_node().get_length() };
+    let has_name = block2.name.as_ref().map(|n| !n.is_empty()).unwrap_or(false);
+    let has_description = block2
+        .description
+        .as_ref()
+        .map(|d| !d.is_empty())
+        .unwrap_or(false);
+    let needs_empty_filler = (block2.is_interactive
+        || role == ROLE_SYSTEM_SEPARATOR
+        || has_name
+        || has_description)
+        && parent_length_2 == 0;
+    if needs_empty_filler {
+        previous_node = add_text_node_with_locale(
+            buffer,
+            parent_node,
+            previous_node,
+            EMPTY_TEXT_NODE,
+            &block2.locale,
+        );
+    }
+
+    Block6Outcome { previous_node }
+}
+
 // ----- entry point ---------------------------------------------------
 
 /// Per-render context the recursion threads through. Carries the
@@ -1654,35 +1856,55 @@ pub(crate) unsafe fn fill_vbuf(
         .as_deref()
         .or(parent_pres_row_num);
 
-    // Block 5 — content rendering (recursive).
-    let block5_outcome = unsafe {
-        block5(
-            pacc,
-            cont.parent_node,
-            cont.role,
-            cont.doc_handle,
-            cont.id,
-            &cont.attribs,
-            &block2_state,
-            &block3_state,
-            &block4_state,
-            buffer,
-            pacc_table2_for_children,
-            pres_row_for_children,
-            block4_state.previous_node,
-            ignore_interactive_unlabelled_graphics,
-            ctx,
-        )
-    };
+    // Blocks 5 + 6 only run when isVisible. The render-flag is on
+    // block 3.
+    let mut current_previous_node = block4_state.previous_node;
+    if block3_state.is_visible {
+        // Block 5 — content rendering (recursive).
+        let block5_outcome = unsafe {
+            block5(
+                pacc,
+                cont.parent_node,
+                cont.role,
+                cont.doc_handle,
+                cont.id,
+                &cont.attribs,
+                &block2_state,
+                &block3_state,
+                &block4_state,
+                buffer,
+                pacc_table2_for_children,
+                pres_row_for_children,
+                current_previous_node,
+                ignore_interactive_unlabelled_graphics,
+                ctx,
+            )
+        };
+        current_previous_node = block5_outcome.previous_node;
 
-    // TODO Block 6 — graphic / progressbar / link content fallbacks
-    //                (only when block 5 didn't fire) + trailing
-    //                empty-content fallbacks (always inside isVisible).
+        // Block 6 — non-recursive content branches + trailing fallbacks.
+        let block6_outcome = unsafe {
+            block6(
+                cont.parent_node,
+                cont.role,
+                &cont.attribs,
+                &mut block2_state,
+                &block3_state,
+                &block4_state,
+                buffer,
+                block5_outcome.handled,
+                block5_outcome.ignore_interactive_unlabelled_graphics,
+                current_previous_node,
+            )
+        };
+        current_previous_node = block6_outcome.previous_node;
+    }
+
     // TODO Block 7 — name-as-attribute, descriptionIsContent, aria
     //                details / error.
 
-    let _ = block5_outcome;
-    unimplemented!("fill_vbuf blocks 6-7 not yet ported")
+    let _ = current_previous_node;
+    unimplemented!("fill_vbuf block 7 not yet ported")
 }
 
 /// Single C-callable entry point. Replaces the *body* of
