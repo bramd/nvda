@@ -400,6 +400,188 @@ impl Buffer {
         self.working_invalid.is_empty()
     }
 
+    /// Atomically replace one or more subtrees in `self` with the
+    /// contents of fully-rendered temp buffers. Mirrors
+    /// `VBufStorage_buffer_t::replaceSubtrees`. Each entry in `map`
+    /// is a `(target_key, temp_buffer)` pair: `target_key` is the
+    /// subtree in `self` to be replaced; `temp_buffer` is owned and
+    /// dropped after its contents move into `self`.
+    ///
+    /// Returns `true` when every replacement succeeded, `false`
+    /// when one or more failed (logged callsite-side; failures are
+    /// continued past so other entries still apply).
+    ///
+    /// **Reference-node resolution is not yet implemented.** The C++
+    /// original walks each temp buffer's reference list in reverse
+    /// and swaps each reference for the actual referenced subtree
+    /// from `self` before the target replacements. This Rust port
+    /// will gain that behaviour in a follow-up commit; if any temp
+    /// buffer contains reference nodes pointing at `self`, those
+    /// references are currently moved as-is and their `referenced`
+    /// keys become stale.
+    pub fn replace_subtrees(
+        &mut self,
+        map: Vec<(NodeKey, Buffer)>,
+    ) -> bool {
+        // 1. Save the selection ancestor chain so we can re-anchor
+        // after the mutations. The chain runs from outermost
+        // ancestor (root-side) to innermost (selection-side); each
+        // entry pairs an identifier with the relative selection
+        // start within that ancestor.
+        let selection_anchor = self.snapshot_selection_anchor();
+
+        // (Reference resolution TODO -- see method docstring.)
+
+        // 2. For each (target, temp_buffer): record target's
+        // (parent, previous) in self, remove the target with
+        // cascade, handle by_identifier collisions, then move the
+        // temp buffer's root into self at the saved anchor.
+        let mut all_ok = true;
+        for (target_key, mut temp_buffer) in map {
+            if !self.contains(target_key) {
+                all_ok = false;
+                continue;
+            }
+            let parent = self.nodes[target_key].parent;
+            let previous = self.nodes[target_key].previous;
+            // Remove the target, including descendants. The C++
+            // calls removeFieldNode(target) with default
+            // removeDescendants=true.
+            if !self.remove(target_key, true) {
+                all_ok = false;
+                continue;
+            }
+            let temp_root = match temp_buffer.root {
+                Some(r) => r,
+                None => continue, // empty temp -- nothing to insert
+            };
+            // Resolve identifier collisions BEFORE the move.
+            // Mirrors the C++ post-merge by_identifier reconciliation
+            // (lines 716-739) but applied per-replacement so the
+            // move can carry its identifiers in cleanly.
+            let temp_idents: Vec<ControlFieldIdentifier> = temp_buffer
+                .by_identifier
+                .keys()
+                .copied()
+                .collect();
+            for ident in temp_idents {
+                if let Some(existing) =
+                    self.by_identifier.get(&ident).copied()
+                {
+                    // C++: removeFieldNode(existing, false)
+                    // (children get adopted by the removed node's
+                    // parent).
+                    self.remove(existing, false);
+                }
+            }
+            if self
+                .move_subtree_from(
+                    &mut temp_buffer,
+                    temp_root,
+                    parent,
+                    previous,
+                )
+                .is_none()
+            {
+                all_ok = false;
+            }
+            // temp_buffer is dropped at end of iteration.
+        }
+
+        // 3. Re-anchor the selection.
+        if let Some(anchor) = selection_anchor {
+            self.restore_selection(anchor);
+        }
+
+        all_ok
+    }
+
+    /// Snapshot the chain of (control-field-identifier,
+    /// relative-selection-start) pairs from the deepest control
+    /// field at the current selection position up through every
+    /// ancestor. Used by `replace_subtrees` to re-anchor the
+    /// selection after the tree has been mutated.
+    fn snapshot_selection_anchor(
+        &self,
+    ) -> Option<Vec<(ControlFieldIdentifier, i32)>> {
+        if self.text_length() == 0 {
+            return None;
+        }
+        // Locate the control field at selectionStart.
+        let (text_key, _rel) =
+            self.locate_text_field_node_at_offset(
+                self.root?,
+                self.selection_start.max(0).min(self.text_length() - 1),
+            )?;
+        // Start from the text node's parent (the deepest control
+        // field) and walk up.
+        let text_offset =
+            self.calculate_offset_in_tree(text_key);
+        let mut relative = self.selection_start - text_offset;
+        let mut chain: Vec<(ControlFieldIdentifier, i32)> = Vec::new();
+        let mut cur = self.nodes[text_key].parent;
+        while let Some(c) = cur {
+            let ident = match &self.nodes[c].kind {
+                FieldNodeKind::Control(d) => d.identifier,
+                FieldNodeKind::Reference(d) => d.identifier,
+                FieldNodeKind::Text(_) => break,
+            };
+            // push_front equivalent: insert at index 0.
+            chain.insert(0, (ident, relative));
+            // Accumulate previous-sibling lengths so the relative
+            // offset stays correct as we walk up.
+            let mut prev = self.nodes[c].previous;
+            while let Some(p) = prev {
+                relative += self.nodes[p].length;
+                prev = self.nodes[p].previous;
+            }
+            cur = self.nodes[c].parent;
+        }
+        if chain.is_empty() {
+            None
+        } else {
+            Some(chain)
+        }
+    }
+
+    /// Restore the selection to the deepest ancestor in `chain`
+    /// that still exists in `self`, clamping to that ancestor's
+    /// length. Mirrors the closing block of
+    /// `VBufStorage_buffer_t::replaceSubtrees`.
+    fn restore_selection(
+        &mut self,
+        chain: Vec<(ControlFieldIdentifier, i32)>,
+    ) {
+        let mut last_key: Option<NodeKey> = None;
+        let mut last_relative: i32 = 0;
+        for (ident, relative) in chain {
+            let key = match self
+                .by_identifier
+                .get(&ident)
+                .copied()
+            {
+                Some(k) => k,
+                None => break,
+            };
+            // The C++ stops if currentAncestor.parent != lastAncestor
+            // -- i.e. the chain has been reshuffled.
+            if self.nodes[key].parent != last_key {
+                break;
+            }
+            last_key = Some(key);
+            last_relative = relative;
+        }
+        if let Some(key) = last_key {
+            if let Some((start, _end)) = self.field_node_offsets(key) {
+                let length = self.nodes[key].length;
+                let clamp = (length - 1).max(0);
+                self.selection_start = start + last_relative.min(clamp);
+                // C++ doesn't touch selectionLength here; we leave
+                // it alone too.
+            }
+        }
+    }
+
     /// Move a subtree rooted at `source_root` from `source` into
     /// `self`. The subtree is detached from any tree links in
     /// `source` (the caller must have already unlinked
@@ -2472,6 +2654,113 @@ mod tests {
         let mut buf: Vec<u16> = Vec::new();
         dest.get_text_in_range(new_b, 0, 2, &mut buf);
         assert_eq!(String::from_utf16(&buf).unwrap(), "BB");
+    }
+
+    #[test]
+    fn replace_subtrees_simple_replacement() {
+        let mut main = Buffer::new();
+        let main_root = main
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let main_target = main
+            .add_control_field_node(Some(main_root), None, cf(1, 2), false)
+            .unwrap();
+        let _main_old_text = main
+            .add_text_field_node(Some(main_target), None, w("OLD"))
+            .unwrap();
+        let _main_sibling = main
+            .add_text_field_node(Some(main_root), Some(main_target), w("Z"))
+            .unwrap();
+        // Build a replacement temp buffer.
+        let mut temp = Buffer::new();
+        let temp_root = temp
+            .add_control_field_node(None, None, cf(1, 2), false)
+            .unwrap();
+        let _temp_text = temp
+            .add_text_field_node(Some(temp_root), None, w("NEW!"))
+            .unwrap();
+
+        let map = vec![(main_target, temp)];
+        assert!(main.replace_subtrees(map));
+
+        // main_target's identifier (1,2) is still present; the
+        // returned key is the new control field replacing it.
+        let new_target = main
+            .get_control_field_node_with_identifier(1, 2)
+            .expect("identifier preserved");
+        let mut buf: Vec<u16> = Vec::new();
+        main.get_text_in_range(
+            new_target,
+            0,
+            main.get(new_target).unwrap().length,
+            &mut buf,
+        );
+        assert_eq!(String::from_utf16(&buf).unwrap(), "NEW!");
+        // The sibling text "Z" is still there.
+        let total_len = main.text_length();
+        let mut whole: Vec<u16> = Vec::new();
+        main.get_text_in_range(main_root, 0, total_len, &mut whole);
+        assert_eq!(String::from_utf16(&whole).unwrap(), "NEW!Z");
+    }
+
+    #[test]
+    fn replace_subtrees_empty_temp_just_removes_target() {
+        let mut main = Buffer::new();
+        let main_root = main
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let main_target = main
+            .add_control_field_node(Some(main_root), None, cf(1, 2), false)
+            .unwrap();
+        let _t = main
+            .add_text_field_node(Some(main_target), None, w("OLD"))
+            .unwrap();
+        let temp = Buffer::new(); // empty
+        let map = vec![(main_target, temp)];
+        assert!(main.replace_subtrees(map));
+        assert_eq!(main.get_control_field_node_with_identifier(1, 2), None);
+        assert_eq!(main.text_length(), 0);
+    }
+
+    #[test]
+    fn replace_subtrees_handles_identifier_collision() {
+        // If the temp buffer carries an identifier that already
+        // exists elsewhere in main (and not under the target being
+        // replaced), the existing entry must be removed before the
+        // move so by_identifier ends up consistent.
+        let mut main = Buffer::new();
+        let main_root = main
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let main_target = main
+            .add_control_field_node(Some(main_root), None, cf(1, 2), false)
+            .unwrap();
+        // Identifier (1,3) lives elsewhere in main, not under
+        // main_target.
+        let _other = main
+            .add_control_field_node(Some(main_root), Some(main_target), cf(1, 3), false)
+            .unwrap();
+
+        // Temp brings a fresh (1,2) and reuses identifier (1,3).
+        let mut temp = Buffer::new();
+        let temp_root = temp
+            .add_control_field_node(None, None, cf(1, 2), false)
+            .unwrap();
+        let _temp_inner = temp
+            .add_control_field_node(Some(temp_root), None, cf(1, 3), false)
+            .unwrap();
+
+        let map = vec![(main_target, temp)];
+        assert!(main.replace_subtrees(map));
+        // (1,3) lookup now resolves to the temp's inner node, not
+        // main's pre-existing one (which got removed pre-move).
+        let new_inner = main
+            .get_control_field_node_with_identifier(1, 3)
+            .expect("identifier preserved");
+        assert_eq!(
+            main.get(new_inner).unwrap().parent,
+            main.get_control_field_node_with_identifier(1, 2),
+        );
     }
 
     #[test]
