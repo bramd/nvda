@@ -351,6 +351,55 @@ impl Buffer {
         self.pending_invalid.is_empty()
     }
 
+    /// Move every pending invalidation into the working list and
+    /// return the list as a snapshot for the caller to render.
+    /// Mirrors the C++ `pendingInvalidSubtreesList.swap(working
+    /// InvalidSubtreesList)` at the start of `VBufBackend_t::update`.
+    ///
+    /// Returns the snapshot rather than borrowing the working list
+    /// because the caller typically iterates while the buffer is
+    /// being mutated by render side-effects.
+    pub fn take_pending_into_working(&mut self) -> Vec<NodeKey> {
+        // The C++ `swap` puts `pendingInvalidSubtreesList`'s contents
+        // into `workingInvalidSubtreesList`. We achieve the same by
+        // moving pending into working. Working should be empty when
+        // this is called (between update ticks).
+        debug_assert!(
+            self.working_invalid.is_empty(),
+            "take_pending_into_working called while working list is \
+             non-empty -- update() loop invariant violated"
+        );
+        std::mem::swap(&mut self.pending_invalid, &mut self.working_invalid);
+        self.working_invalid.clone()
+    }
+
+    /// Drain the working list. Mirrors the C++
+    /// `workingInvalidSubtreesList.clear()` at the end of update().
+    pub fn clear_working(&mut self) {
+        self.working_invalid.clear();
+    }
+
+    /// Remove `key` from the working list if present. Used by
+    /// renders that take responsibility for an invalidated subtree
+    /// (the caller's render call will produce the new content for
+    /// it). Returns whether it was present.
+    pub fn remove_from_working(&mut self, key: NodeKey) -> bool {
+        if let Some(idx) =
+            self.working_invalid.iter().position(|&k| k == key)
+        {
+            self.working_invalid.remove(idx);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Whether the working list still has entries to process.
+    /// Useful for asserting that update completed.
+    pub fn working_invalid_empty(&self) -> bool {
+        self.working_invalid.is_empty()
+    }
+
     /// Mark `key` as invalidated, scheduling its subtree for
     /// re-render on the next update tick. Mirrors
     /// `VBufBackend_t::invalidateSubtree` exactly:
@@ -2114,6 +2163,50 @@ mod tests {
         // remains in pending. child should be marked non-reusable.
         assert_eq!(b.pending_invalid, vec![root]);
         assert!(!allow_reuse(&b, child));
+    }
+
+    #[test]
+    fn take_pending_into_working_swaps_lists() {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let child = b
+            .add_control_field_node(Some(root), None, cf(1, 2), false)
+            .unwrap();
+        b.invalidate_subtree(child);
+        b.invalidate_subtree(root);
+        // pending now has just `root` (child was subsumed).
+        let snapshot = b.take_pending_into_working();
+        assert_eq!(snapshot, vec![root]);
+        // pending is empty, working has the snapshot.
+        assert!(b.pending_invalid_subtrees_empty());
+        assert!(!b.working_invalid_empty());
+    }
+
+    #[test]
+    fn remove_from_working_takes_responsibility() {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        b.invalidate_subtree(root);
+        b.take_pending_into_working();
+        assert!(b.remove_from_working(root));
+        assert!(b.working_invalid_empty());
+        assert!(!b.remove_from_working(root)); // already removed
+    }
+
+    #[test]
+    fn clear_working_drains_list() {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        b.invalidate_subtree(root);
+        b.take_pending_into_working();
+        b.clear_working();
+        assert!(b.working_invalid_empty());
     }
 
     #[test]
