@@ -383,7 +383,13 @@ windows_core::imp::interface_hierarchy!(IAccessibleText, IUnknown);
 pub struct IAccessibleText_Vtbl {
     pub base__: IUnknown_Vtbl,
     pub addSelection: usize,
-    pub get_attributes: usize,
+    pub get_attributes: unsafe extern "system" fn(
+        this: *mut core::ffi::c_void,
+        offset: i32,
+        start_offset: *mut i32,
+        end_offset: *mut i32,
+        text_attributes: *mut core::mem::ManuallyDrop<BSTR>,
+    ) -> HRESULT,
     pub get_caretOffset: unsafe extern "system" fn(this: *mut core::ffi::c_void, offset: *mut i32) -> HRESULT,
     pub get_characterExtents: usize,
     pub get_nSelections: unsafe extern "system" fn(this: *mut core::ffi::c_void, n_selections: *mut i32) -> HRESULT,
@@ -429,6 +435,36 @@ impl IAccessibleText {
             return Err(hr.into());
         }
         Ok(core::mem::ManuallyDrop::into_inner(out))
+    }
+
+    /// Returns the `[start_offset, end_offset)` range of the
+    /// attributes run that contains `offset`, plus the
+    /// server-allocated `;`-separated text-attributes BSTR. The
+    /// caller takes ownership of the BSTR (Drop runs `SysFreeString`).
+    ///
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_attributes(
+        &self,
+        offset: i32,
+    ) -> windows::core::Result<(i32, i32, BSTR)> {
+        let mut start: i32 = 0;
+        let mut end: i32 = 0;
+        let mut bstr = core::mem::ManuallyDrop::new(BSTR::default());
+        let hr = (Interface::vtable(self).get_attributes)(
+            Interface::as_raw(self),
+            offset,
+            &mut start as *mut _,
+            &mut end as *mut _,
+            &mut bstr as *mut _,
+        );
+        if hr.is_err() {
+            let _ = core::mem::ManuallyDrop::into_inner(bstr);
+            return Err(hr.into());
+        }
+        Ok((start, end, core::mem::ManuallyDrop::into_inner(bstr)))
     }
 
     /// Returns the most recently inserted text segment for this object.

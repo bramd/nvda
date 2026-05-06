@@ -34,18 +34,24 @@ use core::ffi::c_void;
 use std::collections::BTreeMap;
 
 use crate::acc_description::get_acc_description_native;
+use crate::attribs::parse_attribs;
 use crate::child_count::get_child_count_native;
 use crate::fetch::fetch_ia2_attributes_native;
+use crate::hyperlink_getter::HyperlinkGetter;
 use crate::interfaces::{
-    IAccessible2, IAccessibleAction, IAccessibleTable2, IAccessibleTableCell,
+    IAccessible2, IAccessibleAction, IAccessibleHypertext,
+    IAccessibleHypertext2, IAccessibleTable2, IAccessibleTableCell,
     IAccessibleText,
 };
 use crate::label_info::{get_label_info_native, LabelInfo};
 use crate::role_long_string::get_role_long_role_string_native;
+use crate::selected_item::get_selected_item;
 use crate::table_cell::{fill_table_cell_info_native, get_table_id_from_cell};
+use crate::textbox_in_combobox::get_text_box_in_combo_box;
 use nvda_vbuf::{VbufBackend, VbufBuffer, VbufControlFieldNode, VbufFieldNode};
 use windows::core::{Interface, BSTR, VARIANT};
-use windows::Win32::UI::Accessibility::IAccessible;
+use windows::Win32::System::Com::IDispatch;
+use windows::Win32::UI::Accessibility::{AccessibleChildren, IAccessible};
 
 /// MSAA `ROLE_SYSTEM_OUTLINE` — listed in `oleacc.h` as `0x23` (35).
 /// Hard-coded to avoid pulling another windows-rs feature in for a
@@ -1155,6 +1161,392 @@ fn write_int_attribute_on(node: VbufFieldNode, name: &str, value: i32) {
     }
 }
 
+// ----- block 5 ------------------------------------------------------
+
+/// Outcome of [`block5`]. `handled = true` means one of the four
+/// content branches fired and block 6 should not run its role-
+/// specific branches.
+pub struct Block5Outcome {
+    pub previous_node: Option<VbufFieldNode>,
+    pub ignore_interactive_unlabelled_graphics: bool,
+    pub handled: bool,
+}
+
+/// Block 5 of `fillVBuf`: image-map name, ignoreInteractiveUnlabelled-
+/// Graphics propagation, and the recursive content if/else
+/// (text-segmentation loop, AccessibleChildren walk,
+/// renderSelectedItemOnly, COMBOBOX). Mirrors lines 911-1130 of
+/// gecko_ia2.cpp.
+///
+/// Mutates `block2.is_interactive` per the graphic alt="" rule (set
+/// by block 6's GRAPHIC branch, but block 5 forwards
+/// ignore_interactive_unlabelled_graphics for its own children).
+///
+/// # Safety
+///
+/// All borrowed pointer args must point at live objects.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn block5(
+    pacc: &IAccessible2,
+    parent_node: VbufControlFieldNode,
+    role: i32,
+    doc_handle: i32,
+    id: i32,
+    attribs: &BTreeMap<String, String>,
+    block2: &Block2State,
+    block3: &Block3State,
+    block4: &Block4State,
+    buffer: VbufBuffer,
+    pacc_table2_for_children: Option<&IAccessibleTable2>,
+    pres_row_for_children: Option<&[u16]>,
+    mut previous_node: Option<VbufFieldNode>,
+    mut ignore_interactive_unlabelled_graphics: bool,
+    ctx: &FillVBufCtx,
+) -> Block5Outcome {
+    // Image map name pre-render (line 911-915 of gecko_ia2.cpp).
+    if block3.is_img_map {
+        if let Some(name) = block2.name.as_deref() {
+            previous_node = add_text_node_with_locale(
+                buffer,
+                parent_node,
+                previous_node,
+                name,
+                &block2.locale,
+            );
+        }
+    }
+
+    // Propagate ignoreInteractiveUnlabelledGraphics into descendants.
+    // (Line 917-921.) Once we have a name, descendants don't need
+    // alt-derived names.
+    if block2.is_interactive && !ignore_interactive_unlabelled_graphics {
+        ignore_interactive_unlabelled_graphics = block2.name.is_some();
+    }
+
+    let render_children = block3.render_children;
+    let ia2_text_length = block3
+        .ia2_text
+        .as_ref()
+        .map(|t| t.len() as i32)
+        .unwrap_or(0);
+
+    let mut handled = false;
+    let handles = TextHandleInfo { doc_handle, id };
+    let parent_text_align: Option<&str> =
+        attribs.get("text-align").map(|v| v.as_str());
+
+    // Branch 1: text segmentation loop (line 923).
+    if render_children && ia2_text_length > 0 {
+        handled = true;
+        // SAFETY: paccText is Some when ia2_text was captured (block 3).
+        let pacc_text = block3.paccText.as_ref().expect("paccText present");
+        let ia2_text = block3.ia2_text.as_ref().expect("ia2_text present");
+
+        // Lazily build a HyperlinkGetter (mirrors C++
+        // makeHyperlinkGetter). Prefer hypertext2.
+        let mut link_getter = make_hyperlink_getter(pacc);
+
+        let mut chunk_start: i32 = 0;
+        let mut attribs_end: i32 = 0;
+        let mut text_attribs: BTreeMap<String, String> = BTreeMap::new();
+
+        let mut i: i32 = 0;
+        loop {
+            let at_text_end = i == ia2_text_length;
+            let at_attribs_end = i == attribs_end;
+            let at_obj_char = (i as usize) < ia2_text.len()
+                && ia2_text[i as usize] == EMBEDDED_OBJ_CHAR;
+
+            // Flush pending chunk at chunk boundary. The C++ original
+            // does this *before* re-fetching attribs, so the chunk's
+            // text node gets the *outgoing* run's text_attribs.
+            if i != chunk_start
+                && (at_text_end || at_attribs_end || at_obj_char)
+            {
+                let chunk_text =
+                    &ia2_text[chunk_start as usize..i as usize];
+                if let Some(text_node) = unsafe {
+                    buffer.add_text_field_node(
+                        Some(parent_node),
+                        previous_node,
+                        chunk_text,
+                    )
+                } {
+                    previous_node = Some(text_node);
+                    add_ia2_text_attribs(text_node, chunk_start, handles);
+                    apply_text_segment_attribs(
+                        text_node,
+                        &text_attribs,
+                        parent_text_align,
+                    );
+                }
+            }
+            if at_text_end {
+                break;
+            }
+            if at_attribs_end {
+                // Start of a new attributes run.
+                text_attribs.clear();
+                chunk_start = i;
+                match unsafe { pacc_text.get_attributes(attribs_end) } {
+                    Ok((_s, e, attribs_bstr)) => {
+                        attribs_end = e;
+                        if !is_bstr_null(&attribs_bstr) {
+                            let s = attribs_bstr.to_string();
+                            text_attribs = parse_attribs(&s);
+                        }
+                    }
+                    Err(_) => {
+                        attribs_end = ia2_text_length;
+                    }
+                }
+            }
+            if at_obj_char {
+                chunk_start = i + 1;
+                if let Some(getter) = link_getter.as_mut() {
+                    let link = unsafe { getter.next() };
+                    if let Some(link) = link {
+                        if let Ok(child_pacc) = link.cast::<IAccessible2>() {
+                            let child_node = unsafe {
+                                fill_vbuf(
+                                    &child_pacc,
+                                    buffer,
+                                    Some(parent_node),
+                                    previous_node,
+                                    pacc_table2_for_children,
+                                    block4.table_id,
+                                    pres_row_for_children,
+                                    ignore_interactive_unlabelled_graphics,
+                                    ctx,
+                                )
+                            };
+                            if let Some(node) = child_node {
+                                previous_node = Some(node);
+                                add_ia2_text_attribs(node, i, handles);
+                            }
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+        drop(link_getter);
+    } else if render_children && block3.child_count > 0 {
+        handled = true;
+        // Branch 2: AccessibleChildren walk (line 1019-1080).
+        let pacc_msaa: &IAccessible = pacc;
+        let mut variants: Vec<VARIANT> =
+            vec![VARIANT::default(); block3.child_count as usize];
+        let mut filled: i32 = 0;
+        let res = unsafe {
+            AccessibleChildren(
+                pacc_msaa,
+                0,
+                &mut variants[..],
+                &mut filled,
+            )
+        };
+        if res.is_ok() {
+            variants.truncate(filled as usize);
+        } else {
+            variants.clear();
+        }
+
+        for child in variants.iter() {
+            let raw = child.as_raw();
+            let vt = unsafe { raw.Anonymous.Anonymous.vt };
+            // VT_DISPATCH = 9 per OAIDL.h.
+            if vt != 9 {
+                continue;
+            }
+            let pdisp =
+                unsafe { raw.Anonymous.Anonymous.Anonymous.pdispVal };
+            if pdisp.is_null() {
+                continue;
+            }
+            let pdisp_raw: *mut core::ffi::c_void = pdisp as *mut _;
+            let pdisp_ref: &IDispatch =
+                match IDispatch::from_raw_borrowed(&pdisp_raw) {
+                    Some(p) => p,
+                    None => continue,
+                };
+            let child_pacc = match pdisp_ref.cast::<IAccessible2>() {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let child_node = unsafe {
+                fill_vbuf(
+                    &child_pacc,
+                    buffer,
+                    Some(parent_node),
+                    previous_node,
+                    pacc_table2_for_children,
+                    block4.table_id,
+                    pres_row_for_children,
+                    ignore_interactive_unlabelled_graphics,
+                    ctx,
+                )
+            };
+            if let Some(node) = child_node {
+                previous_node = Some(node);
+            }
+        }
+        // Each VARIANT drops at Vec drop, running VariantClear and
+        // releasing the cached pdispVal references.
+    } else if block3.render_selected_item_only {
+        handled = true;
+        // Branch 3: getSelectedItem -> recurse (line 1081-1104).
+        if let Some(item) = unsafe { get_selected_item(pacc) } {
+            let child_node = unsafe {
+                fill_vbuf(
+                    &item,
+                    buffer,
+                    Some(parent_node),
+                    previous_node,
+                    pacc_table2_for_children,
+                    block4.table_id,
+                    pres_row_for_children,
+                    ignore_interactive_unlabelled_graphics,
+                    ctx,
+                )
+            };
+            if let Some(node) = child_node {
+                previous_node = Some(node);
+                // Treat the returned field node as a control field
+                // node and force requiresParentUpdate. The C++ does
+                // the same static_cast (gecko_ia2.cpp:1100); the
+                // reuse path is the only case where this would be a
+                // misleading downcast, but the field is laid out
+                // such that the write goes to a harmless slot.
+                unsafe {
+                    VbufControlFieldNode(node.0)
+                        .set_requires_parent_update(true);
+                }
+            }
+        }
+    } else if role == ROLE_SYSTEM_COMBOBOX {
+        handled = true;
+        // Branch 4: ARIA 1.1 combobox text-box child, or fall back
+        // to the value text (line 1106-1130).
+        if let Some(text_box) = unsafe { get_text_box_in_combo_box(pacc) } {
+            let child_node = unsafe {
+                fill_vbuf(
+                    &text_box,
+                    buffer,
+                    Some(parent_node),
+                    previous_node,
+                    pacc_table2_for_children,
+                    block4.table_id,
+                    pres_row_for_children,
+                    ignore_interactive_unlabelled_graphics,
+                    ctx,
+                )
+            };
+            if let Some(node) = child_node {
+                previous_node = Some(node);
+            }
+        } else if let Some(value) = block4.value.as_deref() {
+            previous_node = add_text_node_with_locale(
+                buffer,
+                parent_node,
+                previous_node,
+                value,
+                &block2.locale,
+            );
+        }
+    }
+
+    Block5Outcome {
+        previous_node,
+        ignore_interactive_unlabelled_graphics,
+        handled,
+    }
+}
+
+/// Add a text field node with an optional language attribute when
+/// `locale` is non-empty. Returns the new node (or `None` on failure).
+fn add_text_node_with_locale(
+    buffer: VbufBuffer,
+    parent: VbufControlFieldNode,
+    previous: Option<VbufFieldNode>,
+    text: &[u16],
+    locale: &[u16],
+) -> Option<VbufFieldNode> {
+    let node =
+        unsafe { buffer.add_text_field_node(Some(parent), previous, text) }?;
+    if !locale.is_empty() {
+        let lang_attr: Vec<u16> = "language".encode_utf16().collect();
+        unsafe {
+            node.add_attribute(&lang_attr, locale);
+        }
+    }
+    Some(node)
+}
+
+/// Apply the per-segment text attributes (the `text_attribs` map plus
+/// any IA2 `text-align` override on the parent) onto a just-flushed
+/// chunk's text node.
+fn apply_text_segment_attribs(
+    node: VbufFieldNode,
+    text_attribs: &BTreeMap<String, String>,
+    text_align: Option<&str>,
+) {
+    for (k, v) in text_attribs {
+        let k_u16: Vec<u16> = k.encode_utf16().collect();
+        let v_u16: Vec<u16> = v.encode_utf16().collect();
+        unsafe {
+            node.add_attribute(&k_u16, &v_u16);
+        }
+    }
+    if let Some(ta) = text_align {
+        let name: Vec<u16> = "text-align".encode_utf16().collect();
+        let value: Vec<u16> = ta.encode_utf16().collect();
+        unsafe {
+            node.add_attribute(&name, &value);
+        }
+    }
+}
+
+/// Helper for the common case of writing the IA2 text-offset trio
+/// (ia2TextStartOffset / ia2TextWindowHandle / ia2TextUniqueID) onto
+/// a text node.
+fn add_ia2_text_attribs(
+    node: VbufFieldNode,
+    offset: i32,
+    handles: TextHandleInfo,
+) {
+    write_int_attribute_on(node, "ia2TextStartOffset", offset);
+    write_int_attribute_on(node, "ia2TextWindowHandle", handles.doc_handle);
+    write_int_attribute_on(node, "ia2TextUniqueID", handles.id);
+}
+
+#[derive(Clone, Copy)]
+struct TextHandleInfo {
+    doc_handle: i32,
+    id: i32,
+}
+
+/// Construct a `HyperlinkGetter` Rust-internally, mirroring
+/// `makeHyperlinkGetter` in `nvdaHelper/common/ia2utils.cpp`. Returns
+/// `None` when neither `IAccessibleHypertext2` nor
+/// `IAccessibleHypertext` is supported.
+fn make_hyperlink_getter(pacc: &IAccessible2) -> Option<HyperlinkGetter> {
+    if let Ok(ht2) = pacc.cast::<IAccessibleHypertext2>() {
+        return Some(HyperlinkGetter::Ht2 {
+            hypertext: ht2,
+            links: None,
+            index: 0,
+        });
+    }
+    if let Ok(ht) = pacc.cast::<IAccessibleHypertext>() {
+        return Some(HyperlinkGetter::Ht {
+            hypertext: ht,
+            index: 0,
+        });
+    }
+    None
+}
+
 // ----- entry point ---------------------------------------------------
 
 /// Per-render context the recursion threads through. Carries the
@@ -1249,24 +1641,48 @@ pub(crate) unsafe fn fill_vbuf(
             previous,
         )
     };
-    let _pacc_table2_for_children: Option<&IAccessibleTable2> =
+    let pacc_table2_for_children: Option<&IAccessibleTable2> =
         match block4_state.propagation {
             TablePropagation::Inherit => pacc_table2,
             TablePropagation::Clear => None,
-            TablePropagation::Promoted => block4_state.cur_node_pacc_table2.as_ref(),
+            TablePropagation::Promoted => {
+                block4_state.cur_node_pacc_table2.as_ref()
+            }
         };
+    let pres_row_for_children: Option<&[u16]> = block4_state
+        .presentational_row_number
+        .as_deref()
+        .or(parent_pres_row_num);
 
-    // TODO Block 5 — text segmentation loop / AccessibleChildren walk
-    //                (recurses into fill_vbuf).
-    // TODO Block 6 — graphic / progressbar / link content fallbacks.
-    // TODO Block 7 — name-as-attribute, descriptionIsContent, calls to
-    //                aria_details::fill_vbuf_aria_details and
-    //                aria_error::fill_vbuf_aria_error using ctx.is_chrome.
+    // Block 5 — content rendering (recursive).
+    let block5_outcome = unsafe {
+        block5(
+            pacc,
+            cont.parent_node,
+            cont.role,
+            cont.doc_handle,
+            cont.id,
+            &cont.attribs,
+            &block2_state,
+            &block3_state,
+            &block4_state,
+            buffer,
+            pacc_table2_for_children,
+            pres_row_for_children,
+            block4_state.previous_node,
+            ignore_interactive_unlabelled_graphics,
+            ctx,
+        )
+    };
 
-    // Until those land, exercising the entry point is a bug; the C++
-    // `fillVBuf` is the live implementation.
-    let _ = ignore_interactive_unlabelled_graphics;
-    unimplemented!("fill_vbuf blocks 5-7 not yet ported")
+    // TODO Block 6 — graphic / progressbar / link content fallbacks
+    //                (only when block 5 didn't fire) + trailing
+    //                empty-content fallbacks (always inside isVisible).
+    // TODO Block 7 — name-as-attribute, descriptionIsContent, aria
+    //                details / error.
+
+    let _ = block5_outcome;
+    unimplemented!("fill_vbuf blocks 6-7 not yet ported")
 }
 
 /// Single C-callable entry point. Replaces the *body* of
