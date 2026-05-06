@@ -48,7 +48,8 @@ pub enum TreeDirection {
 
 /// A vbuf storage buffer: an arena of nodes plus a root pointer plus
 /// an identifier index for fast lookup. Mirrors
-/// `VBufStorage_buffer_t`.
+/// `VBufStorage_buffer_t` and the storage-relevant state of
+/// `VBufBackend_t` (pending / working invalid subtree lists).
 pub struct Buffer {
     nodes: SlotMap<NodeKey, Node>,
     root: Option<NodeKey>,
@@ -62,6 +63,17 @@ pub struct Buffer {
     /// selectionLength)` over the rendered text length.
     selection_start: i32,
     selection_length: i32,
+    /// Control field nodes that have been invalidated and are
+    /// awaiting re-render on the next update tick. The C++ original
+    /// keeps this on `VBufBackend_t` since only backends invalidate;
+    /// we co-locate it with the buffer because the keys reference
+    /// the buffer's arena.
+    pending_invalid: Vec<NodeKey>,
+    /// Subset of `pending_invalid` currently being processed by an
+    /// in-flight `update()` call. The C++ keeps both lists so that a
+    /// reuse query during render can detect "this node was invalid
+    /// at the start of this tick".
+    working_invalid: Vec<NodeKey>,
 }
 
 impl Buffer {
@@ -73,6 +85,8 @@ impl Buffer {
             by_identifier: BTreeMap::new(),
             selection_start: 0,
             selection_length: 0,
+            pending_invalid: Vec::new(),
+            working_invalid: Vec::new(),
         }
     }
 
@@ -325,6 +339,288 @@ impl Buffer {
         self.root = None;
         self.selection_start = 0;
         self.selection_length = 0;
+        self.pending_invalid.clear();
+        self.working_invalid.clear();
+    }
+
+    /// Whether there are pending invalid subtrees waiting for the
+    /// next update tick. Used by the gecko_ia2 isRootDocAlive
+    /// fast-path: a pending update means the document is still
+    /// alive even if we haven't checked COM yet.
+    pub fn pending_invalid_subtrees_empty(&self) -> bool {
+        self.pending_invalid.is_empty()
+    }
+
+    /// Mark `key` as invalidated, scheduling its subtree for
+    /// re-render on the next update tick. Mirrors
+    /// `VBufBackend_t::invalidateSubtree` exactly:
+    ///
+    /// 1. If `key` requires its parent to update, walk up to the
+    ///    closest ancestor that doesn't require its parent to
+    ///    update; mark intermediates as not-reusable. Invalidate
+    ///    that ancestor instead.
+    /// 2. If `key` is already invalidated, no-op.
+    /// 3. If `key` is a descendant of an already-invalidated node,
+    ///    mark `key` and any intermediate ancestors as
+    ///    not-reusable so the in-flight render won't reuse stale
+    ///    state.
+    /// 4. If `key` is an ancestor of any already-invalidated node,
+    ///    remove those (they're subsumed by the new invalidation)
+    ///    after marking each as non-reusable through to the new
+    ///    ancestor.
+    /// 5. Push `key` onto the pending list.
+    ///
+    /// Returns `false` when the key is stale or not in the buffer.
+    pub fn invalidate_subtree(&mut self, key: NodeKey) -> bool {
+        if !self.contains(key) {
+            return false;
+        }
+
+        // Step 1: Walk up to the closest non-requires-parent-update
+        // ancestor. The C++ mutates `node` in place; we mirror via a
+        // local.
+        let mut effective_key = key;
+        loop {
+            let n = &self.nodes[effective_key];
+            let requires = match &n.kind {
+                FieldNodeKind::Control(d) => d.requires_parent_update,
+                FieldNodeKind::Reference(_) => false,
+                FieldNodeKind::Text(_) => false,
+            };
+            if !requires {
+                break;
+            }
+            // Mark this node as not reusable (it's about to be
+            // bypassed by invalidating its parent).
+            if let FieldNodeKind::Control(d) =
+                &mut self.nodes[effective_key].kind
+            {
+                d.allow_reuse_in_ancestor_update = false;
+            }
+            match self.nodes[effective_key].parent {
+                Some(p) => effective_key = p,
+                None => break,
+            }
+        }
+
+        // Step 2: already invalidated -> no-op.
+        // Step 3: descendant of an invalidated node -> mark
+        // intermediates and bail with `true`.
+        // Snapshot the pending list to release the borrow before
+        // we mutate the arena via mark_nonreusable_if_in_ancestor.
+        let pending_snapshot: Vec<NodeKey> = self.pending_invalid.clone();
+        for existing in &pending_snapshot {
+            if *existing == effective_key {
+                return true;
+            }
+            if self
+                .mark_nonreusable_if_in_ancestor(effective_key, *existing)
+            {
+                return true;
+            }
+        }
+
+        // Step 4: ancestor of any pending node -> mark them as
+        // non-reusable and remove them from the list (they'll be
+        // covered by the new invalidation).
+        let target = effective_key;
+        let mut to_drop: Vec<usize> = Vec::new();
+        for (idx, &existing) in pending_snapshot.iter().enumerate() {
+            if self.mark_nonreusable_if_in_ancestor(existing, target) {
+                to_drop.push(idx);
+            }
+        }
+        for &idx in to_drop.iter().rev() {
+            self.pending_invalid.remove(idx);
+        }
+
+        // Step 5: enqueue.
+        self.pending_invalid.push(effective_key);
+        true
+    }
+
+    /// Walk parents of `node` until either `ancestor` is encountered
+    /// (return `true`, marking every intermediate as
+    /// `allow_reuse_in_ancestor_update = false`) or the root is
+    /// reached without finding `ancestor` (return `false`, no
+    /// mutation). Mirrors the recursive C++
+    /// `markNodeAsNonreusableIfInAncestor`.
+    fn mark_nonreusable_if_in_ancestor(
+        &mut self,
+        node: NodeKey,
+        ancestor: NodeKey,
+    ) -> bool {
+        // Walk up collecting keys; we'll mark them only on success.
+        let mut chain: Vec<NodeKey> = Vec::new();
+        let mut cur = self.nodes[node].parent;
+        let mut found = false;
+        while let Some(p) = cur {
+            if p == ancestor {
+                found = true;
+                break;
+            }
+            chain.push(p);
+            cur = self.nodes[p].parent;
+        }
+        if !found {
+            return false;
+        }
+        // Mark `node` plus every intermediate as not-reusable.
+        if let FieldNodeKind::Control(d) = &mut self.nodes[node].kind {
+            d.allow_reuse_in_ancestor_update = false;
+        }
+        for k in chain {
+            if let FieldNodeKind::Control(d) = &mut self.nodes[k].kind {
+                d.allow_reuse_in_ancestor_update = false;
+            }
+        }
+        true
+    }
+
+    /// Try to reuse an existing control field node from this buffer
+    /// when rendering a temporary subtree. The caller is rendering
+    /// a node into a temp buffer with `(parent, previous)` already
+    /// set up there; this method asks "is there an equivalent
+    /// existing node in the main buffer with `(doc_handle, id)`
+    /// that we can reuse?".
+    ///
+    /// Returns `Some(existing_key)` when the existing node is
+    /// reuse-eligible. Mirrors `VBufBackend_t::reuseExistingNodeIn
+    /// Render`.
+    ///
+    /// Returns `None` when:
+    /// * `parent` is None (root nodes can't be reused).
+    /// * `parent`'s `always_rerender_descendants` or
+    ///   `always_rerender_children` is true.
+    /// * No node with `(doc_handle, id)` exists in this buffer.
+    /// * The existing node has no parent (it's the root).
+    /// * The existing node's parent has `always_rerender_descendants`,
+    ///   in which case we propagate that flag down to the existing
+    ///   node and refuse reuse.
+    /// * The existing node has `always_rerender_descendants` set.
+    /// * The existing node has `allow_reuse_in_ancestor_update == false`.
+    /// * The existing node has `deny_reuse_if_previous_siblings_changed
+    ///   == true` and the previous control field of the new render
+    ///   doesn't match the previous control field of the existing
+    ///   node (a sibling has been added, removed, or moved).
+    /// * The existing node is in `working_invalid` (it was already
+    ///   marked invalid for re-render this tick). The method also
+    ///   removes it from `working_invalid` in that case so the
+    ///   caller's render takes responsibility.
+    ///
+    /// `previous` is from the *temp* buffer (because that's where
+    /// the new render is going); we don't dereference it through
+    /// `self`, only walk its previous chain in `temp_buffer`.
+    pub fn reuse_existing_node_in_render(
+        &mut self,
+        temp_buffer: &Buffer,
+        parent: Option<NodeKey>,
+        previous: Option<NodeKey>,
+        doc_handle: i32,
+        id: i32,
+    ) -> Option<NodeKey> {
+        let parent = parent?;
+        // The parent here is in the temp buffer (because the temp
+        // render is the one supplying it). Read its rerender flags
+        // from temp_buffer.
+        if let Some(p_node) = temp_buffer.nodes.get(parent) {
+            if let FieldNodeKind::Control(p_data) = &p_node.kind {
+                if p_data.always_rerender_descendants
+                    || p_data.always_rerender_children
+                {
+                    return None;
+                }
+            }
+        } else {
+            return None;
+        }
+
+        let existing = self.get_control_field_node_with_identifier(
+            doc_handle, id,
+        )?;
+        let existing_parent = self.nodes[existing].parent?;
+
+        // If the existing parent has alwaysRerenderDescendants,
+        // propagate the flag down to existing and refuse reuse.
+        let parent_always = matches!(
+            &self.nodes[existing_parent].kind,
+            FieldNodeKind::Control(d) if d.always_rerender_descendants
+        );
+        if parent_always {
+            if let FieldNodeKind::Control(d) =
+                &mut self.nodes[existing].kind
+            {
+                d.always_rerender_descendants = true;
+            }
+        }
+
+        let existing_data = match &self.nodes[existing].kind {
+            FieldNodeKind::Control(d) => d,
+            // Reference nodes hit the by_identifier index too in
+            // theory, but reuse semantics only apply to true control
+            // field nodes per the C++ original (which uses dynamic_cast).
+            _ => return None,
+        };
+
+        if existing_data.always_rerender_descendants {
+            return None;
+        }
+        if !existing_data.allow_reuse_in_ancestor_update {
+            return None;
+        }
+        let deny_on_sibling_change =
+            existing_data.deny_reuse_if_previous_siblings_changed;
+        // (existing_data borrow ends here.)
+
+        if deny_on_sibling_change {
+            // Find the previous control-field-like sibling in the
+            // temp render's `previous` chain.
+            let prev_temp_cf = walk_back_to_control_field(temp_buffer, previous);
+            // Resolve through reference nodes: if the previous in
+            // the temp render is a reference node, dereference it
+            // to the actual control field.
+            let prev_temp_resolved = match prev_temp_cf {
+                Some(pk) => match &temp_buffer.nodes[pk].kind {
+                    FieldNodeKind::Reference(rd) => Some(rd.referenced),
+                    FieldNodeKind::Control(_) => Some(pk),
+                    _ => None,
+                },
+                None => None,
+            };
+            // The C++ checks: if prev_temp_cf is a controlField but
+            // not a referenceNode, return None (= the previous is a
+            // newly-added node).
+            if matches!(
+                prev_temp_cf.and_then(|k| {
+                    temp_buffer.nodes.get(k).map(|n| &n.kind)
+                }),
+                Some(FieldNodeKind::Control(_))
+            ) {
+                return None;
+            }
+
+            // Find the previous control field in self, walking from
+            // `existing.previous` backward.
+            let prev_existing = walk_back_to_control_field(
+                self,
+                self.nodes[existing].previous,
+            );
+            if prev_temp_resolved != prev_existing {
+                return None;
+            }
+        }
+
+        // If existing was already in working_invalid, the caller
+        // takes responsibility -- remove it from working_invalid
+        // and refuse reuse (the caller will render it).
+        if let Some(idx) =
+            self.working_invalid.iter().position(|&k| k == existing)
+        {
+            self.working_invalid.remove(idx);
+            return None;
+        }
+
+        Some(existing)
     }
 
     /// Total rendered text length of the buffer (the root node's
@@ -1080,6 +1376,28 @@ struct NodeSnapshot {
     last_child: Option<NodeKey>,
 }
 
+/// Walk back from `start` via `previous` pointers in `buffer` until
+/// a control-field-like node (Control or Reference variant) is
+/// encountered. Returns `None` when the chain ends without finding
+/// one. Used by `reuse_existing_node_in_render`.
+fn walk_back_to_control_field(
+    buffer: &Buffer,
+    start: Option<NodeKey>,
+) -> Option<NodeKey> {
+    let mut cur = start;
+    while let Some(k) = cur {
+        match &buffer.nodes[k].kind {
+            FieldNodeKind::Control(_) | FieldNodeKind::Reference(_) => {
+                return Some(k);
+            }
+            FieldNodeKind::Text(_) => {
+                cur = buffer.nodes[k].previous;
+            }
+        }
+    }
+    None
+}
+
 /// Borrow the underlying text of a text-field node, or `None` for
 /// non-text variants.
 fn node_text_slice(n: &Node) -> Option<&[u16]> {
@@ -1728,6 +2046,95 @@ mod tests {
         assert!(!b.is_field_node_at_offset(t2, 5)); // past end
         // Whole-buffer offset out of range -> false.
         assert!(!b.is_field_node_at_offset(root, 100));
+    }
+
+    fn allow_reuse(b: &Buffer, key: NodeKey) -> bool {
+        match &b.get(key).unwrap().kind {
+            FieldNodeKind::Control(d) => d.allow_reuse_in_ancestor_update,
+            _ => true,
+        }
+    }
+
+    #[test]
+    fn invalidate_subtree_basic_enqueue() {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        assert!(b.invalidate_subtree(root));
+        assert!(!b.pending_invalid_subtrees_empty());
+    }
+
+    #[test]
+    fn invalidate_subtree_no_op_for_already_invalid() {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        assert!(b.invalidate_subtree(root));
+        assert!(b.invalidate_subtree(root));
+        // Still just one entry.
+        assert_eq!(b.pending_invalid.len(), 1);
+    }
+
+    #[test]
+    fn invalidate_subtree_descendant_of_invalid_marks_nonreusable() {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let child = b
+            .add_control_field_node(Some(root), None, cf(1, 2), false)
+            .unwrap();
+        let grandchild = b
+            .add_control_field_node(Some(child), None, cf(1, 3), false)
+            .unwrap();
+        b.invalidate_subtree(root);
+        // Now invalidate grandchild -- it's already covered by root,
+        // but child + grandchild should be marked non-reusable.
+        b.invalidate_subtree(grandchild);
+        assert!(!allow_reuse(&b, child));
+        assert!(!allow_reuse(&b, grandchild));
+        // Pending list still has just the root.
+        assert_eq!(b.pending_invalid.len(), 1);
+    }
+
+    #[test]
+    fn invalidate_subtree_ancestor_subsumes_descendants() {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let child = b
+            .add_control_field_node(Some(root), None, cf(1, 2), false)
+            .unwrap();
+        b.invalidate_subtree(child);
+        b.invalidate_subtree(root);
+        // The earlier child invalidation is subsumed; only root
+        // remains in pending. child should be marked non-reusable.
+        assert_eq!(b.pending_invalid, vec![root]);
+        assert!(!allow_reuse(&b, child));
+    }
+
+    #[test]
+    fn invalidate_subtree_walks_up_requires_parent_update() {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let child = b
+            .add_control_field_node(Some(root), None, cf(1, 2), false)
+            .unwrap();
+        // Set requires_parent_update on child.
+        if let FieldNodeKind::Control(d) = &mut b.get_mut(child).unwrap().kind
+        {
+            d.requires_parent_update = true;
+        }
+        b.invalidate_subtree(child);
+        // child should be marked non-reusable; root should be the
+        // pending entry.
+        assert!(!allow_reuse(&b, child));
+        assert_eq!(b.pending_invalid, vec![root]);
     }
 
     #[test]
