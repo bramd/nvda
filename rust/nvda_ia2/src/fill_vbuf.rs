@@ -34,8 +34,12 @@ use core::ffi::c_void;
 use std::collections::BTreeMap;
 
 use crate::acc_description::get_acc_description_native;
+use crate::child_count::get_child_count_native;
 use crate::fetch::fetch_ia2_attributes_native;
-use crate::interfaces::{IAccessible2, IAccessibleTable2};
+use crate::interfaces::{
+    IAccessible2, IAccessibleAction, IAccessibleTable2, IAccessibleText,
+};
+use crate::label_info::{get_label_info_native, LabelInfo};
 use crate::role_long_string::get_role_long_role_string_native;
 use nvda_vbuf::{VbufBackend, VbufBuffer, VbufControlFieldNode, VbufFieldNode};
 use windows::core::{Interface, BSTR, VARIANT};
@@ -63,20 +67,41 @@ const ROLE_SYSTEM_APPLICATION: i32 = 0x0e;
 const ROLE_SYSTEM_CELL: i32 = 0x1d;
 /// `ROLE_SYSTEM_SEPARATOR` — `oleacc.h` value `0x15` (21).
 const ROLE_SYSTEM_SEPARATOR: i32 = 0x15;
+/// `ROLE_SYSTEM_LIST` — `oleacc.h` value `0x21` (33).
+const ROLE_SYSTEM_LIST: i32 = 0x21;
+/// `ROLE_SYSTEM_LINK` — `oleacc.h` value `0x1e` (30).
+const ROLE_SYSTEM_LINK: i32 = 0x1e;
+/// `ROLE_SYSTEM_PUSHBUTTON` — `oleacc.h` value `0x2b` (43).
+const ROLE_SYSTEM_PUSHBUTTON: i32 = 0x2b;
+/// `ROLE_SYSTEM_MENUITEM` — `oleacc.h` value `0x0c` (12).
+const ROLE_SYSTEM_MENUITEM: i32 = 0x0c;
+/// `ROLE_SYSTEM_PAGETAB` — `oleacc.h` value `0x25` (37).
+const ROLE_SYSTEM_PAGETAB: i32 = 0x25;
+/// `ROLE_SYSTEM_BUTTONMENU` — `oleacc.h` value `0x39` (57).
+const ROLE_SYSTEM_BUTTONMENU: i32 = 0x39;
+/// `ROLE_SYSTEM_CHECKBUTTON` — `oleacc.h` value `0x2c` (44).
+const ROLE_SYSTEM_CHECKBUTTON: i32 = 0x2c;
+/// `ROLE_SYSTEM_RADIOBUTTON` — `oleacc.h` value `0x2d` (45).
+const ROLE_SYSTEM_RADIOBUTTON: i32 = 0x2d;
+/// `ROLE_SYSTEM_COMBOBOX` — `oleacc.h` value `0x2e` (46).
+const ROLE_SYSTEM_COMBOBOX: i32 = 0x2e;
 
 /// IA2-specific role values, derived sequentially from
 /// `IA2_ROLE_CANVAS = 0x401` per `AccessibleRole.idl` (verified against
 /// `build/<arch>/ia2.h`).
 const IA2_ROLE_UNKNOWN: i32 = 0x0;
 const IA2_ROLE_EMBEDDED_OBJECT: i32 = 0x40a;
+const IA2_ROLE_HEADING: i32 = 0x414;
 const IA2_ROLE_INTERNAL_FRAME: i32 = 0x418;
 const IA2_ROLE_SECTION: i32 = 0x424;
 const IA2_ROLE_TEXT_FRAME: i32 = 0x429;
+const IA2_ROLE_TOGGLE_BUTTON: i32 = 0x42a;
 
 /// MSAA states from `oleacc.h`.
 const STATE_SYSTEM_LINKED: i32 = 0x40_0000;
 const STATE_SYSTEM_FOCUSABLE: i32 = 0x10_0000;
 const STATE_SYSTEM_UNAVAILABLE: i32 = 0x1;
+const STATE_SYSTEM_READONLY: i32 = 0x40;
 
 /// IA2 state bits from `AccessibleStates.idl`.
 const IA2_STATE_EDITABLE: i32 = 0x8;
@@ -575,6 +600,258 @@ pub(crate) fn has_aria_hidden_attribute(
     attribs.get("hidden").map(|v| v.as_str()) == Some("true")
 }
 
+// ----- block 3 ------------------------------------------------------
+
+/// State produced by [`block3`] and consumed by later blocks.
+/// Mirrors the locals declared in gecko_ia2.cpp:630-755.
+pub struct Block3State {
+    pub is_aria_hidden: bool,
+    pub child_count: i32,
+    pub is_img_map: bool,
+    pub name_is_explicit: bool,
+    pub name_is_content: bool,
+    /// `true` when the explicit accessible name is sourced from a
+    /// label that visibly appears elsewhere in the tree. Used by block
+    /// 7 to decide whether to set `alwaysReportName`.
+    pub label_visible: bool,
+    /// IA2 unique ID of the labelling element, when present.
+    /// Consumed by block 7's `labelledByContent` detection.
+    pub label_id: Option<i32>,
+    /// Captured `IAccessibleText` interface (when `pacc` exposes one).
+    /// Lives until end of fillVBuf so the segmentation loop can reuse
+    /// it. The Drop runs `Release`.
+    pub paccText: Option<IAccessibleText>,
+    /// The full text returned by `IAccessibleText::get_text(0, -1)`,
+    /// or `None` if the QI failed or the call returned NULL.
+    pub ia2_text: Option<Vec<u16>>,
+    /// `true` when the captured text is purely whitespace and the
+    /// node is not editable. Used to suppress child rendering.
+    pub ia2_text_is_unneeded_space: bool,
+    pub is_visible: bool,
+    pub render_children: bool,
+    pub render_selected_item_only: bool,
+}
+
+/// Block 3 of `fillVBuf`: aria-hidden / childCount, name flags
+/// (nameIsExplicit / nameIsContent / labelVisible),
+/// `IAccessibleText` capture, render-flag derivation, and the
+/// `IAccessibleAction` loop. Mirrors lines 628-755 of gecko_ia2.cpp.
+///
+/// Mutates `block2.is_interactive` per the action-name rule.
+///
+/// # Safety
+///
+/// `pacc` must be live for the duration; `parent_node` must be a
+/// live control field node owned by the buffer.
+pub unsafe fn block3(
+    pacc: &IAccessible2,
+    parent_node: VbufControlFieldNode,
+    role: i32,
+    attribs: &BTreeMap<String, String>,
+    block2: &mut Block2State,
+) -> Block3State {
+    let is_aria_hidden = has_aria_hidden_attribute(attribs);
+    let child_count = get_child_count_native(pacc, is_aria_hidden);
+    let is_img_map = role == ROLE_SYSTEM_GRAPHIC && child_count > 0;
+
+    let name_is_explicit =
+        attribs.get("explicit-name").map(|v| v.as_str()) == Some("true");
+
+    // Lazily-fetched label info. We only need it for the
+    // checkbox/radio name-is-content rule and (later) for explicit-
+    // name handling. Fetching unconditionally would cost a COM call
+    // per non-checkbox/radio, non-explicitly-named node; gate on the
+    // conditions that consult it.
+    let label_info: Option<LabelInfo> = if role == ROLE_SYSTEM_CHECKBUTTON
+        || role == ROLE_SYSTEM_RADIOBUTTON
+        || name_is_explicit
+    {
+        unsafe { get_label_info_native(pacc) }
+    } else {
+        None
+    };
+    let is_label_visible =
+        label_info.as_ref().map(|i| i.is_visible).unwrap_or(false);
+    let label_id = label_info.as_ref().and_then(|i| i.id);
+
+    let name_is_content = block2.is_embedded_app
+        || role == ROLE_SYSTEM_LINK
+        || role == ROLE_SYSTEM_PUSHBUTTON
+        || role == IA2_ROLE_TOGGLE_BUTTON
+        || role == ROLE_SYSTEM_MENUITEM
+        || (role == ROLE_SYSTEM_GRAPHIC && !is_img_map)
+        || (role == ROLE_SYSTEM_TEXT && !block2.is_editable)
+        || role == IA2_ROLE_HEADING
+        || role == ROLE_SYSTEM_PAGETAB
+        || role == ROLE_SYSTEM_BUTTONMENU
+        || ((role == ROLE_SYSTEM_CHECKBUTTON
+            || role == ROLE_SYSTEM_RADIOBUTTON)
+            && !is_label_visible);
+
+    // labelVisible is the C++ local — used in block 4 (table summary)
+    // and block 7 (alwaysReportName / labelledByContent). The C++
+    // checks `name && name[0]` (BSTR is non-NULL and not empty).
+    let name_present_nonempty = block2
+        .name
+        .as_ref()
+        .map(|n| !n.is_empty())
+        .unwrap_or(false);
+    let label_visible = name_is_explicit
+        && name_present_nonempty
+        && (!name_is_content || role == ROLE_SYSTEM_TABLE)
+        && is_label_visible;
+
+    // alwaysReportName attribute: explicit name not used as content
+    // and not visible elsewhere (e.g. aria-label on an edit field),
+    // excluding tables (their summary handling is bespoke).
+    if name_is_explicit
+        && !name_is_content
+        && role != ROLE_SYSTEM_TABLE
+        && !label_visible
+    {
+        let attr_name: Vec<u16> = "alwaysReportName".encode_utf16().collect();
+        let attr_value: &[u16] =
+            &[b't' as u16, b'r' as u16, b'u' as u16, b'e' as u16];
+        unsafe {
+            parent_node.as_field_node().add_attribute(&attr_name, attr_value);
+        }
+    }
+
+    // Capture IAccessibleText + its full text.
+    let paccText: Option<IAccessibleText> = pacc.cast().ok();
+    let ia2_text: Option<Vec<u16>> = paccText.as_ref().and_then(|t| {
+        // `IA2_TEXT_OFFSET_LENGTH = -1` per AccessibleText.idl.
+        let bstr = unsafe { t.get_text(0, -1) }.ok()?;
+        if is_bstr_null(&bstr) {
+            None
+        } else {
+            Some(bstr.as_wide().to_vec())
+        }
+    });
+    let ia2_text_length = ia2_text.as_ref().map(|t| t.len()).unwrap_or(0);
+    let ia2_text_is_unneeded_space = if ia2_text_length > 0
+        && !block2.is_editable
+    {
+        // Mirrors the C++ scan: bail at the first '\n', embedded
+        // object char (\xfffc), or any non-whitespace character.
+        ia2_text.as_ref().is_some_and(|t| {
+            t.iter().all(|&c| {
+                c != b'\n' as u16
+                    && c != EMBEDDED_OBJ_CHAR
+                    && is_whitespace_w(c)
+            })
+        })
+    } else {
+        false
+    };
+
+    // Render flags.
+    let mut is_visible = true;
+    let mut render_children = true;
+    let mut render_selected_item_only = false;
+    if is_aria_hidden {
+        is_visible = false;
+    } else {
+        // Render only the selected item for interactive lists and for
+        // outlines (treegrids in the C++ original use the same
+        // shortcut).
+        let is_interactive_list = role == ROLE_SYSTEM_LIST
+            && (block2.states & STATE_SYSTEM_READONLY) == 0;
+        if is_interactive_list || role == ROLE_SYSTEM_OUTLINE {
+            render_selected_item_only = true;
+        }
+        if ia2_text_is_unneeded_space
+            || role == ROLE_SYSTEM_COMBOBOX
+            || render_selected_item_only
+            || block2.is_embedded_app
+            || role == ROLE_SYSTEM_EQUATION
+            || (name_is_content && name_is_explicit)
+        {
+            render_children = false;
+        }
+    }
+
+    // IAccessibleAction loop. Writes IAccessibleAction_<name>=<i>
+    // attribs and may upgrade is_interactive on click / showlongdesc.
+    if let Ok(paccAction) = pacc.cast::<IAccessibleAction>() {
+        let n_actions = unsafe { paccAction.nActions() }.unwrap_or(0);
+        for i in 0..n_actions {
+            let action_name_bstr = match unsafe { paccAction.get_name(i) } {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            if is_bstr_null(&action_name_bstr) {
+                continue;
+            }
+            let action_name = action_name_bstr.as_wide();
+
+            let mut attr_name: Vec<u16> =
+                "IAccessibleAction_".encode_utf16().collect();
+            attr_name.extend_from_slice(action_name);
+            let mut idx_buf = String::new();
+            use core::fmt::Write;
+            let _ = write!(idx_buf, "{i}");
+            let idx_u16: Vec<u16> = idx_buf.encode_utf16().collect();
+            unsafe {
+                parent_node
+                    .as_field_node()
+                    .add_attribute(&attr_name, &idx_u16);
+            }
+
+            if !block2.is_never_interactive
+                && (slice_eq(action_name, "click")
+                    || slice_eq(action_name, "showlongdesc"))
+            {
+                block2.is_interactive = true;
+            }
+        }
+    }
+
+    Block3State {
+        is_aria_hidden,
+        child_count,
+        is_img_map,
+        name_is_explicit,
+        name_is_content,
+        label_visible,
+        label_id,
+        paccText,
+        ia2_text,
+        ia2_text_is_unneeded_space,
+        is_visible,
+        render_children,
+        render_selected_item_only,
+    }
+}
+
+/// Embedded object character used by IAccessibleText to mark
+/// hyperlink positions. From AccessibleText.idl.
+const EMBEDDED_OBJ_CHAR: u16 = 0xfffc;
+
+/// Whitespace check on a UTF-16 code unit. Matches the C++ `iswspace`
+/// for the BMP characters fillVBuf encounters: space, tab, CR, LF, FF,
+/// VT, plus the other Unicode "space" code points iswspace recognizes
+/// (NBSP at U+00A0, line separator U+2028, paragraph separator
+/// U+2029, etc.). Char's `is_whitespace` covers these.
+fn is_whitespace_w(c: u16) -> bool {
+    char::from_u32(c as u32)
+        .map(|ch| ch.is_whitespace())
+        .unwrap_or(false)
+}
+
+/// `wcscmp(slice, ascii) == 0` for a UTF-16 slice and an ASCII
+/// literal. Returns true when the slice's wide-char content matches
+/// the literal byte-for-byte (treating each ASCII byte as a u16).
+fn slice_eq(slice: &[u16], ascii: &str) -> bool {
+    if slice.len() != ascii.len() {
+        return false;
+    }
+    slice
+        .iter()
+        .zip(ascii.bytes())
+        .all(|(s, a)| *s == a as u16)
+}
+
 // ----- entry point ---------------------------------------------------
 
 /// Per-render context the recursion threads through. Carries the
@@ -636,14 +913,24 @@ pub(crate) unsafe fn fill_vbuf(
     };
 
     // Block 2.
-    let _block2 = unsafe {
+    let mut block2_state = unsafe {
         block2(pacc, cont.parent_node, cont.role, &cont.attribs, cont.id, ctx)
     };
 
-    // TODO Block 3 — IA2 text segmentation loop.
+    // Block 3.
+    let _block3_state = unsafe {
+        block3(
+            pacc,
+            cont.parent_node,
+            cont.role,
+            &cont.attribs,
+            &mut block2_state,
+        )
+    };
+
     // TODO Block 4 — table state plumbing (uses pacc_table2 / table_id).
-    // TODO Block 5 — AccessibleChildren recursion (calls back into
-    //                fill_vbuf).
+    // TODO Block 5 — text segmentation loop / AccessibleChildren walk
+    //                (recurses into fill_vbuf).
     // TODO Block 6 — graphic / progressbar / link content fallbacks.
     // TODO Block 7 — name-as-attribute, descriptionIsContent, calls to
     //                aria_details::fill_vbuf_aria_details and
@@ -659,7 +946,7 @@ pub(crate) unsafe fn fill_vbuf(
         parent_pres_row_num,
         ignore_interactive_unlabelled_graphics,
     );
-    unimplemented!("fill_vbuf blocks 3-7 not yet ported")
+    unimplemented!("fill_vbuf blocks 4-7 not yet ported")
 }
 
 /// Single C-callable entry point. Replaces the *body* of
@@ -874,5 +1161,26 @@ mod tests {
     fn xml_roles_word_boundary_missing_attr() {
         let m = map_of(&[]);
         assert!(!xml_roles_contains_word(&m, "presentation"));
+    }
+
+    #[test]
+    fn slice_eq_matches_ascii_only() {
+        let click: Vec<u16> = "click".encode_utf16().collect();
+        assert!(slice_eq(&click, "click"));
+        assert!(!slice_eq(&click, "clic"));
+        assert!(!slice_eq(&click, "clicks"));
+
+        let empty: [u16; 0] = [];
+        assert!(slice_eq(&empty, ""));
+    }
+
+    #[test]
+    fn whitespace_check_handles_common_cases() {
+        for c in [' ', '\t', '\r', '\n', '\u{00a0}', '\u{2028}'] {
+            assert!(is_whitespace_w(c as u16), "{c:?}");
+        }
+        for c in ['a', '0', '_', '\u{fffc}'] {
+            assert!(!is_whitespace_w(c as u16), "{c:?}");
+        }
     }
 }
