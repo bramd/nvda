@@ -19,7 +19,7 @@ mod node;
 
 pub use node::{ControlFieldData, FieldNodeKind, Node, NodeKey, TextFieldData};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use slotmap::SlotMap;
 
@@ -364,6 +364,242 @@ impl Buffer {
         self.selection_start = start_offset;
         self.selection_length = end_offset - start_offset;
         true
+    }
+
+    /// Compute the start and end of the line containing the given
+    /// `offset`. Mirrors
+    /// `VBufStorage_buffer_t::getLineOffsets`.
+    ///
+    /// `max_line_length` (when > 0) wraps long lines on whitespace
+    /// boundaries. `use_screen_layout` controls whether the walk
+    /// crosses control field boundaries (when `false`, the search
+    /// stops at the enclosing text node's parent).
+    ///
+    /// Returns `None` for an empty buffer, an out-of-range `offset`,
+    /// or any other internal failure to locate the initial node.
+    pub fn line_offsets(
+        &self,
+        offset: i32,
+        max_line_length: i32,
+        use_screen_layout: bool,
+    ) -> Option<(i32, i32)> {
+        let root = self.root?;
+        if offset >= self.nodes[root].length || offset < 0 {
+            return None;
+        }
+        let (init_node, init_rel) =
+            self.locate_text_field_node_at_offset(root, offset)?;
+        let init_buffer_start = offset - init_rel;
+        let init_buffer_end =
+            init_buffer_start + self.nodes[init_node].length;
+
+        // The block-element ancestor we don't cross during the
+        // forward / backward walks. Walk parents until we find a
+        // block node; None when no enclosing block exists.
+        let limit_block_node = self.nearest_block_ancestor(init_node);
+
+        let mut possible_breaks: BTreeSet<i32> = BTreeSet::new();
+        let mut line_end = init_buffer_end;
+        let mut line_start = init_buffer_start;
+
+        // ----- forward search -----
+        {
+            let mut node = init_node;
+            let mut relative = init_rel;
+            let mut buffer_start = init_buffer_start;
+            let mut buffer_end = init_buffer_end;
+            loop {
+                possible_breaks.insert(buffer_start);
+                possible_breaks.insert(buffer_end);
+                let n = &self.nodes[node];
+                if n.length > 0 && n.first_child.is_none() {
+                    line_end = buffer_end;
+                    if let Some(text) = node_text_slice(n) {
+                        let mut last_was_space = false;
+                        let mut found_hard_break = false;
+                        for i in (relative as usize)..(n.length as usize) {
+                            let c = text[i];
+                            // CR (not followed by LF) or LF -> hard break
+                            let is_cr = c == b'\r' as u16
+                                && (i + 1 >= n.length as usize
+                                    || text[i + 1] != b'\n' as u16);
+                            let is_lf = c == b'\n' as u16;
+                            if is_cr || is_lf {
+                                line_end = buffer_start + i as i32 + 1;
+                                found_hard_break = true;
+                                break;
+                            }
+                            if is_whitespace_w(c) {
+                                last_was_space = true;
+                            } else {
+                                if last_was_space {
+                                    possible_breaks
+                                        .insert(buffer_start + i as i32);
+                                }
+                                last_was_space = false;
+                            }
+                        }
+                        if found_hard_break {
+                            break;
+                        }
+                    }
+                }
+                // Advance forward; bail if we'd cross a block edge or
+                // (in non-screen-layout mode) a control field.
+                let step = self.next_node_in_tree(
+                    node,
+                    TreeDirection::Forward,
+                    limit_block_node,
+                );
+                let (next_key, next_rel) = match step {
+                    Some(p) => p,
+                    None => break,
+                };
+                let next = &self.nodes[next_key];
+                let blocked_by_control =
+                    !use_screen_layout && next.first_child.is_some();
+                if blocked_by_control || next.is_block {
+                    break;
+                }
+                buffer_start += next_rel;
+                buffer_end = buffer_start + next.length;
+                relative = 0;
+                node = next_key;
+            }
+        }
+
+        // ----- backward search -----
+        {
+            let mut node = init_node;
+            let mut relative = init_rel;
+            let mut buffer_start = init_buffer_start;
+            let mut buffer_end = init_buffer_end;
+            loop {
+                possible_breaks.insert(buffer_start);
+                possible_breaks.insert(buffer_end);
+                let n = &self.nodes[node];
+                if n.length > 0 && n.first_child.is_none() {
+                    line_start = buffer_start;
+                    if let Some(text) = node_text_slice(n) {
+                        let mut last_was_space = false;
+                        let mut found_hard_break = false;
+                        for i in (0..relative as usize).rev() {
+                            let c = text[i];
+                            let is_cr = c == b'\r' as u16
+                                && (i + 1 >= n.length as usize
+                                    || text[i + 1] != b'\n' as u16);
+                            let is_lf = c == b'\n' as u16;
+                            if is_cr || is_lf {
+                                line_start =
+                                    buffer_start + i as i32 + 1;
+                                found_hard_break = true;
+                                break;
+                            }
+                            if is_whitespace_w(c) {
+                                if !last_was_space {
+                                    possible_breaks.insert(
+                                        buffer_start + i as i32 + 1,
+                                    );
+                                }
+                                last_was_space = true;
+                            } else {
+                                last_was_space = false;
+                            }
+                        }
+                        if found_hard_break {
+                            break;
+                        }
+                    }
+                }
+                // For backward search, the limit shifts: when not
+                // using screen layout, we stop crossing this node's
+                // parent (preventing leaving the enclosing control
+                // field).
+                let limit = if use_screen_layout {
+                    limit_block_node
+                } else {
+                    self.nodes[node].parent
+                };
+                let step = self.next_node_in_tree(
+                    node,
+                    TreeDirection::SymmetricalBack,
+                    limit,
+                );
+                let (prev_key, prev_rel) = match step {
+                    Some(p) => p,
+                    None => break,
+                };
+                let prev = &self.nodes[prev_key];
+                if prev.is_block {
+                    break;
+                }
+                buffer_start += prev_rel;
+                buffer_end = buffer_start + prev.length;
+                relative = prev.length;
+                node = prev_key;
+            }
+        }
+
+        // ----- maxLineLength wrapping -----
+        if max_line_length > 0 {
+            let mut real_breaks: BTreeSet<i32> = BTreeSet::new();
+            real_breaks.insert(line_start);
+            real_breaks.insert(line_end);
+            let mut i = line_start;
+            let mut line_char_counter = 0;
+            while i < line_end {
+                if line_char_counter == max_line_length {
+                    // Snap back to the nearest possible break before
+                    // i, but only if it's still within max_line_length
+                    // characters of the wrap point.
+                    if !possible_breaks.is_empty() {
+                        if let Some(&candidate) = possible_breaks
+                            .range(..i)
+                            .next_back()
+                        {
+                            if candidate > i - max_line_length {
+                                i = candidate;
+                            }
+                        }
+                    }
+                    real_breaks.insert(i);
+                    line_char_counter = 0;
+                }
+                i += 1;
+                line_char_counter += 1;
+            }
+            // Final line bounds: greatest realBreak <= offset and
+            // smallest realBreak > offset.
+            let after = real_breaks
+                .range((offset + 1)..)
+                .next()
+                .copied()
+                .unwrap_or(line_end);
+            let before = real_breaks
+                .range(..=offset)
+                .next_back()
+                .copied()
+                .unwrap_or(line_start);
+            line_end = after;
+            line_start = before;
+        }
+
+        Some((line_start, line_end))
+    }
+
+    /// Walk parent pointers to find the nearest ancestor whose
+    /// `is_block` flag is true. Returns `None` if there's no
+    /// enclosing block ancestor (e.g. the node is at the top of
+    /// the tree without a block-bearing parent).
+    fn nearest_block_ancestor(&self, key: NodeKey) -> Option<NodeKey> {
+        let mut cur = self.nodes[key].parent;
+        while let Some(c) = cur {
+            if self.nodes[c].is_block {
+                return Some(c);
+            }
+            cur = self.nodes[c].parent;
+        }
+        None
     }
 
     /// Buffer-level wrapper for `get_text_in_range`. Mirrors
@@ -807,6 +1043,15 @@ struct NodeSnapshot {
     next: Option<NodeKey>,
     first_child: Option<NodeKey>,
     last_child: Option<NodeKey>,
+}
+
+/// Borrow the underlying text of a text-field node, or `None` for
+/// non-text variants.
+fn node_text_slice(n: &Node) -> Option<&[u16]> {
+    match &n.kind {
+        FieldNodeKind::Text(data) => Some(&data.text),
+        _ => None,
+    }
 }
 
 /// `iswspace`-equivalent for the BMP characters vbuf encounters.
@@ -1362,6 +1607,65 @@ mod tests {
         let mut out3: Vec<u16> = Vec::new();
         assert!(!b.buffer_get_text_in_range(0, 100, &mut out3, false));
         assert!(out3.is_empty());
+    }
+
+    #[test]
+    fn line_offsets_single_text_node_no_breaks() {
+        let mut b = Buffer::new();
+        let root = b.add_control_field_node(None, None, cf(1, 1), true).unwrap();
+        let _t = b.add_text_field_node(Some(root), None, w("hello world")).unwrap();
+        // No CR/LF, no maxLineLength -> the whole text is one line.
+        assert_eq!(b.line_offsets(0, 0, true), Some((0, 11)));
+        assert_eq!(b.line_offsets(5, 0, true), Some((0, 11)));
+    }
+
+    #[test]
+    fn line_offsets_hard_break_lf() {
+        let mut b = Buffer::new();
+        let root = b.add_control_field_node(None, None, cf(1, 1), true).unwrap();
+        let _t = b
+            .add_text_field_node(Some(root), None, w("first\nsecond"))
+            .unwrap();
+        // Position 0 is in the first line; line ends just past '\n'.
+        assert_eq!(b.line_offsets(0, 0, true), Some((0, 6)));
+        // Position 6 is in the second line.
+        assert_eq!(b.line_offsets(6, 0, true), Some((6, 12)));
+    }
+
+    #[test]
+    fn line_offsets_max_line_length_wraps_on_whitespace() {
+        let mut b = Buffer::new();
+        let root = b.add_control_field_node(None, None, cf(1, 1), true).unwrap();
+        // 21-character line; max length 10 should wrap on whitespace.
+        let _t = b
+            .add_text_field_node(
+                Some(root),
+                None,
+                w("aaaa bbbb cccc dddd ee"),
+            )
+            .unwrap();
+        // Without wrapping the line is 0..22 (includes the full text).
+        // With max 10 the first wrap candidate <= 10 is the boundary
+        // after "aaaa " at position 5.
+        let (start, end) = b.line_offsets(0, 10, true).unwrap();
+        assert_eq!(start, 0);
+        assert!(end <= 10);
+        assert!(end >= 5);
+    }
+
+    #[test]
+    fn line_offsets_offset_at_block_boundary_is_in_range() {
+        let mut b = Buffer::new();
+        let root = b.add_control_field_node(None, None, cf(1, 1), true).unwrap();
+        let _t = b.add_text_field_node(Some(root), None, w("hello")).unwrap();
+        // offset == length is out of range.
+        assert_eq!(b.line_offsets(5, 0, true), None);
+    }
+
+    #[test]
+    fn line_offsets_empty_buffer_returns_none() {
+        let b = Buffer::new();
+        assert_eq!(b.line_offsets(0, 0, true), None);
     }
 
     #[test]
