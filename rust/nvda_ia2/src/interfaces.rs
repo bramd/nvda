@@ -86,8 +86,19 @@ pub struct IAccessible2_Vtbl {
     pub get_uniqueID: unsafe extern "system" fn(this: *mut core::ffi::c_void, unique_id: *mut i32) -> HRESULT,
     pub get_windowHandle: unsafe extern "system" fn(this: *mut core::ffi::c_void, window_handle: *mut HWND) -> HRESULT,
     pub get_indexInParent: usize,
-    pub get_locale: usize,
+    pub get_locale: unsafe extern "system" fn(this: *mut core::ffi::c_void, locale: *mut IA2Locale) -> HRESULT,
     pub get_attributes: unsafe extern "system" fn(this: *mut core::ffi::c_void, attributes: *mut core::mem::ManuallyDrop<BSTR>) -> HRESULT,
+}
+
+/// Mirror of the IDL `IA2Locale` struct (Accessible2.idl:367). Three
+/// server-allocated BSTRs; the caller takes ownership and is
+/// responsible for `SysFreeString`. The Rust wrapper
+/// [`IAccessible2::get_locale`] does this automatically.
+#[repr(C)]
+pub struct IA2Locale {
+    pub language: core::mem::ManuallyDrop<BSTR>,
+    pub country: core::mem::ManuallyDrop<BSTR>,
+    pub variant: core::mem::ManuallyDrop<BSTR>,
 }
 
 impl IAccessible2 {
@@ -199,6 +210,45 @@ impl IAccessible2 {
             return Err(hr.into());
         }
         Ok(out)
+    }
+
+    /// Returns the IA2 locale (language, country, variant) for this
+    /// object. All three BSTRs are server-allocated; the wrapper takes
+    /// ownership of each so their `Drop` runs `SysFreeString`.
+    ///
+    /// Returns `None` when the call failed; we don't bother
+    /// distinguishing `S_FALSE` from a hard error since neither is
+    /// usable.
+    ///
+    /// # Safety
+    ///
+    /// Same apartment / lifetime obligations as
+    /// [`IAccessible2::get_attributes`].
+    pub unsafe fn get_locale(
+        &self,
+    ) -> windows::core::Result<(BSTR, BSTR, BSTR)> {
+        let mut out = IA2Locale {
+            language: core::mem::ManuallyDrop::new(BSTR::default()),
+            country: core::mem::ManuallyDrop::new(BSTR::default()),
+            variant: core::mem::ManuallyDrop::new(BSTR::default()),
+        };
+        let hr = (Interface::vtable(self).get_locale)(
+            Interface::as_raw(self),
+            &mut out as *mut _,
+        );
+        if hr.is_err() {
+            // Take ownership of any partial BSTRs the server may have
+            // written so their Drop runs SysFreeString.
+            let _ = core::mem::ManuallyDrop::into_inner(out.language);
+            let _ = core::mem::ManuallyDrop::into_inner(out.country);
+            let _ = core::mem::ManuallyDrop::into_inner(out.variant);
+            return Err(hr.into());
+        }
+        Ok((
+            core::mem::ManuallyDrop::into_inner(out.language),
+            core::mem::ManuallyDrop::into_inner(out.country),
+            core::mem::ManuallyDrop::into_inner(out.variant),
+        ))
     }
 }
 

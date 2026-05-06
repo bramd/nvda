@@ -115,8 +115,24 @@ pub unsafe extern "C" fn vbuf_node_is_block(_node: *mut c_void) -> i32 {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn vbuf_node_set_is_block(
+    _node: *mut c_void,
+    _value: i32,
+) {
+    unimplemented!("vbuf_node_set_is_block test stub");
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn vbuf_node_is_hidden(_node: *mut c_void) -> i32 {
     unimplemented!("vbuf_node_is_hidden test stub");
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn vbuf_node_set_is_hidden(
+    _node: *mut c_void,
+    _value: i32,
+) {
+    unimplemented!("vbuf_node_set_is_hidden test stub");
 }
 
 #[no_mangle]

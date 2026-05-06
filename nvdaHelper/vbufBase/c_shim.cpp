@@ -144,6 +144,14 @@ extern "C" int vbuf_node_is_block(void* node) {
 	return static_cast<VBufStorage_fieldNode_t*>(node)->isBlock ? 1 : 0;
 }
 
+extern "C" void vbuf_node_set_is_block(void* node, int value) {
+	static_cast<VBufStorage_fieldNode_t*>(node)->isBlock = value != 0;
+}
+
+extern "C" void vbuf_node_set_is_hidden(void* node, int value) {
+	static_cast<VBufStorage_fieldNode_t*>(node)->isHidden = value != 0;
+}
+
 extern "C" int vbuf_node_is_hidden(void* node) {
 	return static_cast<VBufStorage_fieldNode_t*>(node)->isHidden ? 1 : 0;
 }

@@ -89,7 +89,9 @@ unsafe extern "C" {
 
     pub fn vbuf_node_get_length(node: *mut c_void) -> i32;
     pub fn vbuf_node_is_block(node: *mut c_void) -> i32;
+    pub fn vbuf_node_set_is_block(node: *mut c_void, value: i32);
     pub fn vbuf_node_is_hidden(node: *mut c_void) -> i32;
+    pub fn vbuf_node_set_is_hidden(node: *mut c_void, value: i32);
 
     pub fn vbuf_node_set_always_rerender_descendants(
         node: *mut c_void,
@@ -379,8 +381,22 @@ impl VbufFieldNode {
     /// # Safety
     ///
     /// `self` must be a live field node.
+    pub unsafe fn set_is_block(self, value: bool) {
+        unsafe { vbuf_node_set_is_block(self.0, value as i32) }
+    }
+
+    /// # Safety
+    ///
+    /// `self` must be a live field node.
     pub unsafe fn is_hidden(self) -> bool {
         unsafe { vbuf_node_is_hidden(self.0) != 0 }
+    }
+
+    /// # Safety
+    ///
+    /// `self` must be a live field node.
+    pub unsafe fn set_is_hidden(self, value: bool) {
+        unsafe { vbuf_node_set_is_hidden(self.0, value as i32) }
     }
 }
 

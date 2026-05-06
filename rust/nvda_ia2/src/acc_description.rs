@@ -32,6 +32,26 @@ fn is_bstr_null(bstr: &windows::core::BSTR) -> bool {
     raw_ptr.is_null()
 }
 
+/// Rust-native variant of `getAccDescription` for in-crate callers.
+/// Returns `Some(wide-chars)` when the COM call succeeded and produced
+/// a non-NULL BSTR (the empty string is preserved as `Some(vec![])`).
+/// Returns `None` on failure or NULL BSTR.
+pub(crate) fn get_acc_description_native(
+    acc: &IAccessible2,
+    childid: i32,
+) -> Option<Vec<u16>> {
+    let pacc_msaa: &IAccessible = acc;
+    let varchild = VARIANT::from(childid);
+    let desc = match unsafe { pacc_msaa.get_accDescription(&varchild) } {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+    if is_bstr_null(&desc) {
+        return None;
+    }
+    Some(desc.as_wide().to_vec())
+}
+
 /// C-callable replacement for `getAccDescription`. Returns `true` when
 /// a description was retrieved (callback invoked once), `false`
 /// otherwise.
