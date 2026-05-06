@@ -21,6 +21,13 @@ mod test_stubs;
 /// is still the live implementation reached through `c_shim.cpp`.
 pub mod storage;
 
+/// Phase 6c in-progress port of `nvdaHelper/vbufBase/backend.cpp`'s
+/// orchestration logic. Currently exposes the polymorphic
+/// [`backend::Renderer`] trait and the [`backend::update`]
+/// orchestration function. Win32 render-thread machinery (timer,
+/// hooks, `execInThread`) is still TODO and stays C++-side for now.
+pub mod backend;
+
 /// Callback invoked once with an OUT string from a `vbuf_node_get_*`
 /// call. The pointer + length describe a wide-string range borrowed
 /// from a `std::wstring` inside the C++ shim and is only valid for the
