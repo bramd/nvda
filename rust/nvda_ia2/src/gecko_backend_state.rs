@@ -21,6 +21,41 @@ use crate::interfaces::IAccessible2;
 use crate::toolkit_name::get_toolkit_name_native;
 use nvda_vbuf::{VbufBackend, VbufBuffer};
 
+// MSAA event IDs (oleacc.h).
+const EVENT_OBJECT_HIDE: u32 = 0x8003;
+const EVENT_OBJECT_REORDER: u32 = 0x8004;
+const EVENT_OBJECT_FOCUS: u32 = 0x8005;
+const EVENT_OBJECT_SELECTIONADD: u32 = 0x8007;
+const EVENT_OBJECT_SELECTIONREMOVE: u32 = 0x8008;
+const EVENT_OBJECT_SELECTIONWITHIN: u32 = 0x8009;
+const EVENT_OBJECT_STATECHANGE: u32 = 0x800a;
+const EVENT_OBJECT_NAMECHANGE: u32 = 0x800c;
+const EVENT_OBJECT_DESCRIPTIONCHANGE: u32 = 0x800d;
+const EVENT_OBJECT_VALUECHANGE: u32 = 0x800e;
+const EVENT_SYSTEM_ALERT: u32 = 0x0002;
+
+// IA2 event IDs (build/<arch>/ia2.h, derived from
+// IA2_EVENT_ACTION_CHANGED = 0x101).
+const IA2_EVENT_DOCUMENT_LOAD_COMPLETE: u32 = 0x105;
+const IA2_EVENT_OBJECT_ATTRIBUTE_CHANGED: u32 = 0x110;
+const IA2_EVENT_TEXT_ATTRIBUTE_CHANGED: u32 = 0x11a;
+const IA2_EVENT_TEXT_INSERTED: u32 = 0x11e;
+const IA2_EVENT_TEXT_REMOVED: u32 = 0x11f;
+const IA2_EVENT_TEXT_UPDATED: u32 = 0x120;
+
+/// `OBJID_CLIENT` per oleacc.h (-4 as a signed i32).
+const OBJID_CLIENT: i32 = -4;
+
+/// Per-backend dispatch outcomes for the WinEvent hook.
+#[repr(i32)]
+pub enum WinEventOutcome {
+    /// Continue iterating to the next running backend.
+    Continue = 0,
+    /// Stop the whole hook function (used for state-change on the
+    /// root document, where re-render would cause a busy-state loop).
+    StopAll = 1,
+}
+
 /// Per-instance state owned by the Rust side and exposed through
 /// `void*` to the C++ class.
 pub struct GeckoBackendState {
@@ -299,3 +334,137 @@ pub unsafe extern "C" fn nvda_ia2_gecko_backend_is_root_doc_alive(
 
 /// `IA2_STATE_DEFUNCT` from `AccessibleStates.idl:93`.
 const IA2_STATE_DEFUNCT: i32 = 0x4;
+
+/// Outer-loop event filter for the WinEvent hook. Returns `true`
+/// when the event is one of the IDs gecko_ia2 cares about, the
+/// objectID is `OBJID_CLIENT`, and the childID is "self" or a
+/// negative IA2 unique ID. Mirrors the early returns at the top of
+/// the C++ `renderThread_winEventProcHook`.
+#[no_mangle]
+pub extern "C" fn nvda_ia2_gecko_backend_win_event_is_relevant(
+    event_id: u32,
+    hwnd: *mut c_void,
+    object_id: i32,
+    child_id: i32,
+) -> bool {
+    let allowed = matches!(
+        event_id,
+        EVENT_OBJECT_FOCUS
+            | IA2_EVENT_DOCUMENT_LOAD_COMPLETE
+            | EVENT_SYSTEM_ALERT
+            | IA2_EVENT_TEXT_UPDATED
+            | IA2_EVENT_TEXT_INSERTED
+            | IA2_EVENT_TEXT_REMOVED
+            | EVENT_OBJECT_REORDER
+            | EVENT_OBJECT_NAMECHANGE
+            | EVENT_OBJECT_VALUECHANGE
+            | EVENT_OBJECT_DESCRIPTIONCHANGE
+            | EVENT_OBJECT_STATECHANGE
+            | EVENT_OBJECT_SELECTIONADD
+            | EVENT_OBJECT_SELECTIONREMOVE
+            | EVENT_OBJECT_SELECTIONWITHIN
+            | IA2_EVENT_OBJECT_ATTRIBUTE_CHANGED
+            | IA2_EVENT_TEXT_ATTRIBUTE_CHANGED
+            | EVENT_OBJECT_HIDE
+    );
+    if !allowed {
+        return false;
+    }
+    if child_id >= 0 || object_id != OBJID_CLIENT {
+        return false;
+    }
+    if hwnd.is_null() {
+        return false;
+    }
+    true
+}
+
+/// Per-backend dispatch for the WinEvent hook. Mirrors the body of
+/// the C++ inner loop at gecko_ia2.cpp:177-228 (pre-flip).
+///
+/// `state` is this backend's `GeckoBackendState`; `backend` is the
+/// `VBufBackend_t*` for vbuf-base operations (forceUpdate, etc.).
+/// `doc_handle` and `id` are derived from the WinEvent's `hwnd` and
+/// `childID`.
+///
+/// Returns one of [`WinEventOutcome`] values. The C++ caller treats
+/// `StopAll` as "exit the entire hook function" -- used when a
+/// state-change event fires on the root document.
+///
+/// # Safety
+///
+/// `state` must be a valid `GeckoBackendState*`; `backend` must be
+/// a valid `VBufBackend_t*` for the duration.
+#[no_mangle]
+pub unsafe extern "C" fn nvda_ia2_gecko_backend_dispatch_win_event(
+    state: *mut c_void,
+    backend: *mut c_void,
+    event_id: u32,
+    doc_handle: i32,
+    id: i32,
+) -> i32 {
+    if state.is_null() || backend.is_null() {
+        return WinEventOutcome::Continue as i32;
+    }
+    let backend_h = VbufBackend(backend);
+
+    // For focus, document-load-complete, and alert: force any
+    // already-pending updates to apply now. These events trigger an
+    // immediate flush rather than scheduling a re-render.
+    if matches!(
+        event_id,
+        EVENT_OBJECT_FOCUS
+            | IA2_EVENT_DOCUMENT_LOAD_COMPLETE
+            | EVENT_SYSTEM_ALERT
+    ) {
+        unsafe { backend_h.force_update() };
+        return WinEventOutcome::Continue as i32;
+    }
+
+    // Ignore state-change events on the root document; the
+    // document-busy bit toggling causes spurious re-renders.
+    let backend_doc_handle = unsafe { backend_h.root_doc_handle() };
+    let backend_root_id = unsafe { backend_h.root_id() };
+    if event_id == EVENT_OBJECT_STATECHANGE
+        && doc_handle == backend_doc_handle
+        && id == backend_root_id
+    {
+        return WinEventOutcome::StopAll as i32;
+    }
+
+    // Look up the affected node by (docHandle, ID). Skip if it
+    // isn't in this backend's buffer.
+    let node = match unsafe {
+        backend_h
+            .as_buffer()
+            .get_control_field_node_with_identifier(doc_handle, id)
+    } {
+        Some(n) => n,
+        None => return WinEventOutcome::Continue as i32,
+    };
+
+    // If the root document accessible reports IA2_STATE_DEFUNCT,
+    // the buffer is stale -- clear it. NVDA hasn't realised yet, so
+    // proceeding would scribble across a different document's
+    // identifier space.
+    let alive = unsafe {
+        nvda_ia2_gecko_backend_is_root_doc_alive(state, backend) != 0
+    };
+    if !alive {
+        unsafe { backend_h.clear_buffer() };
+        return WinEventOutcome::Continue as i32;
+    }
+
+    if event_id == EVENT_OBJECT_HIDE {
+        // The accessible was moved (Gecko fires hide+insert on
+        // moves with a single insertion at the subtree root).
+        // Force a re-render of every descendant; the parent will
+        // separately fire a text-removed event so we don't need
+        // to invalidate this node directly.
+        unsafe { node.set_always_rerender_descendants(true) };
+        return WinEventOutcome::Continue as i32;
+    }
+
+    unsafe { backend_h.invalidate_subtree(node) };
+    WinEventOutcome::Continue as i32
+}

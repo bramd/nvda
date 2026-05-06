@@ -59,6 +59,17 @@ extern "C" {
 	int nvda_ia2_gecko_backend_is_root_doc_alive(
 		void* state,
 		void* backend);
+	bool nvda_ia2_gecko_backend_win_event_is_relevant(
+		unsigned int event_id,
+		void* hwnd,
+		int object_id,
+		int child_id);
+	int nvda_ia2_gecko_backend_dispatch_win_event(
+		void* state,
+		void* backend,
+		unsigned int event_id,
+		int doc_handle,
+		int id);
 }
 
 void GeckoVBufBackend_t::versionSpecificInit(IAccessible2* pacc) {
@@ -123,90 +134,32 @@ bool GeckoVBufBackend_t::isRootDocAlive() {
 		this->rustState, this) != 0;
 }
 
-void CALLBACK GeckoVBufBackend_t::renderThread_winEventProcHook(HWINEVENTHOOK hookID, DWORD eventID, HWND hwnd, long objectID, long childID, DWORD threadID, DWORD time) {
-	switch(eventID) {
-		case EVENT_OBJECT_FOCUS:
-		case IA2_EVENT_DOCUMENT_LOAD_COMPLETE:
-		case EVENT_SYSTEM_ALERT:
-		case IA2_EVENT_TEXT_UPDATED:
-		case IA2_EVENT_TEXT_INSERTED:
-		case IA2_EVENT_TEXT_REMOVED:
-		case EVENT_OBJECT_REORDER:
-		case EVENT_OBJECT_NAMECHANGE:
-		case EVENT_OBJECT_VALUECHANGE:
-		case EVENT_OBJECT_DESCRIPTIONCHANGE:
-		case EVENT_OBJECT_STATECHANGE:
-		case EVENT_OBJECT_SELECTIONADD:
-		case EVENT_OBJECT_SELECTIONREMOVE:
-		case EVENT_OBJECT_SELECTIONWITHIN:
-		case IA2_EVENT_OBJECT_ATTRIBUTE_CHANGED:
-		case IA2_EVENT_TEXT_ATTRIBUTE_CHANGED:
-		case EVENT_OBJECT_HIDE:
-		break;
-		default:
+void CALLBACK GeckoVBufBackend_t::renderThread_winEventProcHook(
+	HWINEVENTHOOK hookID, DWORD eventID, HWND hwnd,
+	long objectID, long childID, DWORD threadID, DWORD time
+) {
+	if (!nvda_ia2_gecko_backend_win_event_is_relevant(
+			eventID, hwnd, objectID, childID))
+	{
 		return;
 	}
-	if(childID>=0||objectID!=OBJID_CLIENT)
-		return;
-	LOG_DEBUG(L"winEvent for window "<<hwnd);
-	if(!hwnd) {
-		LOG_DEBUG(L"Invalid window");
-		return;
-	}
-	int docHandle=HandleToUlong(hwnd);
-	int ID=childID;
-	VBufBackend_t* backend=NULL;
-	for(VBufBackendSet_t::iterator i=runningBackends.begin();i!=runningBackends.end();++i) {
-		HWND rootWindow=(HWND)UlongToHandle(((*i)->rootDocHandle));
-		if(rootWindow==hwnd||IsChild(rootWindow,hwnd))
-			backend=(*i);
-		else
+	const int docHandle = HandleToUlong(hwnd);
+	const int ID = childID;
+	for (auto* backend : runningBackends) {
+		HWND rootWindow = (HWND)UlongToHandle(backend->rootDocHandle);
+		if (rootWindow != hwnd && !IsChild(rootWindow, hwnd))
 			continue;
-		LOG_DEBUG(L"found active backend for this window at "<<backend);
-
-		//For focus, documentLoadComplete and alert events, force any nodes already marked as invalid  to be updated right now,
-		if(
-			eventID == EVENT_OBJECT_FOCUS
-			|| eventID == IA2_EVENT_DOCUMENT_LOAD_COMPLETE
-			|| eventID==EVENT_SYSTEM_ALERT
-		) {
-			backend->forceUpdate();
-			continue;
-		}
-
-		//Ignore state change events on the root node (document) as it can cause rerendering when the document goes busy
-		if(eventID==EVENT_OBJECT_STATECHANGE&&hwnd==(HWND)UlongToHandle(backend->rootDocHandle)&&childID==backend->rootID)
-			return;
-
-		VBufStorage_controlFieldNode_t* node=backend->getControlFieldNodeWithIdentifier(docHandle,ID);
-		if(!node)
-			continue;
-
 		auto* geckoBackend = static_cast<GeckoVBufBackend_t*>(backend);
-		if (!geckoBackend->isRootDocAlive()) {
-			// The root doc is dead, but NVDA hasn't realised yet and so hasn't killed
-			// this buffer. That means this id is now in a different document! Trying to
-			// render this could cause a broken tree. At this point, we may as well
-			// clear the buffer.
-			LOG_DEBUG(L"Root doc is dead. Clearing buffer.");
-			backend->clearBuffer();
-			continue;
+		const int outcome = nvda_ia2_gecko_backend_dispatch_win_event(
+			geckoBackend->rustState,
+			backend,
+			eventID,
+			docHandle,
+			ID);
+		if (outcome != 0) {
+			// WinEventOutcome::StopAll -- exit the whole hook.
+			return;
 		}
-
-		if (eventID == EVENT_OBJECT_HIDE) {
-			// When an accessible is moved, events are fired as if the accessible were
-			// removed and then inserted. The insertion events are fired as if it were
-			// a new subtree; i.e. only one insertion for the root of the subtree.
-			// This means that if new descendants are inserted at the same time as the
-			// root is moved, we don't get specific events for those insertions.
-			// Because of that, we mustn't reuse the subtree. Otherwise, we wouldn't
-			// walk inside it and thus wouldn't know about the new descendants.
-			node->alwaysRerenderDescendants = true;
-			// We'll get a text removed event for the parent, so no need to invalidate
-			// this node.
-			continue;
-		}
-		backend->invalidateSubtree(node);
 	}
 }
 
