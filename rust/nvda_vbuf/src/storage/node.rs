@@ -160,4 +160,20 @@ impl Node {
     pub fn get_attribute(&self, name: &[u16]) -> Option<&[u16]> {
         self.attributes.get(name).map(|v| v.as_slice())
     }
+
+    /// Return every attribute concatenated as `name:value;name:value;`
+    /// in the iteration order of the underlying map (sorted by name
+    /// since `BTreeMap` is sorted). Mirrors
+    /// `VBufStorage_fieldNode_t::getAttributesString` -- no escaping
+    /// of `:` or `;` in values; consumers handle that themselves.
+    pub fn get_attributes_string(&self) -> Vec<u16> {
+        let mut out: Vec<u16> = Vec::new();
+        for (name, value) in &self.attributes {
+            out.extend_from_slice(name);
+            out.push(b':' as u16);
+            out.extend_from_slice(value);
+            out.push(b';' as u16);
+        }
+        out
+    }
 }

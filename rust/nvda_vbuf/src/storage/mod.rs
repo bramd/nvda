@@ -436,6 +436,49 @@ impl Buffer {
         }
     }
 
+    /// `true` when the node has rendered content beyond pure
+    /// whitespace + private-use characters. Mirrors
+    /// `nodeHasUsefulContent` in `nvdaHelper/vbufBase/utils.cpp`:
+    /// length 0 -> false, length > 3 -> true (cheap fast path),
+    /// otherwise scan the rendered text and return true if any
+    /// non-space non-private character is found.
+    pub fn node_has_useful_content(&self, key: NodeKey) -> bool {
+        let n = match self.nodes.get(key) {
+            Some(n) => n,
+            None => return false,
+        };
+        let length = n.length;
+        if length == 0 {
+            return false;
+        }
+        if length > 3 {
+            return true;
+        }
+        let mut buf: Vec<u16> = Vec::new();
+        self.get_text_in_range(key, 0, length, &mut buf);
+        buf.iter().any(|&c| !is_whitespace_w(c) && !is_private_character(c))
+    }
+
+    /// `true` when the node's rendered text content equals `s`.
+    /// Mirrors `nodeContentMatchesString` in
+    /// `nvdaHelper/vbufBase/utils.cpp`.
+    pub fn node_content_matches_string(
+        &self,
+        key: NodeKey,
+        s: &[u16],
+    ) -> bool {
+        let length = match self.nodes.get(key) {
+            Some(n) => n.length as usize,
+            None => return false,
+        };
+        if length != s.len() {
+            return false;
+        }
+        let mut buf: Vec<u16> = Vec::new();
+        self.get_text_in_range(key, 0, length as i32, &mut buf);
+        buf == s
+    }
+
     /// Step from `key` to the next node in tree order, optionally
     /// stopping when reaching `limit_node`. Returns the next node's
     /// key and its offset relative to `key`'s start.
@@ -685,6 +728,22 @@ struct NodeSnapshot {
     next: Option<NodeKey>,
     first_child: Option<NodeKey>,
     last_child: Option<NodeKey>,
+}
+
+/// `iswspace`-equivalent for the BMP characters vbuf encounters.
+/// Char's `is_whitespace` covers space, tab, newline, NBSP, and the
+/// rest of `iswspace`'s set.
+fn is_whitespace_w(c: u16) -> bool {
+    char::from_u32(c as u32)
+        .map(|ch| ch.is_whitespace())
+        .unwrap_or(false)
+}
+
+/// `isPrivateCharacter` from `nvdaHelper/vbufBase/utils.h`: BMP
+/// private-use area `U+E000..=U+F8FF` plus the zero-width space
+/// `U+200B`. The C++ predicate excludes these from "useful content".
+fn is_private_character(c: u16) -> bool {
+    (0xe000..=0xf8ff).contains(&c) || c == 0x200b
 }
 
 #[cfg(test)]
@@ -1092,6 +1151,64 @@ mod tests {
             b.next_node_in_tree(root, TreeDirection::Back, None),
             None
         );
+    }
+
+    #[test]
+    fn get_attributes_string_concatenates_pairs() {
+        let mut b = Buffer::new();
+        let key = b.add_control_field_node(None, None, cf(1, 1), true).unwrap();
+        let n = b.get_mut(key).unwrap();
+        n.add_attribute(&w("name"), &w("value"));
+        n.add_attribute(&w("display"), &w("block"));
+        let s = b.get(key).unwrap().get_attributes_string();
+        // BTreeMap iterates by sorted key: "display" < "name".
+        let actual = String::from_utf16(&s).unwrap();
+        assert_eq!(actual, "display:block;name:value;");
+    }
+
+    #[test]
+    fn node_has_useful_content_short_text() {
+        let mut b = Buffer::new();
+        let root = b.add_control_field_node(None, None, cf(1, 1), true).unwrap();
+        // length-0 root -> false
+        assert!(!b.node_has_useful_content(root));
+        // pure-whitespace short text -> false
+        let t1 = b.add_text_field_node(Some(root), None, w("   ")).unwrap();
+        assert!(!b.node_has_useful_content(t1));
+        // private-use character -> false
+        let t2 = b
+            .add_text_field_node(
+                Some(root),
+                Some(t1),
+                vec![0xe000_u16, 0x200b_u16],
+            )
+            .unwrap();
+        assert!(!b.node_has_useful_content(t2));
+        // a real letter mixed with whitespace -> true
+        let t3 = b.add_text_field_node(Some(root), Some(t2), w(" a ")).unwrap();
+        assert!(b.node_has_useful_content(t3));
+    }
+
+    #[test]
+    fn node_has_useful_content_long_skips_scan() {
+        let mut b = Buffer::new();
+        let root = b.add_control_field_node(None, None, cf(1, 1), true).unwrap();
+        // length > 3 returns true even when the text is purely
+        // whitespace -- mirrors the C++ short-circuit.
+        let _t = b.add_text_field_node(Some(root), None, w("    ")).unwrap();
+        assert!(b.node_has_useful_content(root));
+    }
+
+    #[test]
+    fn node_content_matches_string_compares_text() {
+        let mut b = Buffer::new();
+        let root = b.add_control_field_node(None, None, cf(1, 1), true).unwrap();
+        let _t = b.add_text_field_node(Some(root), None, w("hello world")).unwrap();
+        assert!(b.node_content_matches_string(root, &w("hello world")));
+        assert!(!b.node_content_matches_string(root, &w("HELLO WORLD")));
+        assert!(!b.node_content_matches_string(root, &w("hello")));
+        // length mismatch short-circuits.
+        assert!(!b.node_content_matches_string(root, &w("hello world!")));
     }
 
     #[test]
