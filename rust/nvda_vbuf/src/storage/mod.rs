@@ -687,6 +687,41 @@ impl Buffer {
         }
     }
 
+    /// Return `(start, end)` for the given node within the buffer's
+    /// rendered text. Mirrors
+    /// `VBufStorage_buffer_t::getFieldNodeOffsets`. Returns `None`
+    /// when the key is stale.
+    pub fn field_node_offsets(&self, key: NodeKey) -> Option<(i32, i32)> {
+        if !self.contains(key) {
+            return None;
+        }
+        let start = self.calculate_offset_in_tree(key);
+        Some((start, start + self.nodes[key].length))
+    }
+
+    /// `true` when the given `offset` falls within the node's range
+    /// in the buffer. Mirrors
+    /// `VBufStorage_buffer_t::isFieldNodeAtOffset`.
+    pub fn is_field_node_at_offset(
+        &self,
+        key: NodeKey,
+        offset: i32,
+    ) -> bool {
+        if offset < 0 || offset >= self.text_length() {
+            return false;
+        }
+        match self.field_node_offsets(key) {
+            Some((start, end)) => offset >= start && offset < end,
+            None => false,
+        }
+    }
+
+    /// `true` when the buffer has rendered content (i.e. has a
+    /// root). Mirrors `VBufStorage_buffer_t::hasContent`.
+    pub fn has_content(&self) -> bool {
+        self.root.is_some()
+    }
+
     /// Compute the offset of `key` from the start of the tree by
     /// summing the lengths of every preceding sibling (recursively
     /// up the parent chain). Mirrors
@@ -1666,6 +1701,43 @@ mod tests {
     fn line_offsets_empty_buffer_returns_none() {
         let b = Buffer::new();
         assert_eq!(b.line_offsets(0, 0, true), None);
+    }
+
+    #[test]
+    fn field_node_offsets_returns_start_end() {
+        let mut b = Buffer::new();
+        let root = b.add_control_field_node(None, None, cf(1, 1), true).unwrap();
+        let t1 = b.add_text_field_node(Some(root), None, w("abc")).unwrap();
+        let t2 = b.add_text_field_node(Some(root), Some(t1), w("de")).unwrap();
+        assert_eq!(b.field_node_offsets(root), Some((0, 5)));
+        assert_eq!(b.field_node_offsets(t1), Some((0, 3)));
+        assert_eq!(b.field_node_offsets(t2), Some((3, 5)));
+    }
+
+    #[test]
+    fn is_field_node_at_offset_checks_range() {
+        let mut b = Buffer::new();
+        let root = b.add_control_field_node(None, None, cf(1, 1), true).unwrap();
+        let t1 = b.add_text_field_node(Some(root), None, w("abc")).unwrap();
+        let t2 = b.add_text_field_node(Some(root), Some(t1), w("de")).unwrap();
+        assert!(b.is_field_node_at_offset(t1, 0));
+        assert!(b.is_field_node_at_offset(t1, 2));
+        assert!(!b.is_field_node_at_offset(t1, 3)); // end-exclusive
+        assert!(b.is_field_node_at_offset(t2, 3));
+        assert!(b.is_field_node_at_offset(t2, 4));
+        assert!(!b.is_field_node_at_offset(t2, 5)); // past end
+        // Whole-buffer offset out of range -> false.
+        assert!(!b.is_field_node_at_offset(root, 100));
+    }
+
+    #[test]
+    fn has_content_reflects_root_presence() {
+        let mut b = Buffer::new();
+        assert!(!b.has_content());
+        let _root = b.add_control_field_node(None, None, cf(1, 1), true).unwrap();
+        assert!(b.has_content());
+        b.clear();
+        assert!(!b.has_content());
     }
 
     #[test]
