@@ -87,6 +87,74 @@ fn get_all_relation_ids(
     ids
 }
 
+/// Rust-native variant for in-crate callers (the fillVBuf port).
+///
+/// # Safety
+///
+/// `pacc` must be live; `buffer` and `node_being_filled` must point at
+/// live vbuf objects.
+pub(crate) unsafe fn fill_vbuf_aria_details_native(
+    doc_handle: i32,
+    pacc: &IAccessible2,
+    buffer: VbufBuffer,
+    node_being_filled: VbufControlFieldNode,
+    node_role: &[u16],
+    is_chrome: bool,
+) {
+    let acc2_2: IAccessible2_2 = match pacc.cast() {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+
+    let detail_target_ids =
+        get_all_relation_ids(&acc2_2, IA2_RELATION_DETAILS, is_chrome);
+    if !detail_target_ids.is_empty() {
+        unsafe {
+            node_being_filled
+                .as_field_node()
+                .add_attribute(ATTR_NAME_HAS_DETAILS, VAL_TRUE);
+        }
+        for id in &detail_target_ids {
+            let target_node = match unsafe {
+                buffer.get_control_field_node_with_identifier(doc_handle, *id)
+            } {
+                Some(n) => n,
+                None => continue,
+            };
+            let target_role = unsafe {
+                target_node.as_field_node().get_attribute(ATTR_NAME_ROLE)
+            };
+            let role: &[u16] = match target_role.as_deref() {
+                Some(r) => r,
+                None => VAL_UNKNOWN,
+            };
+            unsafe {
+                extend_details_roles_attribute(
+                    node_being_filled.as_field_node(),
+                    role,
+                );
+            }
+        }
+    }
+
+    let detail_origin_ids =
+        get_all_relation_ids(&acc2_2, IA2_RELATION_DETAILS_FOR, is_chrome);
+    for id in &detail_origin_ids {
+        let origin_node = match unsafe {
+            buffer.get_control_field_node_with_identifier(doc_handle, *id)
+        } {
+            Some(n) => n,
+            None => continue,
+        };
+        unsafe {
+            extend_details_roles_attribute(
+                origin_node.as_field_node(),
+                node_role,
+            );
+        }
+    }
+}
+
 /// C-callable replacement for `fillVBufAriaDetails`.
 ///
 /// # Safety
@@ -113,69 +181,19 @@ pub unsafe extern "C" fn nvda_ia2_fill_vbuf_aria_details(
         Some(a) => a,
         None => return,
     };
-    let acc2_2: IAccessible2_2 = match acc.cast() {
-        Ok(a) => a,
-        Err(_) => return,
-    };
-
-    let buffer = VbufBuffer(buffer);
-    let node_being_filled = VbufControlFieldNode(node);
     let node_role: &[u16] = if node_role_len == 0 || node_role_ptr.is_null() {
         &[]
     } else {
         unsafe { core::slice::from_raw_parts(node_role_ptr, node_role_len) }
     };
-
-    // Origin case: nodeBeingFilled has DETAILS targets.
-    let detail_target_ids =
-        get_all_relation_ids(&acc2_2, IA2_RELATION_DETAILS, is_chrome);
-    if !detail_target_ids.is_empty() {
-        unsafe {
-            node_being_filled
-                .as_field_node()
-                .add_attribute(ATTR_NAME_HAS_DETAILS, VAL_TRUE);
-        }
-        for id in &detail_target_ids {
-            let target_node = match unsafe {
-                buffer.get_control_field_node_with_identifier(doc_handle, *id)
-            } {
-                Some(n) => n,
-                None => continue,
-            };
-            let target_role = unsafe {
-                target_node.as_field_node().get_attribute(ATTR_NAME_ROLE)
-            };
-            // If the target has no role attribute, fall back to "unknown" so
-            // that "hasDetails" with multiple relations stays informative
-            // even when one target's role is generic.
-            let role: &[u16] = match target_role.as_deref() {
-                Some(r) => r,
-                None => VAL_UNKNOWN,
-            };
-            unsafe {
-                extend_details_roles_attribute(
-                    node_being_filled.as_field_node(),
-                    role,
-                );
-            }
-        }
-    }
-
-    // Target case: nodeBeingFilled is the target of DETAILS_FOR origins.
-    let detail_origin_ids =
-        get_all_relation_ids(&acc2_2, IA2_RELATION_DETAILS_FOR, is_chrome);
-    for id in &detail_origin_ids {
-        let origin_node = match unsafe {
-            buffer.get_control_field_node_with_identifier(doc_handle, *id)
-        } {
-            Some(n) => n,
-            None => continue,
-        };
-        unsafe {
-            extend_details_roles_attribute(
-                origin_node.as_field_node(),
-                node_role,
-            );
-        }
+    unsafe {
+        fill_vbuf_aria_details_native(
+            doc_handle,
+            acc,
+            VbufBuffer(buffer),
+            VbufControlFieldNode(node),
+            node_role,
+            is_chrome,
+        );
     }
 }

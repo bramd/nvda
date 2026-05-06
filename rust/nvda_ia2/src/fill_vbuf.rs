@@ -12,28 +12,30 @@
 //! function) calls itself directly. The C++ side does not see the
 //! recursive calls.
 //!
-//! Implementation status (block-by-block per the design doc):
+//! All seven blocks are implemented; [`fill_vbuf`] is now a complete
+//! port of the C++ original. The C++ side does not yet delegate to
+//! the extern shim ([`nvda_ia2_fill_vbuf`]) — that flip is a separate
+//! commit so the swap is bisectable.
 //!
-//! | Block | Title                              | Status |
-//! | :---: | ---------------------------------- | ------ |
-//! |   1   | entry, identity, IA2 attribs, role | done   |
-//! |   2   | name / value / desc / locale / states | TODO |
-//! |   3   | IA2 text segmentation              | TODO   |
-//! |   4   | table state plumbing               | TODO   |
-//! |   5   | non-text children walk             | TODO   |
-//! |   6   | empty-content fallbacks            | TODO   |
-//! |   7   | name attr / desc-is-content / aria | TODO   |
+//! Block carve-up (lines refer to gecko_ia2.cpp before the flip):
 //!
-//! Until all blocks land, [`fill_vbuf`] panics in the unimplemented
-//! tail. The extern shim is therefore unsafe to wire into C++ until
-//! every block is in place; gecko_ia2.cpp's `fillVBuf` keeps running
-//! the C++ implementation at runtime in the meantime.
+//! | Block | Title                                         | Lines        |
+//! | :---: | --------------------------------------------- | ------------ |
+//! |   1   | entry, identity, IA2 attribs, role            | 408-514      |
+//! |   2   | states, name, locale, derived booleans        | 514-627      |
+//! |   3   | render flags, actions, label info             | 628-755      |
+//! |   4   | table state plumbing                          | 757-908      |
+//! |   5   | recursive content (text seg / children walk)  | 911-1130     |
+//! |   6   | non-recursive content fallbacks               | 1131-1202    |
+//! |   7   | name attr / desc-is-content / aria-details    | 1206-1245    |
 #![allow(dead_code)]
 
 use core::ffi::c_void;
 use std::collections::BTreeMap;
 
 use crate::acc_description::get_acc_description_native;
+use crate::aria_details::fill_vbuf_aria_details_native;
+use crate::aria_error::fill_vbuf_aria_error_native;
 use crate::attribs::parse_attribs;
 use crate::child_count::get_child_count_native;
 use crate::fetch::fetch_ia2_attributes_native;
@@ -1749,6 +1751,112 @@ pub unsafe fn block6(
     Block6Outcome { previous_node }
 }
 
+// ----- block 7 ------------------------------------------------------
+
+/// Block 7 of `fillVBuf`: name-as-attribute (with the
+/// `labelledByContent` detection), `descriptionIsContent` flag, and
+/// the calls to `fill_vbuf_aria_details` / `fill_vbuf_aria_error`.
+/// Mirrors lines 1206-1245 of gecko_ia2.cpp.
+///
+/// # Safety
+///
+/// `pacc` must be live for the duration; `parent_node` must be a live
+/// control field node owned by the buffer.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn block7(
+    pacc: &IAccessible2,
+    parent_node: VbufControlFieldNode,
+    doc_handle: i32,
+    role_attr: &[u16],
+    block2: &Block2State,
+    block3: &Block3State,
+    buffer: VbufBuffer,
+    ctx: &FillVBufCtx,
+) {
+    // Name attribute. C++ checks `if (name)` (BSTR non-NULL); we
+    // mirror via Option::is_some, which is `Some` even for empty
+    // strings -- matches the C++ behavior of writing an empty name
+    // attribute when the server returned a non-null empty BSTR.
+    if !block3.name_is_content {
+        if let Some(name) = block2.name.as_deref() {
+            let attr_name: Vec<u16> = "name".encode_utf16().collect();
+            unsafe {
+                parent_node.as_field_node().add_attribute(&attr_name, name);
+            }
+            // labelledByContent: only relevant when the name was
+            // explicit (browser-supplied label), and only when the
+            // labelling element itself is a descendant of this node.
+            if block3.name_is_explicit {
+                if let Some(label_id) = block3.label_id {
+                    if let Some(label_node) = unsafe {
+                        buffer.get_control_field_node_with_identifier(
+                            doc_handle, label_id,
+                        )
+                    } {
+                        let is_descendant = unsafe {
+                            buffer.is_descendant_node(
+                                parent_node.as_field_node(),
+                                label_node.as_field_node(),
+                            )
+                        };
+                        if is_descendant {
+                            let attr_name: Vec<u16> =
+                                "labelledByContent".encode_utf16().collect();
+                            let attr_value: &[u16] = &[
+                                b't' as u16,
+                                b'r' as u16,
+                                b'u' as u16,
+                                b'e' as u16,
+                            ];
+                            unsafe {
+                                parent_node
+                                    .as_field_node()
+                                    .add_attribute(&attr_name, attr_value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // descriptionIsContent: prevent NVDA from announcing a description
+    // that's literally the same as the rendered text.
+    if let Some(description) = block2.description.as_deref() {
+        let matches = unsafe {
+            parent_node.as_field_node().content_matches_string(description)
+        };
+        if matches {
+            let attr_name: Vec<u16> =
+                "descriptionIsContent".encode_utf16().collect();
+            let attr_value: &[u16] =
+                &[b't' as u16, b'r' as u16, b'u' as u16, b'e' as u16];
+            unsafe {
+                parent_node
+                    .as_field_node()
+                    .add_attribute(&attr_name, attr_value);
+            }
+        }
+    }
+
+    // aria-details / aria-errormessage relation handling.
+    unsafe {
+        fill_vbuf_aria_details_native(
+            doc_handle,
+            pacc,
+            buffer,
+            parent_node,
+            role_attr,
+            ctx.is_chrome,
+        );
+        fill_vbuf_aria_error_native(
+            pacc,
+            parent_node.as_field_node(),
+            ctx.is_chrome,
+        );
+    }
+}
+
 // ----- entry point ---------------------------------------------------
 
 /// Per-render context the recursion threads through. Carries the
@@ -1858,7 +1966,6 @@ pub(crate) unsafe fn fill_vbuf(
 
     // Blocks 5 + 6 only run when isVisible. The render-flag is on
     // block 3.
-    let mut current_previous_node = block4_state.previous_node;
     if block3_state.is_visible {
         // Block 5 — content rendering (recursive).
         let block5_outcome = unsafe {
@@ -1875,15 +1982,14 @@ pub(crate) unsafe fn fill_vbuf(
                 buffer,
                 pacc_table2_for_children,
                 pres_row_for_children,
-                current_previous_node,
+                block4_state.previous_node,
                 ignore_interactive_unlabelled_graphics,
                 ctx,
             )
         };
-        current_previous_node = block5_outcome.previous_node;
 
         // Block 6 — non-recursive content branches + trailing fallbacks.
-        let block6_outcome = unsafe {
+        let _block6_outcome = unsafe {
             block6(
                 cont.parent_node,
                 cont.role,
@@ -1894,17 +2000,28 @@ pub(crate) unsafe fn fill_vbuf(
                 buffer,
                 block5_outcome.handled,
                 block5_outcome.ignore_interactive_unlabelled_graphics,
-                current_previous_node,
+                block5_outcome.previous_node,
             )
         };
-        current_previous_node = block6_outcome.previous_node;
     }
 
-    // TODO Block 7 — name-as-attribute, descriptionIsContent, aria
-    //                details / error.
+    // Block 7 — name attribute / labelledByContent /
+    // descriptionIsContent / aria-details / aria-errormessage. Runs
+    // unconditionally (outside the isVisible guard).
+    unsafe {
+        block7(
+            pacc,
+            cont.parent_node,
+            cont.doc_handle,
+            &cont.role_attr,
+            &block2_state,
+            &block3_state,
+            buffer,
+            ctx,
+        );
+    }
 
-    let _ = current_previous_node;
-    unimplemented!("fill_vbuf block 7 not yet ported")
+    Some(cont.parent_node.as_field_node())
 }
 
 /// Single C-callable entry point. Replaces the *body* of

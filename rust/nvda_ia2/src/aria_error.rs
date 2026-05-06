@@ -37,6 +37,49 @@ const ATTR_NAME_ERROR_MESSAGE: &[u16] = &[
     b'e' as u16,
 ];
 
+/// Rust-native variant for in-crate callers (the fillVBuf port).
+///
+/// # Safety
+///
+/// `pacc` must be live; `node` must be a live control field node.
+pub(crate) unsafe fn fill_vbuf_aria_error_native(
+    pacc: &IAccessible2,
+    node: VbufFieldNode,
+    is_chrome: bool,
+) {
+    let acc2_2: IAccessible2_2 = match pacc.cast() {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+
+    let targets = get_relation_targets_of_type_native(
+        &acc2_2,
+        IA2_RELATION_ERROR,
+        1,
+        is_chrome,
+    );
+    let target = match targets.into_iter().next().flatten() {
+        Some(t) => t,
+        None => return,
+    };
+
+    let mut text_buf: Vec<u16> = Vec::new();
+    let got_text = get_text_from_iaccessible_collect(
+        &mut text_buf,
+        &target,
+        false,
+        true,
+        true,
+    );
+    if !got_text {
+        return;
+    }
+
+    unsafe {
+        node.add_attribute(ATTR_NAME_ERROR_MESSAGE, &text_buf);
+    }
+}
+
 /// C-callable replacement.
 ///
 /// `pacc` is the source IAccessible2 (borrowed). `node` is the
@@ -62,41 +105,7 @@ pub unsafe extern "C" fn nvda_ia2_fill_vbuf_aria_error(
         Some(a) => a,
         None => return,
     };
-    let acc2_2: IAccessible2_2 = match acc.cast() {
-        Ok(a) => a,
-        Err(_) => return,
-    };
-
-    let targets = get_relation_targets_of_type_native(
-        &acc2_2,
-        IA2_RELATION_ERROR,
-        1,
-        is_chrome,
-    );
-    // `aria-errormessage` is an ID reference, so only the first target
-    // matters. The C++ original early-returned on empty; we do the same
-    // and additionally bail if the QI to IAccessible2 failed (the C++
-    // version checked `target != nullptr` against a possibly-null
-    // CComQIPtr push).
-    let target = match targets.into_iter().next().flatten() {
-        Some(t) => t,
-        None => return,
-    };
-
-    let mut text_buf: Vec<u16> = Vec::new();
-    let got_text = get_text_from_iaccessible_collect(
-        &mut text_buf,
-        &target,
-        false, // use_new_text
-        true,  // recurse
-        true,  // include_top_level_text
-    );
-    if !got_text {
-        return;
-    }
-
-    let field_node = VbufFieldNode(node);
     unsafe {
-        field_node.add_attribute(ATTR_NAME_ERROR_MESSAGE, &text_buf);
+        fill_vbuf_aria_error_native(acc, VbufFieldNode(node), is_chrome);
     }
 }
