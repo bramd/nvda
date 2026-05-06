@@ -48,30 +48,16 @@ static IAccessible2* IAccessible2FromIdentifier(int docHandle, int ID) {
 
 #ifdef NVDA_HAS_RUST_HELPERS
 extern "C" {
-	typedef void (*nvda_ia2_toolkit_name_callback)(
-		void* ctx,
-		const wchar_t* ptr,
-		size_t len);
-
-	bool nvda_ia2_get_toolkit_name(
-		void* pacc,
-		void* ctx,
-		nvda_ia2_toolkit_name_callback cb);
-}
-
-namespace {
-	void toolkitName_cb(void* ctx, const wchar_t* ptr, size_t len) {
-		try {
-			static_cast<std::wstring*>(ctx)->assign(ptr, len);
-		} catch (const std::bad_alloc&) {
-			// Suppressed to prevent UB from a C++ exception crossing the
-			// extern "C" frame back into Rust.
-		}
-	}
+	void* nvda_ia2_gecko_backend_create();
+	void nvda_ia2_gecko_backend_destroy(void* state);
+	int nvda_ia2_gecko_backend_is_chrome(void* state);
+	void nvda_ia2_gecko_backend_version_specific_init(
+		void* state,
+		void* pacc);
 }
 
 void GeckoVBufBackend_t::versionSpecificInit(IAccessible2* pacc) {
-	nvda_ia2_get_toolkit_name(pacc, &this->toolkitName, toolkitName_cb);
+	nvda_ia2_gecko_backend_version_specific_init(this->rustState, pacc);
 }
 #endif
 
@@ -105,7 +91,8 @@ VBufStorage_fieldNode_t* GeckoVBufBackend_t::fillVBuf(
 	nhAssert(buffer); //buffer can't be NULL
 	nhAssert(!parentNode||buffer->isNodeInBuffer(parentNode));
 	nhAssert(!previousNode||buffer->isNodeInBuffer(previousNode));
-	const bool isChrome = this->toolkitName.compare(L"Chrome") == 0;
+	const bool isChrome =
+		nvda_ia2_gecko_backend_is_chrome(this->rustState) != 0;
 	const size_t presRowLen = parentPresentationalRowNumber
 		? wcslen(parentPresentationalRowNumber)
 		: 0;
@@ -264,7 +251,10 @@ void GeckoVBufBackend_t::render(VBufStorage_buffer_t* buffer, int docHandle, int
 	pacc->Release();
 }
 
-GeckoVBufBackend_t::GeckoVBufBackend_t(int docHandle, int ID): VBufBackend_t(docHandle,ID) {
+GeckoVBufBackend_t::GeckoVBufBackend_t(int docHandle, int ID):
+	VBufBackend_t(docHandle, ID),
+	rustState(nvda_ia2_gecko_backend_create())
+{
 }
 
 GeckoVBufBackend_t::~GeckoVBufBackend_t() {
@@ -280,6 +270,8 @@ GeckoVBufBackend_t::~GeckoVBufBackend_t() {
 	if (this->rootDocAcc) {
 		this->rootDocAcc.Detach();
 	}
+	nvda_ia2_gecko_backend_destroy(this->rustState);
+	this->rustState = nullptr;
 }
 
 VBufBackend_t* GeckoVBufBackend_t_createInstance(int docHandle, int ID) {

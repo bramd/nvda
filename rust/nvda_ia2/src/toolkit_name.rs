@@ -19,6 +19,25 @@ use crate::interfaces::{IAccessible2, IAccessibleApplication};
 pub type ToolkitNameCallback =
     unsafe extern "C" fn(ctx: *mut c_void, ptr: *const u16, len: usize);
 
+/// Rust-native variant for in-crate callers. Returns the toolkit
+/// name as an owned `Vec<u16>`, or an empty `Vec` on COM failure.
+pub(crate) fn get_toolkit_name_native(acc: &IAccessible2) -> Vec<u16> {
+    let serv: IServiceProvider = match acc.cast() {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let app: IAccessibleApplication = match unsafe {
+        serv.QueryService(&IAccessibleApplication::IID)
+    } {
+        Ok(a) => a,
+        Err(_) => return Vec::new(),
+    };
+    match unsafe { app.get_toolkitName() } {
+        Ok(name) => name.as_wide().to_vec(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// C-callable replacement for `versionSpecificInit`.
 ///
 /// On success the callback is invoked exactly once with the toolkit

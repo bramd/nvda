@@ -36,7 +36,13 @@ class GeckoVBufBackend_t: public VBufBackend_t {
 
 	void versionSpecificInit(IAccessible2* pacc);
 
-	std::wstring toolkitName;
+	/* Per-instance Rust state. Allocated by
+	 * nvda_ia2_gecko_backend_create() in the constructor and freed
+	 * by nvda_ia2_gecko_backend_destroy() in the destructor. Holds
+	 * the cached toolkit name (and other Phase 5 state as it
+	 * migrates Rust-side).
+	 */
+	void* rustState;
 
 	bool isRootDocAlive();
 
