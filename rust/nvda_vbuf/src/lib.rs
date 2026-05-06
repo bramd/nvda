@@ -16,6 +16,11 @@ use core::ffi::c_void;
 #[cfg(feature = "test_stubs")]
 mod test_stubs;
 
+/// Phase 6 in-progress port of `nvdaHelper/vbufBase/storage.cpp`
+/// to Rust. Not yet wired into the C-shim; the existing C++ storage
+/// is still the live implementation reached through `c_shim.cpp`.
+pub mod storage;
+
 /// Callback invoked once with an OUT string from a `vbuf_node_get_*`
 /// call. The pointer + length describe a wide-string range borrowed
 /// from a `std::wstring` inside the C++ shim and is only valid for the

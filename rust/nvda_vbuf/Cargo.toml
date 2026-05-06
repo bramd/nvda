@@ -19,3 +19,12 @@ crate-type = ["rlib"]
 # `resolver = "2"` activates the stubs solely for their `cargo test`
 # build and never for the staticlib that links into nvdaHelperRemote.
 test_stubs = []
+
+# slotmap provides generational arena indices: NodeKey is a 64-bit
+# value where the upper bits are a generation counter, so a stale key
+# referring to a slot that has been reused yields None on lookup
+# rather than aliasing into a different node. The vbufBase port uses
+# this for the storage tree where the C++ original used raw pointers.
+[dependencies.slotmap]
+version = "1.0"
+default-features = false  # we don't need serde or unstable

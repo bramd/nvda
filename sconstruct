@@ -536,10 +536,31 @@ import subprocess as _subprocess  # noqa: E402
 
 rustNvdaPythonDir = Dir("#rust/nvda_python")
 rustWorkspaceDir = Dir("#rust")
-# Glob every .rs and Cargo.toml across the workspace so SCons re-runs maturin
-# whenever any Rust source or manifest changes (path-deps included).
+
+
+def _rust_sources_recursive(workspace_dir):
+	"""Walk every .rs file under rust/nvda_*/src/, including
+	subdirectories, so SCons re-runs the Rust build whenever any
+	source changes. SCons's `Glob` doesn't support a recursive `**`
+	pattern, so we walk the filesystem directly here.
+	"""
+	from pathlib import Path
+
+	root = Path(workspace_dir.abspath)
+	out = []
+	for crate_dir in sorted(root.glob("nvda_*")):
+		src = crate_dir / "src"
+		if src.is_dir():
+			for rs in sorted(src.rglob("*.rs")):
+				out.append(env.File(str(rs)))
+	return out
+
+
+# Track every .rs file across the workspace (including subdirectory
+# modules) plus every Cargo.toml so SCons re-runs maturin whenever
+# any Rust source or manifest changes (path-deps included).
 nvdaRustSources = (
-	env.Glob("#rust/nvda_*/src/*.rs")
+	_rust_sources_recursive(rustWorkspaceDir)
 	+ env.Glob("#rust/nvda_*/Cargo.toml")
 	+ [rustWorkspaceDir.File("Cargo.toml")]
 )
