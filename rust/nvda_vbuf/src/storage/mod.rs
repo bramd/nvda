@@ -31,6 +31,20 @@ pub struct ControlFieldIdentifier {
     pub id: i32,
 }
 
+/// Direction for tree-order traversal. Mirrors `TreeDirection` in
+/// `nvdaHelper/vbufBase/storage.h`.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum TreeDirection {
+    /// Depth-first forward: first child, then siblings of ancestors.
+    Forward,
+    /// Inverse of `Forward`: previous sibling's deepest descendant,
+    /// or parent if no previous sibling.
+    Back,
+    /// Backward but with the same first-step shape as Forward (last
+    /// child first, then previous siblings).
+    SymmetricalBack,
+}
+
 /// A vbuf storage buffer: an arena of nodes plus a root pointer plus
 /// an identifier index for fast lookup. Mirrors
 /// `VBufStorage_buffer_t`.
@@ -301,6 +315,217 @@ impl Buffer {
         self.nodes.clear();
         self.by_identifier.clear();
         self.root = None;
+    }
+
+    /// Append the text content of `key`'s subtree, restricted to the
+    /// half-open range `[start_offset, end_offset)`, to `out`.
+    ///
+    /// Mirrors `VBufStorage_fieldNode_t::getTextInRange` /
+    /// `VBufStorage_textFieldNode_t::getTextInRange`. Markup
+    /// generation (`useMarkup` in the C++) is not implemented yet --
+    /// it requires the `generateMarkup*` family which is its own
+    /// follow-up commit.
+    pub fn get_text_in_range(
+        &self,
+        key: NodeKey,
+        start_offset: i32,
+        end_offset: i32,
+        out: &mut Vec<u16>,
+    ) {
+        if !self.contains(key) {
+            return;
+        }
+        let n = &self.nodes[key];
+        if n.length == 0 {
+            return;
+        }
+        debug_assert!(start_offset >= 0);
+        debug_assert!(start_offset < end_offset);
+        debug_assert!(end_offset <= n.length);
+        match &n.kind {
+            FieldNodeKind::Text(data) => {
+                let s = start_offset as usize;
+                let e = end_offset as usize;
+                out.extend_from_slice(&data.text[s..e]);
+            }
+            // Control / Reference: walk children with offsets.
+            _ => {
+                let mut child_start: i32 = 0;
+                let mut child = n.first_child;
+                while let Some(ckey) = child {
+                    let child_node = &self.nodes[ckey];
+                    let child_length = child_node.length;
+                    let child_end = child_start + child_length;
+                    if child_end > start_offset && end_offset > child_start {
+                        let sub_start =
+                            (start_offset.max(child_start)) - child_start;
+                        let sub_end = (end_offset - child_start)
+                            .min(child_length);
+                        self.get_text_in_range(
+                            ckey, sub_start, sub_end, out,
+                        );
+                    }
+                    child_start += child_length;
+                    child = child_node.next;
+                }
+            }
+        }
+    }
+
+    /// Compute the offset of `key` from the start of the tree by
+    /// summing the lengths of every preceding sibling (recursively
+    /// up the parent chain). Mirrors
+    /// `VBufStorage_fieldNode_t::calculateOffsetInTree`.
+    pub fn calculate_offset_in_tree(&self, key: NodeKey) -> i32 {
+        if !self.contains(key) {
+            return 0;
+        }
+        let mut offset = 0;
+        let mut cur = self.nodes[key].previous;
+        while let Some(prev) = cur {
+            offset += self.nodes[prev].length;
+            cur = self.nodes[prev].previous;
+        }
+        if let Some(parent) = self.nodes[key].parent {
+            offset += self.calculate_offset_in_tree(parent);
+        }
+        offset
+    }
+
+    /// Locate the descendant text-field node that holds the given
+    /// `offset` within the subtree rooted at `key`. Returns
+    /// `Some((text_key, relative_offset))` where `relative_offset`
+    /// is the byte offset within the text node, or `None` when
+    /// `offset` falls outside the subtree.
+    ///
+    /// Mirrors `VBufStorage_fieldNode_t::locateTextFieldNodeAtOffset`
+    /// / `VBufStorage_textFieldNode_t::locateTextFieldNodeAtOffset`.
+    pub fn locate_text_field_node_at_offset(
+        &self,
+        key: NodeKey,
+        offset: i32,
+    ) -> Option<(NodeKey, i32)> {
+        if !self.contains(key) {
+            return None;
+        }
+        let n = &self.nodes[key];
+        match &n.kind {
+            FieldNodeKind::Text(_) => {
+                if offset < 0 || offset >= n.length {
+                    None
+                } else {
+                    Some((key, offset))
+                }
+            }
+            _ => {
+                let mut acc = 0;
+                let mut child = n.first_child;
+                while let Some(ckey) = child {
+                    let child_length = self.nodes[ckey].length;
+                    if offset < acc + child_length {
+                        return self.locate_text_field_node_at_offset(
+                            ckey,
+                            offset - acc,
+                        );
+                    }
+                    acc += child_length;
+                    child = self.nodes[ckey].next;
+                }
+                None
+            }
+        }
+    }
+
+    /// Step from `key` to the next node in tree order, optionally
+    /// stopping when reaching `limit_node`. Returns the next node's
+    /// key and its offset relative to `key`'s start.
+    ///
+    /// Mirrors `VBufStorage_fieldNode_t::nextNodeInTree`. The C++
+    /// returns the relative *start* offset; here that's the second
+    /// tuple element.
+    pub fn next_node_in_tree(
+        &self,
+        key: NodeKey,
+        direction: TreeDirection,
+        limit_node: Option<NodeKey>,
+    ) -> Option<(NodeKey, i32)> {
+        if !self.contains(key) {
+            return None;
+        }
+        let length = self.nodes[key].length;
+        match direction {
+            TreeDirection::Forward => {
+                if let Some(child) = self.nodes[key].first_child {
+                    return Some((child, 0));
+                }
+                // Walk up until we find an ancestor with a `next`.
+                let mut cur = Some(key);
+                while let Some(c) = cur {
+                    if let Some(next) = self.nodes[c].next {
+                        if Some(next) == limit_node {
+                            return None;
+                        }
+                        return Some((next, length));
+                    }
+                    let parent = self.nodes[c].parent;
+                    if parent == limit_node {
+                        return None;
+                    }
+                    cur = parent;
+                }
+                None
+            }
+            TreeDirection::Back => {
+                if let Some(prev) = self.nodes[key].previous {
+                    if Some(prev) == limit_node {
+                        return None;
+                    }
+                    // Drill into prev's last-child chain (without
+                    // crossing the limit).
+                    let mut cur = prev;
+                    loop {
+                        let last = self.nodes[cur].last_child;
+                        match last {
+                            Some(lk) if Some(lk) != limit_node => cur = lk,
+                            _ => break,
+                        }
+                    }
+                    let rel = -self.nodes[cur].length;
+                    return Some((cur, rel));
+                }
+                if let Some(parent) = self.nodes[key].parent {
+                    if Some(parent) == limit_node {
+                        return None;
+                    }
+                    // Parent's relative offset from `key` is 0 (the
+                    // C++ leaves relativeOffset at 0 in this branch).
+                    return Some((parent, 0));
+                }
+                None
+            }
+            TreeDirection::SymmetricalBack => {
+                if let Some(last) = self.nodes[key].last_child {
+                    let last_len = self.nodes[last].length;
+                    return Some((last, length - last_len));
+                }
+                let mut cur = Some(key);
+                while let Some(c) = cur {
+                    if let Some(prev) = self.nodes[c].previous {
+                        if Some(prev) == limit_node {
+                            return None;
+                        }
+                        let rel = -self.nodes[prev].length;
+                        return Some((prev, rel));
+                    }
+                    let parent = self.nodes[c].parent;
+                    if parent == limit_node {
+                        return None;
+                    }
+                    cur = parent;
+                }
+                None
+            }
+        }
     }
 
     /// Bump every ancestor's length by `delta` (positive) when a new
@@ -733,5 +958,155 @@ mod tests {
         assert_eq!(b.root(), None);
         assert!(!b.contains(root));
         assert_eq!(b.get_control_field_node_with_identifier(1, 1), None);
+    }
+
+    fn w(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    fn collect_text(b: &Buffer, key: NodeKey, start: i32, end: i32) -> String {
+        let mut out: Vec<u16> = Vec::new();
+        b.get_text_in_range(key, start, end, &mut out);
+        String::from_utf16(&out).expect("valid utf16")
+    }
+
+    #[test]
+    fn get_text_in_range_concatenates_children() {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let _t1 = b.add_text_field_node(Some(root), None, w("hello ")).unwrap();
+        let _t2 = b
+            .add_text_field_node(
+                Some(root),
+                Some(_t1),
+                w("world"),
+            )
+            .unwrap();
+        // Full range covers both children.
+        assert_eq!(collect_text(&b, root, 0, 11), "hello world");
+        // Partial range crosses the boundary.
+        assert_eq!(collect_text(&b, root, 4, 8), "o wo");
+        // Single-child slice.
+        assert_eq!(collect_text(&b, root, 6, 11), "world");
+    }
+
+    #[test]
+    fn calculate_offset_walks_predecessors_and_parents() {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let t1 = b.add_text_field_node(Some(root), None, w("abc")).unwrap();
+        let t2 = b.add_text_field_node(Some(root), Some(t1), w("de")).unwrap();
+        let t3 = b.add_text_field_node(Some(root), Some(t2), w("fgh")).unwrap();
+        assert_eq!(b.calculate_offset_in_tree(t1), 0);
+        assert_eq!(b.calculate_offset_in_tree(t2), 3);
+        assert_eq!(b.calculate_offset_in_tree(t3), 5);
+    }
+
+    #[test]
+    fn locate_text_field_node_at_offset_finds_correct_leaf() {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let t1 = b.add_text_field_node(Some(root), None, w("abc")).unwrap();
+        let t2 = b.add_text_field_node(Some(root), Some(t1), w("de")).unwrap();
+        // offset 0 -> t1 (rel 0)
+        assert_eq!(
+            b.locate_text_field_node_at_offset(root, 0),
+            Some((t1, 0))
+        );
+        // offset 2 -> t1 (rel 2)
+        assert_eq!(
+            b.locate_text_field_node_at_offset(root, 2),
+            Some((t1, 2))
+        );
+        // offset 3 -> t2 (rel 0) -- first char of t2
+        assert_eq!(
+            b.locate_text_field_node_at_offset(root, 3),
+            Some((t2, 0))
+        );
+        // offset 4 -> t2 (rel 1)
+        assert_eq!(
+            b.locate_text_field_node_at_offset(root, 4),
+            Some((t2, 1))
+        );
+        // offset >= total length -> None
+        assert_eq!(b.locate_text_field_node_at_offset(root, 5), None);
+    }
+
+    #[test]
+    fn next_node_in_tree_forward() {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let mid = b
+            .add_control_field_node(Some(root), None, cf(1, 2), false)
+            .unwrap();
+        let t1 = b.add_text_field_node(Some(mid), None, w("ab")).unwrap();
+        let t2 = b.add_text_field_node(Some(root), Some(mid), w("cd")).unwrap();
+        // Forward from root -> first child (mid).
+        assert_eq!(
+            b.next_node_in_tree(root, TreeDirection::Forward, None),
+            Some((mid, 0))
+        );
+        // Forward from mid -> first child (t1).
+        assert_eq!(
+            b.next_node_in_tree(mid, TreeDirection::Forward, None),
+            Some((t1, 0))
+        );
+        // Forward from t1 -> sibling-of-ancestor t2; relative offset
+        // is t1.length = 2.
+        assert_eq!(
+            b.next_node_in_tree(t1, TreeDirection::Forward, None),
+            Some((t2, 2))
+        );
+        // Forward from t2 -> nothing left.
+        assert_eq!(
+            b.next_node_in_tree(t2, TreeDirection::Forward, None),
+            None
+        );
+    }
+
+    #[test]
+    fn next_node_in_tree_back() {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let mid = b
+            .add_control_field_node(Some(root), None, cf(1, 2), false)
+            .unwrap();
+        let _t1 = b.add_text_field_node(Some(mid), None, w("ab")).unwrap();
+        let t2 = b.add_text_field_node(Some(root), Some(mid), w("cd")).unwrap();
+        // Back from t2 -> previous sibling's last descendant (t1) with
+        // negative offset of -t1.length.
+        let r = b.next_node_in_tree(t2, TreeDirection::Back, None);
+        assert!(matches!(r, Some((_, off)) if off == -2));
+        // Back from root -> nothing (no previous, no parent).
+        assert_eq!(
+            b.next_node_in_tree(root, TreeDirection::Back, None),
+            None
+        );
+    }
+
+    #[test]
+    fn next_node_in_tree_symmetrical_back() {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let _t1 = b.add_text_field_node(Some(root), None, w("ab")).unwrap();
+        let t2 = b.add_text_field_node(Some(root), Some(_t1), w("cd")).unwrap();
+        // SymmetricalBack from root -> last child (t2). Relative
+        // offset = root.length - t2.length = 4 - 2 = 2.
+        assert_eq!(
+            b.next_node_in_tree(root, TreeDirection::SymmetricalBack, None),
+            Some((t2, 2))
+        );
     }
 }
