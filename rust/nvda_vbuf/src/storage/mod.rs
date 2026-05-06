@@ -14,6 +14,7 @@
 //! implementation reached through `c_shim.cpp`. Phase 6d flips the
 //! C-shim to call into this module instead.
 
+mod markup;
 mod node;
 
 pub use node::{ControlFieldData, FieldNodeKind, Node, NodeKey, TextFieldData};
