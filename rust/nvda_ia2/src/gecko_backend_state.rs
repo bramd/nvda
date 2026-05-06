@@ -15,8 +15,11 @@ use core::ffi::c_void;
 
 use windows::core::Interface;
 
+use crate::fill_vbuf::{fill_vbuf, FillVBufCtx};
+use crate::from_identifier::from_identifier;
 use crate::interfaces::IAccessible2;
 use crate::toolkit_name::get_toolkit_name_native;
+use nvda_vbuf::{VbufBackend, VbufBuffer};
 
 /// Per-instance state owned by the Rust side and exposed through
 /// `void*` to the C++ class.
@@ -114,4 +117,67 @@ pub unsafe extern "C" fn nvda_ia2_gecko_backend_version_specific_init(
         None => return,
     };
     state.toolkit_name = get_toolkit_name_native(acc);
+}
+
+/// C-callable replacement for `GeckoVBufBackend_t::render`. Resolves
+/// the `(doc_handle, id)` pair to an `IAccessible2`, runs
+/// `versionSpecificInit` when this is the root call (`is_root_call`),
+/// and then invokes `fill_vbuf` to populate the buffer.
+///
+/// `is_root_call` is `true` when the C++ side passes a NULL `oldNode`
+/// (i.e. this is the top-level render rather than a partial update).
+///
+/// The acquired `IAccessible2` is released when the function returns,
+/// matching the C++ original's `pacc->Release()` cleanup.
+///
+/// # Safety
+///
+/// * `state` must be a valid `GeckoBackendState*`.
+/// * `backend` must be a valid `VBufBackend_t*`.
+/// * `buffer` must be a valid `VBufStorage_buffer_t*`.
+/// * Caller must hold the render-thread invariants vbufBase requires.
+#[no_mangle]
+pub unsafe extern "C" fn nvda_ia2_gecko_backend_render(
+    state: *mut c_void,
+    backend: *mut c_void,
+    buffer: *mut c_void,
+    doc_handle: i32,
+    id: i32,
+    is_root_call: bool,
+    root_id: i32,
+) {
+    if state.is_null() || backend.is_null() || buffer.is_null() {
+        return;
+    }
+    let acc = match unsafe { from_identifier(doc_handle, id) } {
+        Some(a) => a,
+        None => return,
+    };
+    if is_root_call {
+        let state_mut = unsafe { &mut *(state as *mut GeckoBackendState) };
+        state_mut.toolkit_name = get_toolkit_name_native(&acc);
+    }
+    let is_chrome = unsafe { &*(state as *const GeckoBackendState) }.is_chrome();
+
+    let ctx = FillVBufCtx {
+        backend: VbufBackend(backend),
+        root_id,
+        is_chrome,
+    };
+    // Top-level call: no parent / previous / table state inherited.
+    let _ = unsafe {
+        fill_vbuf(
+            &acc,
+            VbufBuffer(buffer),
+            None,
+            None,
+            None,
+            0,
+            None,
+            false,
+            &ctx,
+        )
+    };
+    // `acc` drops here -- IAccessible2's Drop runs Release, balancing
+    // the AddRef from from_identifier.
 }

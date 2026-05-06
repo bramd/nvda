@@ -54,6 +54,14 @@ extern "C" {
 	void nvda_ia2_gecko_backend_version_specific_init(
 		void* state,
 		void* pacc);
+	void nvda_ia2_gecko_backend_render(
+		void* state,
+		void* backend,
+		void* buffer,
+		int doc_handle,
+		int id,
+		bool is_root_call,
+		int root_id);
 }
 
 void GeckoVBufBackend_t::versionSpecificInit(IAccessible2* pacc) {
@@ -232,23 +240,14 @@ void GeckoVBufBackend_t::renderThread_terminate() {
 }
 
 void GeckoVBufBackend_t::render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode) {
-	IAccessible2* pacc=IAccessible2FromIdentifier(docHandle,ID);
-	if(!pacc) {
-		LOG_DEBUGWARNING(L"Could not get IAccessible2, returning");
-		return;
-	}
-	if (!oldNode) {
-		// This is the root node.
-		this->versionSpecificInit(pacc);
-	}
-	if(!this->fillVBuf(pacc, buffer, nullptr, nullptr)) {
-		if(oldNode) {
-			LOG_DEBUGWARNING(L"No content rendered in update");
-		} else {
-			LOG_DEBUGWARNING(L"No initial content rendered");
-		}
-	}
-	pacc->Release();
+	nvda_ia2_gecko_backend_render(
+		this->rustState,
+		this,
+		buffer,
+		docHandle,
+		ID,
+		oldNode == nullptr,
+		this->rootID);
 }
 
 GeckoVBufBackend_t::GeckoVBufBackend_t(int docHandle, int ID):
