@@ -57,6 +57,11 @@ pub struct Buffer {
     /// a tree walk. Built up as control field nodes are added; pruned
     /// on removal.
     by_identifier: BTreeMap<ControlFieldIdentifier, NodeKey>,
+    /// `selectionStart` from the C++ buffer. The selection is the
+    /// half-open range `[selectionStart, selectionStart +
+    /// selectionLength)` over the rendered text length.
+    selection_start: i32,
+    selection_length: i32,
 }
 
 impl Buffer {
@@ -66,6 +71,8 @@ impl Buffer {
             nodes: SlotMap::with_key(),
             root: None,
             by_identifier: BTreeMap::new(),
+            selection_start: 0,
+            selection_length: 0,
         }
     }
 
@@ -316,6 +323,77 @@ impl Buffer {
         self.nodes.clear();
         self.by_identifier.clear();
         self.root = None;
+        self.selection_start = 0;
+        self.selection_length = 0;
+    }
+
+    /// Total rendered text length of the buffer (the root node's
+    /// length, or 0 when empty). Mirrors
+    /// `VBufStorage_buffer_t::getTextLength`.
+    pub fn text_length(&self) -> i32 {
+        match self.root {
+            Some(root) => self.nodes[root].length,
+            None => 0,
+        }
+    }
+
+    /// Read the current selection range as `(start, end)`. Mirrors
+    /// `VBufStorage_buffer_t::getSelectionOffsets` -- the values are
+    /// clamped against `[0, text_length()]` even if the underlying
+    /// `selection_start` / `selection_length` were set when the
+    /// buffer had different content.
+    pub fn selection_offsets(&self) -> (i32, i32) {
+        let max_end = self.text_length();
+        let start = self.selection_start.max(0);
+        let end = (self.selection_start + self.selection_length).min(max_end);
+        (start, end)
+    }
+
+    /// Set the current selection range to the half-open
+    /// `[start, end)`. Returns `false` (no mutation) for negative or
+    /// inverted ranges. Mirrors
+    /// `VBufStorage_buffer_t::setSelectionOffsets`.
+    pub fn set_selection_offsets(
+        &mut self,
+        start_offset: i32,
+        end_offset: i32,
+    ) -> bool {
+        if start_offset < 0 || end_offset < 0 || end_offset < start_offset {
+            return false;
+        }
+        self.selection_start = start_offset;
+        self.selection_length = end_offset - start_offset;
+        true
+    }
+
+    /// Buffer-level wrapper for `get_text_in_range`. Mirrors
+    /// `VBufStorage_buffer_t::getTextInRange`. Validates the offsets
+    /// against the root's length and starts the walk at the root.
+    /// Returns `false` for an empty buffer or out-of-range
+    /// arguments; `true` otherwise (with `out` populated).
+    pub fn buffer_get_text_in_range(
+        &self,
+        start_offset: i32,
+        end_offset: i32,
+        out: &mut Vec<u16>,
+        use_markup: bool,
+    ) -> bool {
+        let root = match self.root {
+            Some(r) => r,
+            None => return false,
+        };
+        let length = self.nodes[root].length;
+        if start_offset < 0 || start_offset >= end_offset || end_offset > length {
+            return false;
+        }
+        if use_markup {
+            self.get_text_in_range_with_markup(
+                root, start_offset, end_offset, out,
+            );
+        } else {
+            self.get_text_in_range(root, start_offset, end_offset, out);
+        }
+        true
     }
 
     /// Append the text content of `key`'s subtree, restricted to the
@@ -1210,6 +1288,80 @@ mod tests {
         assert!(!b.node_content_matches_string(root, &w("hello")));
         // length mismatch short-circuits.
         assert!(!b.node_content_matches_string(root, &w("hello world!")));
+    }
+
+    #[test]
+    fn selection_defaults_to_empty() {
+        let b = Buffer::new();
+        assert_eq!(b.selection_offsets(), (0, 0));
+        assert_eq!(b.text_length(), 0);
+    }
+
+    #[test]
+    fn selection_set_then_get() {
+        let mut b = Buffer::new();
+        let root = b.add_control_field_node(None, None, cf(1, 1), true).unwrap();
+        let _t = b.add_text_field_node(Some(root), None, w("hello world")).unwrap();
+        assert_eq!(b.text_length(), 11);
+        assert!(b.set_selection_offsets(2, 7));
+        assert_eq!(b.selection_offsets(), (2, 7));
+    }
+
+    #[test]
+    fn selection_clamped_against_text_length() {
+        let mut b = Buffer::new();
+        let root = b.add_control_field_node(None, None, cf(1, 1), true).unwrap();
+        let _t = b.add_text_field_node(Some(root), None, w("hello")).unwrap();
+        // Set selection past the end of text.
+        assert!(b.set_selection_offsets(3, 100));
+        // get() clamps to current text length (5).
+        assert_eq!(b.selection_offsets(), (3, 5));
+    }
+
+    #[test]
+    fn selection_rejects_invalid_offsets() {
+        let mut b = Buffer::new();
+        let root = b.add_control_field_node(None, None, cf(1, 1), true).unwrap();
+        let _t = b.add_text_field_node(Some(root), None, w("hello")).unwrap();
+        // Invalid: negative start.
+        assert!(!b.set_selection_offsets(-1, 3));
+        // Invalid: end < start.
+        assert!(!b.set_selection_offsets(5, 3));
+        // Selection unchanged from default.
+        assert_eq!(b.selection_offsets(), (0, 0));
+    }
+
+    #[test]
+    fn clear_resets_selection() {
+        let mut b = Buffer::new();
+        let root = b.add_control_field_node(None, None, cf(1, 1), true).unwrap();
+        let _t = b.add_text_field_node(Some(root), None, w("hello")).unwrap();
+        b.set_selection_offsets(1, 4);
+        b.clear();
+        assert_eq!(b.selection_offsets(), (0, 0));
+    }
+
+    #[test]
+    fn buffer_get_text_in_range_validates_and_walks_root() {
+        let mut b = Buffer::new();
+        // Empty buffer -> false.
+        let mut out: Vec<u16> = Vec::new();
+        assert!(!b.buffer_get_text_in_range(0, 5, &mut out, false));
+
+        let root = b.add_control_field_node(None, None, cf(1, 1), true).unwrap();
+        let _t = b.add_text_field_node(Some(root), None, w("hello world")).unwrap();
+        // In-range walk.
+        assert!(b.buffer_get_text_in_range(0, 11, &mut out, false));
+        assert_eq!(String::from_utf16(&out).unwrap(), "hello world");
+        // Inverted range -> false (no mutation of out beyond what we
+        // already wrote).
+        let mut out2: Vec<u16> = Vec::new();
+        assert!(!b.buffer_get_text_in_range(5, 5, &mut out2, false));
+        assert!(out2.is_empty());
+        // Out-of-range -> false.
+        let mut out3: Vec<u16> = Vec::new();
+        assert!(!b.buffer_get_text_in_range(0, 100, &mut out3, false));
+        assert!(out3.is_empty());
     }
 
     #[test]
