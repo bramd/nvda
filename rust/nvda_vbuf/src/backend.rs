@@ -26,6 +26,62 @@
 
 use crate::storage::{Buffer, FieldNodeKind, NodeKey};
 
+/// Polymorphic backend surface that ties together storage state,
+/// renderer state, and identity. Mirrors the C++ `VBufBackend_t`
+/// class; used by the upcoming Win32 render-thread machinery to
+/// dispatch into per-backend code without knowing the concrete
+/// type.
+///
+/// Implementors hold their own `Buffer` and renderer state. The
+/// trait splits access via [`VBufBackend::for_update`] so the
+/// caller can simultaneously borrow the buffer and the renderer
+/// without violating Rust's aliasing rules.
+pub trait VBufBackend {
+    /// Read-only buffer access -- for size queries, identifier
+    /// lookup, etc. without taking the update borrow.
+    fn buffer(&self) -> &Buffer;
+    /// Mutable buffer access -- for invalidation, attribute
+    /// updates, and other operations that don't need to render.
+    fn buffer_mut(&mut self) -> &mut Buffer;
+    /// `(docHandle, ID)` of the document root this backend
+    /// renders for. Mirrors `VBufBackend_t::rootDocHandle` /
+    /// `rootID`.
+    fn root_doc_handle(&self) -> i32;
+    fn root_id(&self) -> i32;
+    /// Split-borrow accessor for [`update`] orchestration.
+    /// Returns simultaneous borrows of the buffer and the
+    /// renderer plus identity values; the caller threads them
+    /// into [`update`].
+    fn for_update(
+        &mut self,
+    ) -> (&mut Buffer, &mut dyn Renderer, i32, i32);
+}
+
+/// Run [`update`] on a backend by way of its [`VBufBackend::for_update`]
+/// split-borrow. Equivalent to the C++ `VBufBackend_t::update` entry
+/// point.
+pub fn update_backend(backend: &mut dyn VBufBackend) {
+    let (buffer, renderer, root_doc, root_id) = backend.for_update();
+    update(buffer, renderer, root_doc, root_id);
+}
+
+/// Invalidate a subtree on the given backend and trigger an
+/// update via [`update_backend`]. Mirrors the C++
+/// `VBufBackend_t::invalidateSubtree` -> `requestUpdate` flow,
+/// minus the timer (the Win32 timer wiring lands in a follow-up
+/// commit; this function performs the update synchronously for
+/// now).
+pub fn invalidate_and_update<B: VBufBackend>(
+    backend: &mut B,
+    node: NodeKey,
+) -> bool {
+    if !backend.buffer_mut().invalidate_subtree(node) {
+        return false;
+    }
+    update_backend(backend);
+    true
+}
+
 /// Context passed to a [`Renderer::render`] call.
 ///
 /// Initial renders write directly into the main buffer. Partial
@@ -72,7 +128,7 @@ pub trait Renderer {
 /// completes; that notify call belongs in the eventual Win32
 /// integration layer rather than the storage-side update loop, so
 /// it isn't here.
-pub fn update<R: Renderer>(
+pub fn update<R: Renderer + ?Sized>(
     main: &mut Buffer,
     renderer: &mut R,
     root_doc_handle: i32,
@@ -223,6 +279,92 @@ mod tests {
         let mut buf: Vec<u16> = Vec::new();
         main.get_text_in_range(new_root, 0, 6, &mut buf);
         assert_eq!(String::from_utf16(&buf).unwrap(), "SECOND");
+    }
+
+    /// A minimal backend that wraps the StubRenderer. Lets us
+    /// exercise the VBufBackend trait + update_backend /
+    /// invalidate_and_update wrappers without depending on a
+    /// real backend implementation.
+    struct StubBackend {
+        buffer: Buffer,
+        renderer: StubRenderer,
+        root_doc_handle: i32,
+        root_id: i32,
+    }
+
+    impl VBufBackend for StubBackend {
+        fn buffer(&self) -> &Buffer {
+            &self.buffer
+        }
+        fn buffer_mut(&mut self) -> &mut Buffer {
+            &mut self.buffer
+        }
+        fn root_doc_handle(&self) -> i32 {
+            self.root_doc_handle
+        }
+        fn root_id(&self) -> i32 {
+            self.root_id
+        }
+        fn for_update(
+            &mut self,
+        ) -> (&mut Buffer, &mut dyn Renderer, i32, i32) {
+            (
+                &mut self.buffer,
+                &mut self.renderer,
+                self.root_doc_handle,
+                self.root_id,
+            )
+        }
+    }
+
+    #[test]
+    fn update_backend_dispatches_through_trait() {
+        let mut backend = StubBackend {
+            buffer: Buffer::new(),
+            renderer: StubRenderer {
+                calls: Vec::new(),
+                text: "trait test",
+            },
+            root_doc_handle: 5,
+            root_id: 9,
+        };
+        update_backend(&mut backend);
+        assert_eq!(backend.renderer.calls, vec![(5, 9, false)]);
+        // Buffer was populated through the trait dispatch.
+        assert!(backend.buffer().has_content());
+    }
+
+    #[test]
+    fn invalidate_and_update_triggers_rerender() {
+        let mut backend = StubBackend {
+            buffer: Buffer::new(),
+            renderer: StubRenderer {
+                calls: Vec::new(),
+                text: "v1",
+            },
+            root_doc_handle: 1,
+            root_id: 1,
+        };
+        update_backend(&mut backend);
+        let root = backend
+            .buffer()
+            .get_control_field_node_with_identifier(1, 1)
+            .unwrap();
+        // Switch the renderer to a different text.
+        backend.renderer.text = "v2";
+        backend.renderer.calls.clear();
+        assert!(invalidate_and_update(&mut backend, root));
+        // The invalidation triggered an Update-context render.
+        assert_eq!(backend.renderer.calls, vec![(1, 1, true)]);
+        let new_root = backend
+            .buffer()
+            .get_control_field_node_with_identifier(1, 1)
+            .unwrap();
+        let mut buf: Vec<u16> = Vec::new();
+        backend
+            .buffer()
+            .get_text_in_range(new_root, 0, 2, &mut buf);
+        assert_eq!(String::from_utf16(&buf).unwrap(), "v2");
     }
 
     #[test]
