@@ -411,17 +411,15 @@ impl Buffer {
     /// when one or more failed (logged callsite-side; failures are
     /// continued past so other entries still apply).
     ///
-    /// **Reference-node resolution is not yet implemented.** The C++
-    /// original walks each temp buffer's reference list in reverse
-    /// and swaps each reference for the actual referenced subtree
-    /// from `self` before the target replacements. This Rust port
-    /// will gain that behaviour in a follow-up commit; if any temp
-    /// buffer contains reference nodes pointing at `self`, those
-    /// references are currently moved as-is and their `referenced`
-    /// keys become stale.
+    /// Each temp buffer's reference nodes (which point at existing
+    /// nodes in `self`) are resolved before the target replacement
+    /// by physically moving the referenced subtrees from `self`
+    /// into the temp at the reference's slot. This matches the
+    /// C++ original's two-pass behaviour
+    /// (`storage.cpp:660-672`).
     pub fn replace_subtrees(
         &mut self,
-        map: Vec<(NodeKey, Buffer)>,
+        mut map: Vec<(NodeKey, Buffer)>,
     ) -> bool {
         // 1. Save the selection ancestor chain so we can re-anchor
         // after the mutations. The chain runs from outermost
@@ -430,7 +428,16 @@ impl Buffer {
         // start within that ancestor.
         let selection_anchor = self.snapshot_selection_anchor();
 
-        // (Reference resolution TODO -- see method docstring.)
+        // 1b. Resolve reference nodes in each temp buffer by
+        // physically moving the referenced subtree from self to
+        // temp at the reference's position. Mirrors
+        // storage.cpp:660-672. Done in reverse insertion / tree
+        // order so each reference's saved (parent, previous)
+        // remains valid (the still-untouched references and their
+        // neighbours haven't been mutated yet).
+        for (_target, temp_buffer) in map.iter_mut() {
+            self.resolve_references_in_temp(temp_buffer);
+        }
 
         // 2. For each (target, temp_buffer): record target's
         // (parent, previous) in self, remove the target with
@@ -494,6 +501,74 @@ impl Buffer {
         }
 
         all_ok
+    }
+
+    /// Walk `temp`'s tree depth-first to collect every reference
+    /// node, then iterate the list in reverse and replace each
+    /// reference with the actual referenced subtree (moved out of
+    /// `self`).
+    ///
+    /// The C++ original uses a `referenceNodes` insertion-order
+    /// list on each buffer; we don't track that and instead rebuild
+    /// the list via a tree walk. The order is depth-first preorder,
+    /// reversed -- equivalent to insertion-order-reversed for any
+    /// renderer that inserts references as it descends (which the
+    /// gecko_ia2 fillVBuf does).
+    ///
+    /// Returns the count of references successfully resolved.
+    fn resolve_references_in_temp(&mut self, temp: &mut Buffer) -> usize {
+        // Collect reference keys depth-first preorder.
+        let mut refs: Vec<NodeKey> = Vec::new();
+        if let Some(root) = temp.root {
+            let mut stack: Vec<NodeKey> = vec![root];
+            while let Some(k) = stack.pop() {
+                if matches!(temp.nodes[k].kind, FieldNodeKind::Reference(_)) {
+                    refs.push(k);
+                }
+                // Push children in reverse so we visit them in
+                // tree order on subsequent pops.
+                let mut children: Vec<NodeKey> = Vec::new();
+                let mut child = temp.nodes[k].first_child;
+                while let Some(ck) = child {
+                    children.push(ck);
+                    child = temp.nodes[ck].next;
+                }
+                for c in children.into_iter().rev() {
+                    stack.push(c);
+                }
+            }
+        }
+        // Reverse to mirror the C++ reference-list reverse-iteration.
+        refs.reverse();
+
+        let mut resolved = 0;
+        for ref_key in refs {
+            if !temp.contains(ref_key) {
+                continue;
+            }
+            let parent = temp.nodes[ref_key].parent;
+            let previous = temp.nodes[ref_key].previous;
+            let referenced = match &temp.nodes[ref_key].kind {
+                FieldNodeKind::Reference(d) => d.referenced,
+                _ => continue,
+            };
+            // Drop the reference. Cascade is fine -- references
+            // never have descendants in the gecko_ia2 flow.
+            temp.remove(ref_key, true);
+            // The referenced node lives in self. If it's already
+            // been moved out (e.g. by an earlier reference in
+            // *another* temp buffer in the same map), skip.
+            if !self.contains(referenced) {
+                continue;
+            }
+            if temp
+                .move_subtree_from(self, referenced, parent, previous)
+                .is_some()
+            {
+                resolved += 1;
+            }
+        }
+        resolved
     }
 
     /// Snapshot the chain of (control-field-identifier,
@@ -2720,6 +2795,80 @@ mod tests {
         assert!(main.replace_subtrees(map));
         assert_eq!(main.get_control_field_node_with_identifier(1, 2), None);
         assert_eq!(main.text_length(), 0);
+    }
+
+    #[test]
+    fn replace_subtrees_resolves_references() {
+        // Set up main with a "reusable" subtree that the temp will
+        // reference rather than re-rendering. The temp buffer
+        // starts as {root, Reference(reusable)} and after
+        // resolution should contain {root, reusable_subtree_moved}.
+        let mut main = Buffer::new();
+        let main_root = main
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        // Target subtree we're going to replace.
+        let main_target = main
+            .add_control_field_node(Some(main_root), None, cf(1, 2), false)
+            .unwrap();
+        // Reusable subtree that the temp will reference. Lives
+        // elsewhere in main.
+        let reusable = main
+            .add_control_field_node(Some(main_root), Some(main_target), cf(1, 3), false)
+            .unwrap();
+        let _reusable_text = main
+            .add_text_field_node(Some(reusable), None, w("REUSED"))
+            .unwrap();
+
+        // Build the temp buffer with a reference to (1, 3).
+        let mut temp = Buffer::new();
+        let temp_root = temp
+            .add_control_field_node(None, None, cf(1, 2), false)
+            .unwrap();
+        let _temp_pre = temp
+            .add_text_field_node(Some(temp_root), None, w("pre"))
+            .unwrap();
+        // Reference the reusable node. The reference node carries
+        // the same identifier (1, 3) as the actual node.
+        let _ref = temp
+            .add_reference_node(
+                Some(temp_root),
+                Some(_temp_pre),
+                ControlFieldIdentifier {
+                    doc_handle: 1,
+                    id: 3,
+                },
+                reusable,
+            )
+            .unwrap();
+        let _temp_post = temp
+            .add_text_field_node(Some(temp_root), Some(_ref), w("post"))
+            .unwrap();
+
+        let map = vec![(main_target, temp)];
+        assert!(main.replace_subtrees(map));
+
+        // After replacement: main_root should have one child (the
+        // new (1,2) tree). The (1,3) identifier resolves to the
+        // moved reusable subtree, now living under (1,2).
+        let new_target = main
+            .get_control_field_node_with_identifier(1, 2)
+            .expect("identifier preserved");
+        assert_eq!(main.get(main_root).unwrap().first_child, Some(new_target));
+        // The reusable subtree's text "REUSED" is reachable.
+        let mut buf: Vec<u16> = Vec::new();
+        let total = main.get(new_target).unwrap().length;
+        main.get_text_in_range(new_target, 0, total, &mut buf);
+        let text = String::from_utf16(&buf).unwrap();
+        assert_eq!(text, "preREUSEDpost");
+        // (1,3) identifier still resolves -- it's now under (1,2).
+        let resolved_reusable = main
+            .get_control_field_node_with_identifier(1, 3)
+            .expect("(1,3) preserved");
+        assert_eq!(
+            main.get(resolved_reusable).unwrap().parent,
+            Some(new_target)
+        );
     }
 
     #[test]
