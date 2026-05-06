@@ -37,10 +37,12 @@ use crate::acc_description::get_acc_description_native;
 use crate::child_count::get_child_count_native;
 use crate::fetch::fetch_ia2_attributes_native;
 use crate::interfaces::{
-    IAccessible2, IAccessibleAction, IAccessibleTable2, IAccessibleText,
+    IAccessible2, IAccessibleAction, IAccessibleTable2, IAccessibleTableCell,
+    IAccessibleText,
 };
 use crate::label_info::{get_label_info_native, LabelInfo};
 use crate::role_long_string::get_role_long_role_string_native;
+use crate::table_cell::{fill_table_cell_info_native, get_table_id_from_cell};
 use nvda_vbuf::{VbufBackend, VbufBuffer, VbufControlFieldNode, VbufFieldNode};
 use windows::core::{Interface, BSTR, VARIANT};
 use windows::Win32::UI::Accessibility::IAccessible;
@@ -65,6 +67,8 @@ const ROLE_SYSTEM_DIALOG: i32 = 0x12;
 const ROLE_SYSTEM_APPLICATION: i32 = 0x0e;
 /// `ROLE_SYSTEM_CELL` — `oleacc.h` value `0x1d` (29).
 const ROLE_SYSTEM_CELL: i32 = 0x1d;
+/// `ROLE_SYSTEM_ROW` — `oleacc.h` value `0x1c` (28).
+const ROLE_SYSTEM_ROW: i32 = 0x1c;
 /// `ROLE_SYSTEM_SEPARATOR` — `oleacc.h` value `0x15` (21).
 const ROLE_SYSTEM_SEPARATOR: i32 = 0x15;
 /// `ROLE_SYSTEM_LIST` — `oleacc.h` value `0x21` (33).
@@ -852,6 +856,305 @@ fn slice_eq(slice: &[u16], ascii: &str) -> bool {
         .all(|(s, a)| *s == a as u16)
 }
 
+// ----- block 4 ------------------------------------------------------
+
+/// Per-element state produced by [`block4`].
+pub struct Block4State {
+    /// Owns the `IAccessibleTable2` we QI'd for this node, if any. The
+    /// caller (fill_vbuf) borrows from this for child recursion when
+    /// `propagation` is [`TablePropagation::Promoted`]. Even when not
+    /// promoted, holding the value here keeps the AddRef alive until
+    /// fill_vbuf's frame ends.
+    pub cur_node_pacc_table2: Option<IAccessibleTable2>,
+    /// Decision for child-recursion's `pacc_table2`.
+    pub propagation: TablePropagation,
+    /// Updated `tableID` for child recursion. Reset to 0 inside a
+    /// cell, replaced by `id` on a table-root, otherwise inherited
+    /// from the caller.
+    pub table_id: i32,
+    /// `parentPresentationalRowNumber` for child recursion. `Some`
+    /// when this node had a `rowindex` IA2 attribute; otherwise the
+    /// caller's value is propagated unchanged (which fill_vbuf
+    /// handles).
+    pub presentational_row_number: Option<Vec<u16>>,
+    /// `IAccessible::accValue` BSTR contents. `None` when the COM
+    /// call failed, returned NULL, or returned an empty string
+    /// (mirroring the C++ post-process at gecko_ia2.cpp:898).
+    pub value: Option<Vec<u16>>,
+    /// Possibly-updated `previousNode` for child recursion. Equal to
+    /// the input when block 4 didn't add a summary text node.
+    pub previous_node: Option<VbufFieldNode>,
+}
+
+/// How block 4's table-state mutation propagates to child recursion.
+pub enum TablePropagation {
+    /// No change: child recursion should see the caller's `pacc_table2`.
+    Inherit,
+    /// Cell case: descendants are no longer in a table.
+    Clear,
+    /// New table-root: borrow [`Block4State::cur_node_pacc_table2`]
+    /// for children.
+    Promoted,
+}
+
+/// Block 4 of `fillVBuf`: table-cell-info, parent-table flags, the
+/// new-table QI with its `table-rowcount` / `table-columncount` /
+/// summary text node, presentational row/col attributes, accValue,
+/// and the `alwaysRerenderDescendants` flag for `nameIsContent`.
+/// Mirrors lines 757-908 of gecko_ia2.cpp.
+///
+/// # Safety
+///
+/// All pointer-borrowing args (`pacc`, `parent_node`, `pacc_table2`,
+/// `previous_node`) must point at live objects.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn block4(
+    pacc: &IAccessible2,
+    parent_node: VbufControlFieldNode,
+    role: i32,
+    id: i32,
+    attribs: &BTreeMap<String, String>,
+    block2: &Block2State,
+    block3: &Block3State,
+    pacc_table2_in: Option<&IAccessibleTable2>,
+    table_id_in: i32,
+    parent_pres_row_num: Option<&[u16]>,
+    buffer: VbufBuffer,
+    previous_node_in: Option<VbufFieldNode>,
+) -> Block4State {
+    let mut table_id = table_id_in;
+    let mut previous_node = previous_node_in;
+
+    // Step 1: parent-table flags. The C++ first marks denyReuse on
+    // any node within a tracked parent table, then adds the row /
+    // row-group propagation flags only when this node itself is not
+    // a cell.
+    let pacc_table_cell: Option<IAccessibleTableCell> = pacc.cast().ok();
+    let in_parent_table = pacc_table2_in.is_some();
+    if in_parent_table {
+        unsafe { parent_node.set_deny_reuse_if_previous_siblings_changed(true) };
+        if pacc_table_cell.is_none() {
+            // Just rows and row groups (anything table-like that's
+            // not the cell itself).
+            if role != ROLE_SYSTEM_ROW {
+                unsafe { parent_node.set_requires_parent_update(true) };
+            }
+            unsafe { parent_node.set_always_rerender_children(true) };
+        }
+    }
+
+    // Step 2: cell case. Fill cell info; recompute table_id from the
+    // cell when there's no parent table tracked (update render);
+    // write `table-id`; then clear paccTable2 / tableID for descendants.
+    let mut cell_cleared = false;
+    if let Some(cell) = &pacc_table_cell {
+        unsafe { fill_table_cell_info_native(parent_node.as_field_node(), cell) };
+        if pacc_table2_in.is_none() {
+            // No parent table tracked -- this is an update render.
+            table_id = get_table_id_from_cell(cell).unwrap_or(0);
+        }
+        write_int_attribute_on(parent_node.as_field_node(), "table-id", table_id);
+        cell_cleared = true;
+        table_id = 0;
+    }
+    drop(pacc_table_cell);
+
+    // Active pacc_table2 after the cell branch. The new-table QI in
+    // step 3 only runs if this is None.
+    let table2_active_after_cell: Option<&IAccessibleTable2> = if cell_cleared
+    {
+        None
+    } else {
+        pacc_table2_in
+    };
+
+    // Step 3: new-table QI. Only when we're not already inside a
+    // tracked table.
+    let mut cur_node_pacc_table2: Option<IAccessibleTable2> = None;
+    let mut promoted = false;
+    if table2_active_after_cell.is_none() {
+        if let Ok(table) = pacc.cast::<IAccessibleTable2>() {
+            // layout-guess heuristic.
+            if attribs.contains_key("layout-guess") {
+                let attr_name: Vec<u16> =
+                    "table-layout".encode_utf16().collect();
+                let attr_value: &[u16] = &[b'1' as u16];
+                unsafe {
+                    parent_node
+                        .as_field_node()
+                        .add_attribute(&attr_name, attr_value);
+                }
+            }
+            // table-id = this node's IA2 unique ID.
+            table_id = id;
+            write_int_attribute_on(parent_node.as_field_node(), "table-id", id);
+
+            // Row/col counts. C++ only writes the attribute if the
+            // call succeeded; the > 0 propagation check uses 0 as the
+            // failed-call default.
+            let row_count = unsafe { table.get_nRows() }.ok();
+            if let Some(rc) = row_count {
+                write_int_attribute_on(
+                    parent_node.as_field_node(),
+                    "table-rowcount",
+                    rc,
+                );
+            }
+            let col_count = unsafe { table.get_nColumns() }.ok();
+            if let Some(cc) = col_count {
+                write_int_attribute_on(
+                    parent_node.as_field_node(),
+                    "table-columncount",
+                    cc,
+                );
+            }
+            promoted =
+                row_count.unwrap_or(0) > 0 || col_count.unwrap_or(0) > 0;
+
+            // Summary text node: description if visible & non-empty,
+            // else the name when there's no visible label-elsewhere.
+            let summary: Option<&[u16]> = if block3.is_visible
+                && block2
+                    .description
+                    .as_ref()
+                    .map(|d| !d.is_empty())
+                    .unwrap_or(false)
+            {
+                block2.description.as_deref()
+            } else if block2
+                .name
+                .as_ref()
+                .map(|n| !n.is_empty())
+                .unwrap_or(false)
+                && !block3.label_visible
+            {
+                block2.name.as_deref()
+            } else {
+                None
+            };
+            if let Some(summary_text) = summary {
+                if let Some(text_node) = unsafe {
+                    buffer.add_text_field_node(
+                        Some(parent_node),
+                        previous_node,
+                        summary_text,
+                    )
+                } {
+                    if !block2.locale.is_empty() {
+                        let lang_attr: Vec<u16> =
+                            "language".encode_utf16().collect();
+                        unsafe {
+                            text_node.add_attribute(&lang_attr, &block2.locale);
+                        }
+                    }
+                    previous_node = Some(text_node);
+                }
+            }
+
+            cur_node_pacc_table2 = Some(table);
+        }
+    }
+
+    // Step 4: parentPresentationalRowNumber forwarding. The C++ uses
+    // the C-string null-terminated parent value; we use a slice.
+    if let Some(ppres) = parent_pres_row_num {
+        let attr_name: Vec<u16> =
+            "table-rownumber-presentational".encode_utf16().collect();
+        unsafe {
+            parent_node.as_field_node().add_attribute(&attr_name, ppres);
+        }
+    }
+
+    // Step 5: presentational row/col index/count attributes from IA2
+    // attribs map. `rowindex` is also propagated to children via
+    // presentational_row_number.
+    let mut presentational_row_number: Option<Vec<u16>> = None;
+    if let Some(rowindex) = attribs.get("rowindex") {
+        let attr_name: Vec<u16> =
+            "table-rownumber-presentational".encode_utf16().collect();
+        let value_u16: Vec<u16> = rowindex.encode_utf16().collect();
+        unsafe {
+            parent_node.as_field_node().add_attribute(&attr_name, &value_u16);
+        }
+        presentational_row_number = Some(value_u16);
+    }
+    for (key, attr_name_str) in [
+        ("colindex", "table-columnnumber-presentational"),
+        ("rowcount", "table-rowcount-presentational"),
+        ("colcount", "table-columncount-presentational"),
+    ] {
+        if let Some(val) = attribs.get(key) {
+            let attr_name: Vec<u16> = attr_name_str.encode_utf16().collect();
+            let value_u16: Vec<u16> = val.encode_utf16().collect();
+            unsafe {
+                parent_node
+                    .as_field_node()
+                    .add_attribute(&attr_name, &value_u16);
+            }
+        }
+    }
+
+    // Step 6: accValue. For links, store IAccessible::value attribute.
+    // Treat empty BSTR as absent (mirrors gecko_ia2.cpp:898).
+    let pacc_msaa: &IAccessible = pacc;
+    let varchild = VARIANT::from(0i32);
+    let value: Option<Vec<u16>> =
+        match unsafe { pacc_msaa.get_accValue(&varchild) } {
+            Ok(b) if !is_bstr_null(&b) => {
+                if role == ROLE_SYSTEM_LINK {
+                    let attr_name: Vec<u16> =
+                        "IAccessible::value".encode_utf16().collect();
+                    unsafe {
+                        parent_node
+                            .as_field_node()
+                            .add_attribute(&attr_name, b.as_wide());
+                    }
+                }
+                let wide = b.as_wide();
+                if wide.is_empty() {
+                    None
+                } else {
+                    Some(wide.to_vec())
+                }
+            }
+            _ => None,
+        };
+
+    // Step 7: alwaysRerenderDescendants when nameIsContent.
+    if block3.name_is_content {
+        unsafe { parent_node.set_always_rerender_descendants(true) };
+    }
+
+    let propagation = if promoted {
+        TablePropagation::Promoted
+    } else if cell_cleared {
+        TablePropagation::Clear
+    } else {
+        TablePropagation::Inherit
+    };
+
+    Block4State {
+        cur_node_pacc_table2,
+        propagation,
+        table_id,
+        presentational_row_number,
+        value,
+        previous_node,
+    }
+}
+
+/// Helper: write a decimal integer attribute on a vbuf field node.
+fn write_int_attribute_on(node: VbufFieldNode, name: &str, value: i32) {
+    let name_u16: Vec<u16> = name.encode_utf16().collect();
+    let mut buf = String::new();
+    use core::fmt::Write;
+    let _ = write!(buf, "{value}");
+    let value_u16: Vec<u16> = buf.encode_utf16().collect();
+    unsafe {
+        node.add_attribute(&name_u16, &value_u16);
+    }
+}
+
 // ----- entry point ---------------------------------------------------
 
 /// Per-render context the recursion threads through. Carries the
@@ -918,7 +1221,7 @@ pub(crate) unsafe fn fill_vbuf(
     };
 
     // Block 3.
-    let _block3_state = unsafe {
+    let block3_state = unsafe {
         block3(
             pacc,
             cont.parent_node,
@@ -928,7 +1231,31 @@ pub(crate) unsafe fn fill_vbuf(
         )
     };
 
-    // TODO Block 4 — table state plumbing (uses pacc_table2 / table_id).
+    // Block 4. Owns cur_node_pacc_table2 for the rest of fill_vbuf so
+    // the borrow used by child recursion stays alive.
+    let block4_state = unsafe {
+        block4(
+            pacc,
+            cont.parent_node,
+            cont.role,
+            cont.id,
+            &cont.attribs,
+            &block2_state,
+            &block3_state,
+            pacc_table2,
+            table_id,
+            parent_pres_row_num,
+            buffer,
+            previous,
+        )
+    };
+    let _pacc_table2_for_children: Option<&IAccessibleTable2> =
+        match block4_state.propagation {
+            TablePropagation::Inherit => pacc_table2,
+            TablePropagation::Clear => None,
+            TablePropagation::Promoted => block4_state.cur_node_pacc_table2.as_ref(),
+        };
+
     // TODO Block 5 — text segmentation loop / AccessibleChildren walk
     //                (recurses into fill_vbuf).
     // TODO Block 6 — graphic / progressbar / link content fallbacks.
@@ -937,16 +1264,9 @@ pub(crate) unsafe fn fill_vbuf(
     //                aria_error::fill_vbuf_aria_error using ctx.is_chrome.
 
     // Until those land, exercising the entry point is a bug; the C++
-    // `fillVBuf` is the live implementation. Touch the still-unused
-    // parameters so the unused-variable lints stay quiet without
-    // `#[allow]`.
-    let _ = (
-        pacc_table2,
-        table_id,
-        parent_pres_row_num,
-        ignore_interactive_unlabelled_graphics,
-    );
-    unimplemented!("fill_vbuf blocks 4-7 not yet ported")
+    // `fillVBuf` is the live implementation.
+    let _ = ignore_interactive_unlabelled_graphics;
+    unimplemented!("fill_vbuf blocks 5-7 not yet ported")
 }
 
 /// Single C-callable entry point. Replaces the *body* of

@@ -65,10 +65,48 @@ pub unsafe extern "C" fn nvda_ia2_get_table_id_from_cell(
     get_table_id_from_cell(cell_ref).unwrap_or(0)
 }
 
-fn get_table_id_from_cell(cell: &IAccessibleTableCell) -> Option<i32> {
+/// Rust-native variant of `getTableIDFromCell` for in-crate callers.
+pub(crate) fn get_table_id_from_cell(cell: &IAccessibleTableCell) -> Option<i32> {
     let unk: IUnknown = unsafe { cell.get_table() }.ok()?;
     let acc: IAccessible2 = unk.cast().ok()?;
     unsafe { acc.get_uniqueID() }.ok()
+}
+
+/// Rust-native variant of `fillTableCellInfo_IATable2` for in-crate
+/// callers (the fillVBuf port). Same semantics as the extern shim.
+///
+/// # Safety
+///
+/// `cell` must be live; `node` must be a live control field node.
+pub(crate) unsafe fn fill_table_cell_info_native(
+    node: VbufFieldNode,
+    cell: &IAccessibleTableCell,
+) {
+    if let Ok(extents) = unsafe { cell.get_row_column_extents() } {
+        write_int_attribute(node, ATTR_TABLE_ROWNUMBER, extents.row + 1);
+        write_int_attribute(
+            node,
+            ATTR_TABLE_COLUMNNUMBER,
+            extents.column + 1,
+        );
+        if extents.column_extents > 1 {
+            write_int_attribute(
+                node,
+                ATTR_TABLE_COLUMNSSPANNED,
+                extents.column_extents,
+            );
+        }
+        if extents.row_extents > 1 {
+            write_int_attribute(
+                node,
+                ATTR_TABLE_ROWSSPANNED,
+                extents.row_extents,
+            );
+        }
+    }
+
+    fill_table_headers(node, cell, HeaderAxis::Column);
+    fill_table_headers(node, cell, HeaderAxis::Row);
 }
 
 /// C-callable replacement for `fillTableCellInfo_IATable2`. Writes row
@@ -92,37 +130,7 @@ pub unsafe extern "C" fn nvda_ia2_fill_table_cell_info(
             Some(c) => c,
             None => return,
         };
-    let field_node = VbufFieldNode(node);
-
-    if let Ok(extents) = unsafe { cell_ref.get_row_column_extents() } {
-        write_int_attribute(
-            field_node,
-            ATTR_TABLE_ROWNUMBER,
-            extents.row + 1,
-        );
-        write_int_attribute(
-            field_node,
-            ATTR_TABLE_COLUMNNUMBER,
-            extents.column + 1,
-        );
-        if extents.column_extents > 1 {
-            write_int_attribute(
-                field_node,
-                ATTR_TABLE_COLUMNSSPANNED,
-                extents.column_extents,
-            );
-        }
-        if extents.row_extents > 1 {
-            write_int_attribute(
-                field_node,
-                ATTR_TABLE_ROWSSPANNED,
-                extents.row_extents,
-            );
-        }
-    }
-
-    fill_table_headers(field_node, cell_ref, HeaderAxis::Column);
-    fill_table_headers(field_node, cell_ref, HeaderAxis::Row);
+    unsafe { fill_table_cell_info_native(VbufFieldNode(node), cell_ref) };
 }
 
 fn write_int_attribute(node: VbufFieldNode, name: &[u16], value: i32) {
