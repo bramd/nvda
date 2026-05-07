@@ -175,6 +175,16 @@ static LRESULT CALLBACK destroy_callWndProcHook(int code, WPARAM wParam, LPARAM 
   */
 	VBufStorage_controlFieldNode_t* reuseExistingNodeInRender(VBufStorage_controlFieldNode_t* parent, VBufStorage_fieldNode_t* previous, int docHandle, int ID) ;
 
+/**
+ * @return whether the pending-invalid-subtrees queue is empty (i.e. no
+ * subtree is awaiting re-render on the next update tick). Provided as a
+ * public accessor so the C-shim can read this state without breaking the
+ * encapsulation of pendingInvalidSubtreesList.
+ */
+	bool pendingInvalidSubtreesEmpty() const {
+		return pendingInvalidSubtreesList.empty();
+	}
+
 };
 
 /**
