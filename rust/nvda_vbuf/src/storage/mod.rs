@@ -32,6 +32,19 @@ pub struct ControlFieldIdentifier {
     pub id: i32,
 }
 
+/// Result of `Buffer::locate_control_field_node_at_offset`. Holds
+/// the deepest control (or reference) field that contains the
+/// requested offset together with its `(start, end)` range and its
+/// `(docHandle, ID)` identifier.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct LocateControlFieldResult {
+    pub node: NodeKey,
+    pub start: i32,
+    pub end: i32,
+    pub doc_handle: i32,
+    pub id: i32,
+}
+
 /// Direction for tree-order traversal. Mirrors `TreeDirection` in
 /// `nvdaHelper/vbufBase/storage.h`.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -1463,6 +1476,69 @@ impl Buffer {
     /// root). Mirrors `VBufStorage_buffer_t::hasContent`.
     pub fn has_content(&self) -> bool {
         self.root.is_some()
+    }
+
+    /// Find the deepest control field that contains `offset`. The
+    /// result is the immediate parent of the text-field at that
+    /// offset, plus that parent's `(start, end)` range and its
+    /// `(docHandle, ID)` identifier.
+    ///
+    /// Mirrors `VBufStorage_buffer_t::locateControlFieldNodeAtOffset`.
+    /// Returns `None` if the buffer is empty, the offset is out of
+    /// range, the text field has no parent (i.e. it's the root --
+    /// pathological), or the parent is a text variant (also
+    /// pathological).
+    pub fn locate_control_field_node_at_offset(
+        &self,
+        offset: i32,
+    ) -> Option<LocateControlFieldResult> {
+        let root = self.root?;
+        if offset < 0 || offset >= self.text_length() {
+            return None;
+        }
+        let (text_key, rel_within_text) =
+            self.locate_text_field_node_at_offset(root, offset)?;
+        let text_global_start = offset - rel_within_text;
+        let parent = self.nodes[text_key].parent?;
+
+        // Sum lengths of preceding siblings of the text node to
+        // compute the text node's offset within its parent.
+        let mut text_offset_in_parent = 0;
+        let mut prev = self.nodes[text_key].previous;
+        while let Some(p) = prev {
+            text_offset_in_parent += self.nodes[p].length;
+            prev = self.nodes[p].previous;
+        }
+        let parent_start = text_global_start - text_offset_in_parent;
+        let parent_end = parent_start + self.nodes[parent].length;
+        let identifier = match &self.nodes[parent].kind {
+            FieldNodeKind::Control(d) => d.identifier,
+            FieldNodeKind::Reference(d) => d.identifier,
+            FieldNodeKind::Text(_) => return None,
+        };
+        Some(LocateControlFieldResult {
+            node: parent,
+            start: parent_start,
+            end: parent_end,
+            doc_handle: identifier.doc_handle,
+            id: identifier.id,
+        })
+    }
+
+    /// Return the identifier of a control field (or reference)
+    /// node, or `None` if the key is stale or the node is a text
+    /// variant. Mirrors
+    /// `VBufStorage_buffer_t::getIdentifierFromControlFieldNode`.
+    pub fn identifier_of_control_field_node(
+        &self,
+        key: NodeKey,
+    ) -> Option<ControlFieldIdentifier> {
+        let n = self.nodes.get(key)?;
+        match &n.kind {
+            FieldNodeKind::Control(d) => Some(d.identifier),
+            FieldNodeKind::Reference(d) => Some(d.identifier),
+            FieldNodeKind::Text(_) => None,
+        }
     }
 
     /// Compute the offset of `key` from the start of the tree by
@@ -2989,5 +3065,112 @@ mod tests {
             b.next_node_in_tree(root, TreeDirection::SymmetricalBack, None),
             Some((t2, 2))
         );
+    }
+
+    #[test]
+    fn locate_control_field_at_offset_returns_text_parent() {
+        // root (1,1)
+        //   inner (1,2)
+        //     "abc"
+        //     "de"
+        //   "fg"
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let inner = b
+            .add_control_field_node(Some(root), None, cf(1, 2), false)
+            .unwrap();
+        let _t_abc = b
+            .add_text_field_node(Some(inner), None, w("abc"))
+            .unwrap();
+        let _t_de = b
+            .add_text_field_node(Some(inner), Some(_t_abc), w("de"))
+            .unwrap();
+        let _t_fg = b
+            .add_text_field_node(Some(root), Some(inner), w("fg"))
+            .unwrap();
+
+        // offset 0 -> first char of "abc", parent is inner (start 0,
+        // end 5 = inner.length).
+        let r = b.locate_control_field_node_at_offset(0).unwrap();
+        assert_eq!(r.node, inner);
+        assert_eq!((r.start, r.end), (0, 5));
+        assert_eq!((r.doc_handle, r.id), (1, 2));
+
+        // offset 4 -> last char of "de", still inner.
+        let r = b.locate_control_field_node_at_offset(4).unwrap();
+        assert_eq!(r.node, inner);
+        assert_eq!((r.start, r.end), (0, 5));
+
+        // offset 5 -> first char of "fg" (sibling of inner),
+        // parent is root, start 0, end 7 (root.length).
+        let r = b.locate_control_field_node_at_offset(5).unwrap();
+        assert_eq!(r.node, root);
+        assert_eq!((r.start, r.end), (0, 7));
+        assert_eq!((r.doc_handle, r.id), (1, 1));
+
+        // Out of range.
+        assert_eq!(b.locate_control_field_node_at_offset(7), None);
+        assert_eq!(b.locate_control_field_node_at_offset(-1), None);
+    }
+
+    #[test]
+    fn locate_control_field_at_offset_with_deeper_inner_offset() {
+        // root (1,1)
+        //   "ab"  // 2 chars
+        //   inner (1,2)
+        //     "cdef"  // 4 chars
+        // root.length = 6.  inner.start = 2, inner.end = 6.
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let _t_ab = b.add_text_field_node(Some(root), None, w("ab")).unwrap();
+        let inner = b
+            .add_control_field_node(Some(root), Some(_t_ab), cf(1, 2), false)
+            .unwrap();
+        let _t_cdef = b
+            .add_text_field_node(Some(inner), None, w("cdef"))
+            .unwrap();
+        let r = b.locate_control_field_node_at_offset(3).unwrap();
+        assert_eq!(r.node, inner);
+        assert_eq!((r.start, r.end), (2, 6));
+    }
+
+    #[test]
+    fn locate_control_field_at_offset_empty_buffer_returns_none() {
+        let b = Buffer::new();
+        assert_eq!(b.locate_control_field_node_at_offset(0), None);
+    }
+
+    #[test]
+    fn identifier_of_control_field_node_returns_pair() {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(7, 42), true)
+            .unwrap();
+        let t = b.add_text_field_node(Some(root), None, w("x")).unwrap();
+        assert_eq!(
+            b.identifier_of_control_field_node(root),
+            Some(ControlFieldIdentifier {
+                doc_handle: 7,
+                id: 42,
+            })
+        );
+        // Text field has no identifier.
+        assert_eq!(b.identifier_of_control_field_node(t), None);
+    }
+
+    #[test]
+    fn identifier_of_control_field_node_after_clear_returns_none() {
+        // Once the arena is cleared, the old key's generation no
+        // longer matches, so slotmap returns `None` on lookup.
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        b.clear();
+        assert_eq!(b.identifier_of_control_field_node(root), None);
     }
 }
