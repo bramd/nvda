@@ -28,6 +28,12 @@ pub mod storage;
 /// hooks, `execInThread`) is still TODO and stays C++-side for now.
 pub mod backend;
 
+/// Phase 6d-a parallel `extern "C"` API over the Rust [`storage::Buffer`].
+/// These `nvda_vbuf_*` functions coexist with the existing `vbuf_*`
+/// C-shim and let callers operate on a `Box<Buffer>` without
+/// crossing into C++. See module docs for conventions.
+pub mod extern_api;
+
 /// Callback invoked once with an OUT string from a `vbuf_node_get_*`
 /// call. The pointer + length describe a wide-string range borrowed
 /// from a `std::wstring` inside the C++ shim and is only valid for the
