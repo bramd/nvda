@@ -89,6 +89,7 @@ localLib = env.SharedLibrary(
 		controllerInternalRPCServerSource,
 		"dllImportTableHooks.cpp",
 		"nvdaHelperLocal.def",
+		"textUtils.cpp",
 		"UIAUtils.cpp",
 		"UIAEventLimiter/api.cpp",
 		"UIAEventLimiter/rateLimitedEventHandler.cpp",
@@ -98,6 +99,7 @@ localLib = env.SharedLibrary(
 	LIBS=[
 		"advapi32.lib",
 		"user32",
+		"usp10",
 		"ole32",
 		"oleaut32",
 		"rpcrt4",

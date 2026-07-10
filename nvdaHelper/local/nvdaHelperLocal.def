@@ -57,6 +57,9 @@ EXPORTS
 	displayModel_getFocusRect
 	displayModel_getCaretRect
 	displayModel_requestTextChangeNotificationsForWindow
+	calculateWordOffsets
+	calculateCharacterOffsets
+	calculateCharacterBoundaries
 	findWindowWithClassInThread
 	registerUIAProperty
 	registerUIAAnnotationType
