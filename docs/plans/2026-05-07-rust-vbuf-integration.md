@@ -1,6 +1,17 @@
 # Wiring the Rust vbuf storage into the live code path
 
-**Status:** design (2026-05-07). No code yet.
+**Status:** 6d-a and 6d-b done (2026-07-10). Next: Phase 6e, gated on
+a Firefox/Chrome smoke test.
+
+Progress log:
+
+* 2026-07-10: Phase 6d-a landed earlier (`extern_api.rs`); Phase 6d-b
+  landed as the `direct_rust_storage` feature (see
+  `2026-07-10-rust-vbuf-6db-direct-storage.md`). The storage surface
+  needed by NVDA's Python side is complete: `findNodeByAttributes`
+  and `locateTextFieldNodeAtOffset` ported, and every `VBufRemote_*`
+  RPC audited against the Rust Buffer (see
+  `2026-07-10-vbufremote-coverage-audit.md`).
 
 Phase 6b/6c built a Rust port of `vbufBase`'s storage and backend
 orchestration in `rust/nvda_vbuf/`. 69 tests cover every surface
