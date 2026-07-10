@@ -10,32 +10,14 @@ use windows::core::Interface;
 use crate::interfaces::{IAccessible2, IAccessible2_2};
 use crate::relation_targets::get_relation_targets_of_type_native;
 use crate::text::get_text_from_iaccessible_collect;
+use crate::utf16::utf16;
 use nvda_vbuf::VbufFieldNode;
 
 /// IA2 relation name `"error"` (`IA2_RELATION_ERROR` from
 /// `AccessibleRelation.idl:170`).
-const IA2_RELATION_ERROR: &[u16] = &[
-    b'e' as u16,
-    b'r' as u16,
-    b'r' as u16,
-    b'o' as u16,
-    b'r' as u16,
-];
+const IA2_RELATION_ERROR: &[u16] = &utf16(b"error");
 
-const ATTR_NAME_ERROR_MESSAGE: &[u16] = &[
-    b'e' as u16,
-    b'r' as u16,
-    b'r' as u16,
-    b'o' as u16,
-    b'r' as u16,
-    b'M' as u16,
-    b'e' as u16,
-    b's' as u16,
-    b's' as u16,
-    b'a' as u16,
-    b'g' as u16,
-    b'e' as u16,
-];
+const ATTR_NAME_ERROR_MESSAGE: &[u16] = &utf16(b"errorMessage");
 
 /// Rust-native variant for in-crate callers (the fillVBuf port).
 ///

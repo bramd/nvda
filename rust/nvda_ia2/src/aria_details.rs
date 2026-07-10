@@ -12,61 +12,22 @@ use windows::core::Interface;
 use crate::details_roles::extend_details_roles_attribute;
 use crate::interfaces::{IAccessible2, IAccessible2_2};
 use crate::relation_targets::get_relation_targets_of_type_native;
+use crate::utf16::utf16;
 use nvda_vbuf::{VbufBuffer, VbufControlFieldNode};
 
 /// `IA2_RELATION_DETAILS` from `AccessibleRelation.idl:163`.
-const IA2_RELATION_DETAILS: &[u16] = &[
-    b'd' as u16,
-    b'e' as u16,
-    b't' as u16,
-    b'a' as u16,
-    b'i' as u16,
-    b'l' as u16,
-    b's' as u16,
-];
+const IA2_RELATION_DETAILS: &[u16] = &utf16(b"details");
 
 /// `IA2_RELATION_DETAILS_FOR` from `AccessibleRelation.idl:167`.
-const IA2_RELATION_DETAILS_FOR: &[u16] = &[
-    b'd' as u16,
-    b'e' as u16,
-    b't' as u16,
-    b'a' as u16,
-    b'i' as u16,
-    b'l' as u16,
-    b's' as u16,
-    b'F' as u16,
-    b'o' as u16,
-    b'r' as u16,
-];
+const IA2_RELATION_DETAILS_FOR: &[u16] = &utf16(b"detailsFor");
 
-const ATTR_NAME_HAS_DETAILS: &[u16] = &[
-    b'h' as u16,
-    b'a' as u16,
-    b's' as u16,
-    b'D' as u16,
-    b'e' as u16,
-    b't' as u16,
-    b'a' as u16,
-    b'i' as u16,
-    b'l' as u16,
-    b's' as u16,
-];
+const ATTR_NAME_HAS_DETAILS: &[u16] = &utf16(b"hasDetails");
 
-const VAL_TRUE: &[u16] =
-    &[b't' as u16, b'r' as u16, b'u' as u16, b'e' as u16];
+const VAL_TRUE: &[u16] = &utf16(b"true");
 
-const ATTR_NAME_ROLE: &[u16] =
-    &[b'r' as u16, b'o' as u16, b'l' as u16, b'e' as u16];
+const ATTR_NAME_ROLE: &[u16] = &utf16(b"role");
 
-const VAL_UNKNOWN: &[u16] = &[
-    b'u' as u16,
-    b'n' as u16,
-    b'k' as u16,
-    b'n' as u16,
-    b'o' as u16,
-    b'w' as u16,
-    b'n' as u16,
-];
+const VAL_UNKNOWN: &[u16] = &utf16(b"unknown");
 
 /// Fetch the list of IA2 unique IDs for every target of `relation` on
 /// `acc2_2`. Mirrors `getAllRelationIdsForRelationType` in

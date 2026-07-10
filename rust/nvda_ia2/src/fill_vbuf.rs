@@ -52,6 +52,7 @@ use crate::role_long_string::get_role_long_role_string_native;
 use crate::selected_item::get_selected_item;
 use crate::table_cell::{fill_table_cell_info_native, get_table_id_from_cell};
 use crate::textbox_in_combobox::get_text_box_in_combo_box;
+use crate::utf16::utf16;
 use nvda_vbuf::{VbufBackend, VbufBuffer, VbufControlFieldNode, VbufFieldNode};
 use windows::core::{Interface, VARIANT};
 use windows::Win32::System::Com::IDispatch;
@@ -127,11 +128,47 @@ const ROLE_SYSTEM_COLUMNHEADER: i32 = 0x19;
 
 /// Single-space text used as the "empty content" placeholder. Mirrors
 /// `EMPTY_TEXT_NODE` in gecko_ia2.cpp.
-const EMPTY_TEXT_NODE: &[u16] = &[b' ' as u16];
+const EMPTY_TEXT_NODE: &[u16] = &utf16(b" ");
 
 /// IA2 state bits from `AccessibleStates.idl`.
 const IA2_STATE_EDITABLE: i32 = 0x8;
 const IA2_STATE_MULTI_LINE: i32 = 0x200;
+
+// Constant UTF-16 attribute names, prefixes, and values, encoded at
+// compile time via `crate::utf16::utf16`. fillVBuf writes these on
+// nearly every node across thousands of nodes per render, so encoding
+// them per call would allocate tens of thousands of transient buffers.
+const ATTR_ROLE: &[u16] = &utf16(b"IAccessible::role");
+const ATTR_KEYBOARD_SHORTCUT: &[u16] = &utf16(b"keyboardShortcut");
+const ATTR_DESCRIPTION: &[u16] = &utf16(b"description");
+const ATTR_ALWAYS_REPORT_NAME: &[u16] = &utf16(b"alwaysReportName");
+const ATTR_NAME: &[u16] = &utf16(b"name");
+const ATTR_LANGUAGE: &[u16] = &utf16(b"language");
+const ATTR_TEXT_ALIGN: &[u16] = &utf16(b"text-align");
+const ATTR_LABELLED_BY_CONTENT: &[u16] = &utf16(b"labelledByContent");
+const ATTR_DESCRIPTION_IS_CONTENT: &[u16] = &utf16(b"descriptionIsContent");
+const ATTR_IA_VALUE: &[u16] = &utf16(b"IAccessible::value");
+const ATTR_TABLE_LAYOUT: &[u16] = &utf16(b"table-layout");
+const ATTR_TABLE_ID: &[u16] = &utf16(b"table-id");
+const ATTR_TABLE_ROWCOUNT: &[u16] = &utf16(b"table-rowcount");
+const ATTR_TABLE_COLUMNCOUNT: &[u16] = &utf16(b"table-columncount");
+const ATTR_TABLE_ROWNUMBER_PRES: &[u16] =
+    &utf16(b"table-rownumber-presentational");
+const ATTR_TABLE_COLUMNNUMBER_PRES: &[u16] =
+    &utf16(b"table-columnnumber-presentational");
+const ATTR_TABLE_ROWCOUNT_PRES: &[u16] =
+    &utf16(b"table-rowcount-presentational");
+const ATTR_TABLE_COLUMNCOUNT_PRES: &[u16] =
+    &utf16(b"table-columncount-presentational");
+const ATTR_IA2_TEXT_START_OFFSET: &[u16] = &utf16(b"ia2TextStartOffset");
+const ATTR_IA2_TEXT_WINDOW_HANDLE: &[u16] = &utf16(b"ia2TextWindowHandle");
+const ATTR_IA2_TEXT_UNIQUE_ID: &[u16] = &utf16(b"ia2TextUniqueID");
+const PREFIX_IA_STATE: &[u16] = &utf16(b"IAccessible::state_");
+const PREFIX_IA2_STATE: &[u16] = &utf16(b"IAccessible2::state_");
+const PREFIX_IA2_ATTRIBUTE: &[u16] = &utf16(b"IAccessible2::attribute_");
+const PREFIX_IA_ACTION: &[u16] = &utf16(b"IAccessibleAction_");
+const VAL_TRUE: &[u16] = &utf16(b"true");
+const VAL_ONE: &[u16] = &utf16(b"1");
 
 /// Outcome of [`block1`] indicating how the caller should proceed.
 pub enum Block1Outcome {
@@ -298,11 +335,10 @@ pub unsafe fn block1(
     };
 
     // Set IAccessible::role attribute.
-    let role_name: Vec<u16> = "IAccessible::role".encode_utf16().collect();
     unsafe {
         new_parent_node
             .as_field_node()
-            .add_attribute(&role_name, &role_attr);
+            .add_attribute(ATTR_ROLE, &role_attr);
     }
 
     Block1Outcome::Continue(Block1Continue {
@@ -382,7 +418,7 @@ pub unsafe fn block2(
         }
         Err(_) => 0,
     };
-    write_state_attributes(parent_node, "IAccessible::state_", states);
+    write_state_attributes(parent_node, PREFIX_IA_STATE, states);
 
     // IA2 states. Strip IA2_STATE_EDITABLE on tables (Gecko exposes
     // it for ARIA grids, which is not in the ARIA spec).
@@ -390,7 +426,7 @@ pub unsafe fn block2(
     if (ia2_states & IA2_STATE_EDITABLE) != 0 && role == ROLE_SYSTEM_TABLE {
         ia2_states -= IA2_STATE_EDITABLE;
     }
-    write_state_attributes(parent_node, "IAccessible2::state_", ia2_states);
+    write_state_attributes(parent_node, PREFIX_IA2_STATE, ia2_states);
 
     // Keyboard shortcut: write either the BSTR contents or empty
     // string, mirroring the C++ if/else.
@@ -399,12 +435,10 @@ pub unsafe fn block2(
             Ok(b) => b.as_wide().to_vec(),
             Err(_) => Vec::new(),
         };
-    let shortcut_attr_name: Vec<u16> =
-        "keyboardShortcut".encode_utf16().collect();
     unsafe {
         parent_node
             .as_field_node()
-            .add_attribute(&shortcut_attr_name, &shortcut);
+            .add_attribute(ATTR_KEYBOARD_SHORTCUT, &shortcut);
     }
 
     // isBlock determination. Order matches the C++ if/else chain.
@@ -440,9 +474,8 @@ pub unsafe fn block2(
     // also kept around for the descriptionIsContent check in block 7.
     let description = get_acc_description_native(pacc, 0);
     if let Some(ref d) = description {
-        let desc_name: Vec<u16> = "description".encode_utf16().collect();
         unsafe {
-            parent_node.as_field_node().add_attribute(&desc_name, d);
+            parent_node.as_field_node().add_attribute(ATTR_DESCRIPTION, d);
         }
     }
 
@@ -503,26 +536,24 @@ pub unsafe fn block2(
 /// `states`.
 fn write_state_attributes(
     node: VbufControlFieldNode,
-    prefix: &str,
+    prefix: &[u16],
     states: i32,
 ) {
     if states == 0 {
         return;
     }
-    let prefix_u16: Vec<u16> = prefix.encode_utf16().collect();
-    let one: [u16; 1] = [b'1' as u16];
     for i in 0..32i32 {
         let state_bit: i32 = 1i32.wrapping_shl(i as u32);
         if (state_bit & states) == 0 {
             continue;
         }
-        let mut name = prefix_u16.clone();
+        let mut name = prefix.to_vec();
         let mut digit_buf = String::new();
         use core::fmt::Write;
         let _ = write!(digit_buf, "{state_bit}");
         name.extend(digit_buf.encode_utf16());
         unsafe {
-            node.as_field_node().add_attribute(&name, &one);
+            node.as_field_node().add_attribute(&name, VAL_ONE);
         }
     }
 }
@@ -584,12 +615,11 @@ fn apply_ia2_attribs_to_node(
     node: VbufControlFieldNode,
     attribs: &BTreeMap<String, String>,
 ) {
-    const PREFIX: &str = "IAccessible2::attribute_";
-    let prefix_u16: Vec<u16> = PREFIX.encode_utf16().collect();
     for (key, val) in attribs.iter() {
         let key_u16: Vec<u16> = key.encode_utf16().collect();
-        let mut name = Vec::with_capacity(prefix_u16.len() + key_u16.len());
-        name.extend_from_slice(&prefix_u16);
+        let mut name =
+            Vec::with_capacity(PREFIX_IA2_ATTRIBUTE.len() + key_u16.len());
+        name.extend_from_slice(PREFIX_IA2_ATTRIBUTE);
         name.extend_from_slice(&key_u16);
         let val_u16: Vec<u16> = val.encode_utf16().collect();
         unsafe {
@@ -729,11 +759,10 @@ pub unsafe fn block3(
         && role != ROLE_SYSTEM_TABLE
         && !label_visible
     {
-        let attr_name: Vec<u16> = "alwaysReportName".encode_utf16().collect();
-        let attr_value: &[u16] =
-            &[b't' as u16, b'r' as u16, b'u' as u16, b'e' as u16];
         unsafe {
-            parent_node.as_field_node().add_attribute(&attr_name, attr_value);
+            parent_node
+                .as_field_node()
+                .add_attribute(ATTR_ALWAYS_REPORT_NAME, VAL_TRUE);
         }
     }
 
@@ -805,8 +834,7 @@ pub unsafe fn block3(
             }
             let action_name = action_name_bstr.as_wide();
 
-            let mut attr_name: Vec<u16> =
-                "IAccessibleAction_".encode_utf16().collect();
+            let mut attr_name: Vec<u16> = PREFIX_IA_ACTION.to_vec();
             attr_name.extend_from_slice(action_name);
             let mut idx_buf = String::new();
             use core::fmt::Write;
@@ -969,7 +997,11 @@ pub unsafe fn block4(
             // No parent table tracked -- this is an update render.
             table_id = get_table_id_from_cell(cell).unwrap_or(0);
         }
-        write_int_attribute_on(parent_node.as_field_node(), "table-id", table_id);
+        write_int_attribute_on(
+            parent_node.as_field_node(),
+            ATTR_TABLE_ID,
+            table_id,
+        );
         cell_cleared = true;
         table_id = 0;
     }
@@ -992,18 +1024,19 @@ pub unsafe fn block4(
         if let Ok(table) = pacc.cast::<IAccessibleTable2>() {
             // layout-guess heuristic.
             if attribs.contains_key("layout-guess") {
-                let attr_name: Vec<u16> =
-                    "table-layout".encode_utf16().collect();
-                let attr_value: &[u16] = &[b'1' as u16];
                 unsafe {
                     parent_node
                         .as_field_node()
-                        .add_attribute(&attr_name, attr_value);
+                        .add_attribute(ATTR_TABLE_LAYOUT, VAL_ONE);
                 }
             }
             // table-id = this node's IA2 unique ID.
             table_id = id;
-            write_int_attribute_on(parent_node.as_field_node(), "table-id", id);
+            write_int_attribute_on(
+                parent_node.as_field_node(),
+                ATTR_TABLE_ID,
+                id,
+            );
 
             // Row/col counts. C++ only writes the attribute if the
             // call succeeded; the > 0 propagation check uses 0 as the
@@ -1012,7 +1045,7 @@ pub unsafe fn block4(
             if let Some(rc) = row_count {
                 write_int_attribute_on(
                     parent_node.as_field_node(),
-                    "table-rowcount",
+                    ATTR_TABLE_ROWCOUNT,
                     rc,
                 );
             }
@@ -1020,7 +1053,7 @@ pub unsafe fn block4(
             if let Some(cc) = col_count {
                 write_int_attribute_on(
                     parent_node.as_field_node(),
-                    "table-columncount",
+                    ATTR_TABLE_COLUMNCOUNT,
                     cc,
                 );
             }
@@ -1057,10 +1090,9 @@ pub unsafe fn block4(
                     )
                 } {
                     if !block2.locale.is_empty() {
-                        let lang_attr: Vec<u16> =
-                            "language".encode_utf16().collect();
                         unsafe {
-                            text_node.add_attribute(&lang_attr, &block2.locale);
+                            text_node
+                                .add_attribute(ATTR_LANGUAGE, &block2.locale);
                         }
                     }
                     previous_node = Some(text_node);
@@ -1074,10 +1106,10 @@ pub unsafe fn block4(
     // Step 4: parentPresentationalRowNumber forwarding. The C++ uses
     // the C-string null-terminated parent value; we use a slice.
     if let Some(ppres) = parent_pres_row_num {
-        let attr_name: Vec<u16> =
-            "table-rownumber-presentational".encode_utf16().collect();
         unsafe {
-            parent_node.as_field_node().add_attribute(&attr_name, ppres);
+            parent_node
+                .as_field_node()
+                .add_attribute(ATTR_TABLE_ROWNUMBER_PRES, ppres);
         }
     }
 
@@ -1086,26 +1118,25 @@ pub unsafe fn block4(
     // presentational_row_number.
     let mut presentational_row_number: Option<Vec<u16>> = None;
     if let Some(rowindex) = attribs.get("rowindex") {
-        let attr_name: Vec<u16> =
-            "table-rownumber-presentational".encode_utf16().collect();
         let value_u16: Vec<u16> = rowindex.encode_utf16().collect();
         unsafe {
-            parent_node.as_field_node().add_attribute(&attr_name, &value_u16);
+            parent_node
+                .as_field_node()
+                .add_attribute(ATTR_TABLE_ROWNUMBER_PRES, &value_u16);
         }
         presentational_row_number = Some(value_u16);
     }
-    for (key, attr_name_str) in [
-        ("colindex", "table-columnnumber-presentational"),
-        ("rowcount", "table-rowcount-presentational"),
-        ("colcount", "table-columncount-presentational"),
+    for (key, attr_name) in [
+        ("colindex", ATTR_TABLE_COLUMNNUMBER_PRES),
+        ("rowcount", ATTR_TABLE_ROWCOUNT_PRES),
+        ("colcount", ATTR_TABLE_COLUMNCOUNT_PRES),
     ] {
         if let Some(val) = attribs.get(key) {
-            let attr_name: Vec<u16> = attr_name_str.encode_utf16().collect();
             let value_u16: Vec<u16> = val.encode_utf16().collect();
             unsafe {
                 parent_node
                     .as_field_node()
-                    .add_attribute(&attr_name, &value_u16);
+                    .add_attribute(attr_name, &value_u16);
             }
         }
     }
@@ -1118,12 +1149,10 @@ pub unsafe fn block4(
         match unsafe { pacc_msaa.get_accValue(&varchild) } {
             Ok(b) if !is_bstr_null(&b) => {
                 if role == ROLE_SYSTEM_LINK {
-                    let attr_name: Vec<u16> =
-                        "IAccessible::value".encode_utf16().collect();
                     unsafe {
                         parent_node
                             .as_field_node()
-                            .add_attribute(&attr_name, b.as_wide());
+                            .add_attribute(ATTR_IA_VALUE, b.as_wide());
                     }
                 }
                 let wide = b.as_wide();
@@ -1160,14 +1189,13 @@ pub unsafe fn block4(
 }
 
 /// Helper: write a decimal integer attribute on a vbuf field node.
-fn write_int_attribute_on(node: VbufFieldNode, name: &str, value: i32) {
-    let name_u16: Vec<u16> = name.encode_utf16().collect();
+fn write_int_attribute_on(node: VbufFieldNode, name: &[u16], value: i32) {
     let mut buf = String::new();
     use core::fmt::Write;
     let _ = write!(buf, "{value}");
     let value_u16: Vec<u16> = buf.encode_utf16().collect();
     unsafe {
-        node.add_attribute(&name_u16, &value_u16);
+        node.add_attribute(name, &value_u16);
     }
 }
 
@@ -1485,9 +1513,8 @@ fn add_text_node_with_locale(
     let node =
         unsafe { buffer.add_text_field_node(Some(parent), previous, text) }?;
     if !locale.is_empty() {
-        let lang_attr: Vec<u16> = "language".encode_utf16().collect();
         unsafe {
-            node.add_attribute(&lang_attr, locale);
+            node.add_attribute(ATTR_LANGUAGE, locale);
         }
     }
     Some(node)
@@ -1509,10 +1536,9 @@ fn apply_text_segment_attribs(
         }
     }
     if let Some(ta) = text_align {
-        let name: Vec<u16> = "text-align".encode_utf16().collect();
         let value: Vec<u16> = ta.encode_utf16().collect();
         unsafe {
-            node.add_attribute(&name, &value);
+            node.add_attribute(ATTR_TEXT_ALIGN, &value);
         }
     }
 }
@@ -1525,9 +1551,13 @@ fn add_ia2_text_attribs(
     offset: i32,
     handles: TextHandleInfo,
 ) {
-    write_int_attribute_on(node, "ia2TextStartOffset", offset);
-    write_int_attribute_on(node, "ia2TextWindowHandle", handles.doc_handle);
-    write_int_attribute_on(node, "ia2TextUniqueID", handles.id);
+    write_int_attribute_on(node, ATTR_IA2_TEXT_START_OFFSET, offset);
+    write_int_attribute_on(
+        node,
+        ATTR_IA2_TEXT_WINDOW_HANDLE,
+        handles.doc_handle,
+    );
+    write_int_attribute_on(node, ATTR_IA2_TEXT_UNIQUE_ID, handles.id);
 }
 
 #[derive(Clone, Copy)]
@@ -1678,9 +1708,9 @@ pub unsafe fn block6(
                 buffer.add_text_field_node(Some(parent_node), None, name)
             } {
                 if !block2.locale.is_empty() {
-                    let lang_attr: Vec<u16> =
-                        "language".encode_utf16().collect();
-                    unsafe { text_node.add_attribute(&lang_attr, &block2.locale) };
+                    unsafe {
+                        text_node.add_attribute(ATTR_LANGUAGE, &block2.locale)
+                    };
                 }
             }
         } else if role == ROLE_SYSTEM_LINK {
@@ -1774,9 +1804,8 @@ pub unsafe fn block7(
     // attribute when the server returned a non-null empty BSTR.
     if !block3.name_is_content {
         if let Some(name) = block2.name.as_deref() {
-            let attr_name: Vec<u16> = "name".encode_utf16().collect();
             unsafe {
-                parent_node.as_field_node().add_attribute(&attr_name, name);
+                parent_node.as_field_node().add_attribute(ATTR_NAME, name);
             }
             // labelledByContent: only relevant when the name was
             // explicit (browser-supplied label), and only when the
@@ -1795,18 +1824,11 @@ pub unsafe fn block7(
                             )
                         };
                         if is_descendant {
-                            let attr_name: Vec<u16> =
-                                "labelledByContent".encode_utf16().collect();
-                            let attr_value: &[u16] = &[
-                                b't' as u16,
-                                b'r' as u16,
-                                b'u' as u16,
-                                b'e' as u16,
-                            ];
                             unsafe {
-                                parent_node
-                                    .as_field_node()
-                                    .add_attribute(&attr_name, attr_value);
+                                parent_node.as_field_node().add_attribute(
+                                    ATTR_LABELLED_BY_CONTENT,
+                                    VAL_TRUE,
+                                );
                             }
                         }
                     }
@@ -1822,14 +1844,10 @@ pub unsafe fn block7(
             parent_node.as_field_node().content_matches_string(description)
         };
         if matches {
-            let attr_name: Vec<u16> =
-                "descriptionIsContent".encode_utf16().collect();
-            let attr_value: &[u16] =
-                &[b't' as u16, b'r' as u16, b'u' as u16, b'e' as u16];
             unsafe {
                 parent_node
                     .as_field_node()
-                    .add_attribute(&attr_name, attr_value);
+                    .add_attribute(ATTR_DESCRIPTION_IS_CONTENT, VAL_TRUE);
             }
         }
     }

@@ -8,6 +8,7 @@
 
 use crate::interfaces::{IAccessible2, IAccessible2_2};
 use crate::text::get_text_from_iaccessible_collect;
+use crate::utf16::utf16;
 use windows::core::{IUnknown, Interface, BSTR, VARIANT};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Accessibility::IAccessible;
@@ -15,10 +16,7 @@ use windows::Win32::UI::Controls::STATE_SYSTEM_INVISIBLE;
 
 /// Wide-string spelling of the `IA2_RELATION_LABELLED_BY` constant from
 /// `include/ia2/api/AccessibleRelation.idl:119`.
-const LABELLED_BY: &[u16] = &[
-    b'l' as u16, b'a' as u16, b'b' as u16, b'e' as u16, b'l' as u16,
-    b'l' as u16, b'e' as u16, b'd' as u16, b'B' as u16, b'y' as u16,
-];
+const LABELLED_BY: &[u16] = &utf16(b"labelledBy");
 
 /// Resolved label info, mirroring the C++ `LabelInfo` struct.
 pub struct LabelInfo {

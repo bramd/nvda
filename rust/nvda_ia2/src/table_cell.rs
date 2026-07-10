@@ -14,6 +14,7 @@ use windows::core::{Interface, IUnknown};
 use windows::Win32::System::Com::CoTaskMemFree;
 
 use crate::interfaces::{IAccessible2, IAccessibleTableCell};
+use crate::utf16::utf16;
 use nvda_vbuf::VbufFieldNode;
 
 const ATTR_TABLE_ROWNUMBER: &[u16] = &utf16(b"table-rownumber");
@@ -23,19 +24,6 @@ const ATTR_TABLE_ROWSSPANNED: &[u16] = &utf16(b"table-rowsspanned");
 const ATTR_TABLE_COLUMNHEADERCELLS: &[u16] =
     &utf16(b"table-columnheadercells");
 const ATTR_TABLE_ROWHEADERCELLS: &[u16] = &utf16(b"table-rowheadercells");
-
-/// Compile-time ASCII-to-UTF-16 conversion. The byte array must be
-/// pure ASCII; non-ASCII bytes are accepted only for `<= 0x7f` and
-/// produce identical-valued `u16`s.
-const fn utf16<const N: usize>(s: &[u8; N]) -> [u16; N] {
-    let mut out = [0u16; N];
-    let mut i = 0;
-    while i < N {
-        out[i] = s[i] as u16;
-        i += 1;
-    }
-    out
-}
 
 /// Selects which header axis a `fillTableHeaders` call walks.
 #[repr(i32)]

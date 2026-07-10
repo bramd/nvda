@@ -7,23 +7,11 @@
 //!
 //! First user of the `nvda_vbuf` shim layer.
 
+use crate::utf16::utf16;
 use nvda_vbuf::VbufFieldNode;
 
 /// `detailsRoles` as a UTF-16 slice. The attribute name doesn't change.
-const ATTR_NAME_DETAILS_ROLES: &[u16] = &[
-    b'd' as u16,
-    b'e' as u16,
-    b't' as u16,
-    b'a' as u16,
-    b'i' as u16,
-    b'l' as u16,
-    b's' as u16,
-    b'R' as u16,
-    b'o' as u16,
-    b'l' as u16,
-    b'e' as u16,
-    b's' as u16,
-];
+const ATTR_NAME_DETAILS_ROLES: &[u16] = &utf16(b"detailsRoles");
 
 /// Rust-side variant for callers that already hold a `VbufFieldNode`
 /// handle (e.g. the `aria_details` port).
