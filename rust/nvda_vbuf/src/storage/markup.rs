@@ -14,6 +14,24 @@ use core::fmt::Write;
 use super::node::{FieldNodeKind, NodeKey};
 use super::Buffer;
 
+/// Convert a compile-time ASCII byte-string literal to a UTF-16 array.
+/// Each byte must be ASCII (`< 0x80`).
+const fn ascii_utf16<const N: usize>(bytes: &[u8; N]) -> [u16; N] {
+    let mut out = [0u16; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = bytes[i] as u16;
+        i += 1;
+    }
+    out
+}
+
+/// Zero-allocation UTF-16 forms of the XML escape sequences.
+const QUOT: [u16; 6] = ascii_utf16(b"&quot;");
+const LT: [u16; 4] = ascii_utf16(b"&lt;");
+const GT: [u16; 4] = ascii_utf16(b"&gt;");
+const AMP: [u16; 5] = ascii_utf16(b"&amp;");
+
 /// Append `c` to `out` with XML-character escaping. Mirrors
 /// `appendCharToXML` from `nvdaHelper/common/xml.h`. `is_attribute`
 /// changes the fallback for invalid XML characters: replacement
@@ -21,13 +39,13 @@ use super::Buffer;
 pub(crate) fn append_char_to_xml(c: u16, out: &mut Vec<u16>, is_attribute: bool) {
     match c {
         // L'"'
-        0x22 => out.extend_from_slice(&utf16_lit("&quot;")),
+        0x22 => out.extend_from_slice(&QUOT),
         // L'<'
-        0x3c => out.extend_from_slice(&utf16_lit("&lt;")),
+        0x3c => out.extend_from_slice(&LT),
         // L'>'
-        0x3e => out.extend_from_slice(&utf16_lit("&gt;")),
+        0x3e => out.extend_from_slice(&GT),
         // L'&'
-        0x26 => out.extend_from_slice(&utf16_lit("&amp;")),
+        0x26 => out.extend_from_slice(&AMP),
         _ => {
             let valid = matches!(c, 0x9 | 0xA | 0xD)
                 || (0x20..=0xD7FF).contains(&c)
@@ -55,11 +73,6 @@ pub(crate) fn append_sanitized_attrib_name(name: &[u16], out: &mut Vec<u16>) {
             out.push(c);
         }
     }
-}
-
-/// Compile-time ASCII string to UTF-16. The byte slice must be ASCII.
-fn utf16_lit(s: &str) -> Vec<u16> {
-    s.encode_utf16().collect()
 }
 
 impl Buffer {

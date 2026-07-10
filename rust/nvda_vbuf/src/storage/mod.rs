@@ -614,8 +614,10 @@ impl Buffer {
                 FieldNodeKind::Reference(d) => d.identifier,
                 FieldNodeKind::Text(_) => break,
             };
-            // push_front equivalent: insert at index 0.
-            chain.insert(0, (ident, relative));
+            // Push during the deepest-to-root walk, then reverse
+            // after the loop to get the root-first order (O(depth)
+            // instead of the O(depth^2) of inserting at index 0).
+            chain.push((ident, relative));
             // Accumulate previous-sibling lengths so the relative
             // offset stays correct as we walk up.
             let mut prev = self.nodes[c].previous;
@@ -625,6 +627,8 @@ impl Buffer {
             }
             cur = self.nodes[c].parent;
         }
+        // The walk collected deepest-first; reverse to root-first.
+        chain.reverse();
         if chain.is_empty() {
             None
         } else {
