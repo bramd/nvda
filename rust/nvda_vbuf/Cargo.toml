@@ -11,6 +11,17 @@ edition = "2021"
 crate-type = ["rlib"]
 
 [features]
+# `direct_rust_storage` (default off) routes the newtype wrappers in
+# `lib.rs` (VbufBuffer / VbufFieldNode / VbufControlFieldNode) to the
+# Rust `storage::Buffer` directly instead of the `vbuf_*` C-shim
+# externs. Node handles then carry a `(buffer, key)` back-pointer since
+# a slotmap key can't be packed into an x86 pointer. VbufBackend stays
+# on the C-shim in both configs; its buffer-upcast / node-level methods
+# are compiled out under the feature (incoherent until Phase 6e). No
+# caller enables this yet -- it exists for A/B testing ahead of 6e.
+# See docs/plans/2026-07-10-rust-vbuf-6db-direct-storage.md.
+direct_rust_storage = []
+
 # `test_stubs` provides Rust definitions of every `vbuf_*` extern "C"
 # symbol that just panic when called. The real symbols live in the C++
 # shim (`nvdaHelper/vbufBase/c_shim.cpp`), so a stand-alone Rust test
