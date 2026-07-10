@@ -220,12 +220,13 @@ pub struct Block1Continue {
 ///
 /// # Safety
 ///
-/// `pacc` must point at a live `IAccessible2`; `buffer`, `backend`,
-/// `parent`, `previous` (if `Some`) must be live for the duration.
+/// `pacc` must point at a live `IAccessible2`; `buffer`, `ctx.backend`
+/// (and `ctx.main` under `direct_rust_storage`), `parent`, `previous`
+/// (if `Some`) must be live for the duration.
 pub unsafe fn block1(
     pacc: &IAccessible2,
     buffer: VbufBuffer,
-    backend: VbufBackend,
+    ctx: &FillVBufCtx,
     parent: Option<VbufControlFieldNode>,
     previous: Option<VbufFieldNode>,
 ) -> Block1Outcome {
@@ -257,33 +258,25 @@ pub unsafe fn block1(
 
     // Block 1 / step 4: cross-buffer reuse. The C++ original gates
     // this on `buffer != this && parentNode`, where `this` is the
-    // GeckoVBufBackend_t (which IS-A buffer). In Rust we compare the
-    // wrapped pointers.
-    if buffer.0 != backend.as_buffer().0 {
-        if let Some(parent_node) = parent {
-            if let Some(existing) = unsafe {
-                backend.reuse_existing_node(
-                    Some(parent_node),
-                    previous,
-                    doc_handle,
-                    id,
-                )
-            } {
-                // Mirrors the C++ early `return
-                // buffer->addReferenceNodeToBuffer(...)`: whatever this
-                // produces (including NULL) becomes fillVBuf's return.
-                let reference = unsafe {
-                    buffer.add_reference_node(
-                        Some(parent_node),
-                        previous,
-                        existing,
-                    )
-                };
-                return match reference {
-                    Some(r) => Block1Outcome::Reused(r),
-                    None => Block1Outcome::Bail,
-                };
-            }
+    // GeckoVBufBackend_t (which IS-A buffer). `reuse_existing_node`
+    // folds in the "temp buffer, not the live/main one" guard (see the
+    // helper); here we only need the parent guard.
+    if let Some(parent_node) = parent {
+        if let Some(existing) = unsafe {
+            reuse_existing_node(
+                ctx, buffer, parent_node, previous, doc_handle, id,
+            )
+        } {
+            // Mirrors the C++ early `return
+            // buffer->addReferenceNodeToBuffer(...)`: whatever this
+            // produces (including NULL) becomes fillVBuf's return.
+            let reference = unsafe {
+                buffer.add_reference_node(Some(parent_node), previous, existing)
+            };
+            return match reference {
+                Some(r) => Block1Outcome::Reused(r),
+                None => Block1Outcome::Bail,
+            };
         }
     }
 
@@ -349,6 +342,71 @@ pub unsafe fn block1(
         role_attr,
         attribs,
     })
+}
+
+/// Cross-buffer reuse lookup for [`block1`]. Returns `Some(existing)`
+/// pointing at a reuse-eligible node in the backend's live/main storage,
+/// or `None` when reuse doesn't apply.
+///
+/// Returns `None` for an initial render (where `buffer` *is* the main
+/// storage), mirroring the C++ `buffer != this` guard — an initial
+/// render has nothing to reuse against.
+///
+/// # Safety
+///
+/// All borrowed handles must be live; `parent_node` / `previous` belong
+/// to `buffer` (the in-flight render target).
+#[cfg(not(feature = "direct_rust_storage"))]
+unsafe fn reuse_existing_node(
+    ctx: &FillVBufCtx,
+    buffer: VbufBuffer,
+    parent_node: VbufControlFieldNode,
+    previous: Option<VbufFieldNode>,
+    doc_handle: i32,
+    id: i32,
+) -> Option<VbufControlFieldNode> {
+    // Feature-off: the backend IS-A C++ buffer; skip reuse when we're
+    // rendering straight into it (the initial render).
+    if buffer.0 == ctx.backend.as_buffer().0 {
+        return None;
+    }
+    unsafe {
+        ctx.backend
+            .reuse_existing_node(Some(parent_node), previous, doc_handle, id)
+    }
+}
+
+/// See the feature-off variant. Under `direct_rust_storage` the reuse
+/// query runs against the Rust main `Buffer` (`ctx.main`) directly;
+/// `buffer` is the temp render buffer and must be a distinct allocation.
+///
+/// # Safety
+///
+/// See the feature-off variant.
+#[cfg(feature = "direct_rust_storage")]
+unsafe fn reuse_existing_node(
+    ctx: &FillVBufCtx,
+    buffer: VbufBuffer,
+    parent_node: VbufControlFieldNode,
+    previous: Option<VbufFieldNode>,
+    doc_handle: i32,
+    id: i32,
+) -> Option<VbufControlFieldNode> {
+    // Feature-on: `ctx.main` is the live Rust buffer. An initial render
+    // targets it directly (buffer == main); reuse only applies when
+    // `buffer` is a distinct temp buffer.
+    if buffer.0 == ctx.main.0 {
+        return None;
+    }
+    unsafe {
+        ctx.main.reuse_existing_node_in_render(
+            buffer,
+            Some(parent_node),
+            previous,
+            doc_handle,
+            id,
+        )
+    }
 }
 
 // ----- block 2 ------------------------------------------------------
@@ -1880,9 +1938,17 @@ pub unsafe fn block7(
 /// recursive Rust frame.
 pub struct FillVBufCtx {
     /// The vbuf backend handle, used for cross-buffer reuse via
-    /// [`VbufBackend::reuse_existing_node`]. Equivalent to `this` in
-    /// the C++ original.
+    /// [`VbufBackend::reuse_existing_node`] when `direct_rust_storage`
+    /// is off. Equivalent to `this` in the C++ original.
     pub backend: VbufBackend,
+    /// The backend's live ("main") Rust `storage::Buffer` handle. Under
+    /// `direct_rust_storage`, cross-buffer reuse queries this directly
+    /// (the C++ backend is not a Rust `Buffer`, so
+    /// [`VbufBackend::reuse_existing_node`] is compiled out). Set once
+    /// by the update orchestration from `state.buffer`; a partial
+    /// re-render's temp buffer is a *different* allocation from `main`.
+    #[cfg(feature = "direct_rust_storage")]
+    pub main: VbufBuffer,
     /// The IA2 unique ID of the document root node. Used for the
     /// `isRoot` check (gecko_ia2.cpp:620). Equivalent to
     /// `this->rootID`.
@@ -1923,7 +1989,7 @@ pub(crate) unsafe fn fill_vbuf(
 ) -> Option<VbufFieldNode> {
     // Block 1.
     let cont = match unsafe {
-        block1(pacc, buffer, ctx.backend, parent, previous)
+        block1(pacc, buffer, ctx, parent, previous)
     } {
         Block1Outcome::Bail => return None,
         Block1Outcome::Reused(reference) => return Some(reference),

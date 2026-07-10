@@ -19,7 +19,10 @@ use crate::fill_vbuf::{fill_vbuf, FillVBufCtx};
 use crate::from_identifier::from_identifier;
 use crate::interfaces::IAccessible2;
 use crate::toolkit_name::get_toolkit_name_native;
+use nvda_vbuf::storage::Buffer;
 use nvda_vbuf::{VbufBackend, VbufBuffer};
+#[cfg(feature = "direct_rust_storage")]
+use nvda_vbuf::storage::NodeKey;
 
 // MSAA event IDs (oleacc.h).
 const EVENT_OBJECT_HIDE: u32 = 0x8003;
@@ -68,6 +71,13 @@ pub struct GeckoBackendState {
     /// because the Rust drop path may run on a thread different
     /// from the one that created the COM pointer.
     pub root_doc_acc: Option<IAccessible2>,
+    /// The live gecko storage tree (Phase 6e). Present in both feature
+    /// configs but only rendered into / read from once
+    /// `direct_rust_storage` is enabled at the flip (Stage D); until
+    /// then it stays empty and the C++ `VBufStorage_buffer_t` remains
+    /// the live storage. Embedding it here ties its lifetime to the
+    /// per-backend Rust state (created/destroyed with `GeckoBackendState`).
+    pub buffer: Buffer,
 }
 
 impl GeckoBackendState {
@@ -75,6 +85,7 @@ impl GeckoBackendState {
         Self {
             toolkit_name: Vec::new(),
             root_doc_acc: None,
+            buffer: Buffer::new(),
         }
     }
 
@@ -134,6 +145,48 @@ pub unsafe extern "C" fn nvda_ia2_gecko_backend_destroy(
         return;
     }
     drop(unsafe { Box::from_raw(state as *mut GeckoBackendState) });
+}
+
+/// Address of this backend's embedded Rust `storage::Buffer`. Backs
+/// `GeckoVBufBackend_t::getRustStorageBuffer` (routed through
+/// `nvda_ia2_gecko_backend_get_buffer`) and, transitively, the
+/// vbufRemote read RPCs and the update orchestration. Present in both
+/// feature configs; the buffer is only *live* once
+/// `direct_rust_storage` is enabled (Stage D).
+///
+/// # Safety
+///
+/// `state` must be a valid `GeckoBackendState*` from
+/// [`nvda_ia2_gecko_backend_create`]. The returned pointer is valid
+/// for as long as the `GeckoBackendState` lives and must only be
+/// dereferenced under the backend lock.
+#[no_mangle]
+pub unsafe extern "C" fn nvda_ia2_gecko_backend_get_buffer(
+    state: *mut c_void,
+) -> *mut Buffer {
+    if state.is_null() {
+        return core::ptr::null_mut();
+    }
+    let state = unsafe { &mut *(state as *mut GeckoBackendState) };
+    &mut state.buffer as *mut Buffer
+}
+
+/// Clear this backend's embedded Rust `storage::Buffer`. Called from
+/// the gecko terminate / defunct-document paths (Phase 6e, Decision 5)
+/// so the Rust tree is emptied alongside the C++ storage.
+///
+/// # Safety
+///
+/// `state` must be a valid `GeckoBackendState*`.
+#[no_mangle]
+pub unsafe extern "C" fn nvda_ia2_gecko_backend_clear_buffer(
+    state: *mut c_void,
+) {
+    if state.is_null() {
+        return;
+    }
+    let state = unsafe { &mut *(state as *mut GeckoBackendState) };
+    state.buffer.clear();
 }
 
 /// Read accessor: `1` when the cached toolkit name is `"Chrome"`,
@@ -244,6 +297,150 @@ pub unsafe extern "C" fn nvda_ia2_gecko_backend_render(
     };
     // `acc` drops here -- IAccessible2's Drop runs Release, balancing
     // the AddRef from from_identifier.
+}
+
+/// Drain/render/merge orchestration over the embedded Rust
+/// `state.buffer`. Backs `GeckoVBufBackend_t::update()` once gecko
+/// overrides `update()` at the flip (Phase 6e, Decision 3). Mirrors
+/// `nvda_vbuf::backend::update` (and the C++ `VBufBackend_t::update`)
+/// but in raw-pointer form so the cross-buffer reuse lookups
+/// (`fill_vbuf` querying `state.buffer` while writing a temp buffer)
+/// don't require a competing `&mut state.buffer` borrow across the
+/// render call.
+///
+/// The `nvdaControllerInternal_vbufChangeNotify` call is deliberately
+/// left to the C++ caller (it's Win32 integration, not storage), exactly
+/// as `nvda_vbuf::backend::update`'s doc-comment notes.
+///
+/// # Safety
+///
+/// * `state` must be a valid `GeckoBackendState*`.
+/// * `backend` must be a valid `VBufBackend_t*`.
+/// * Must run on the render thread with the backend lock held (the C++
+///   `update()` override acquires it), so no other thread touches
+///   `state.buffer` for the duration.
+#[cfg(feature = "direct_rust_storage")]
+#[no_mangle]
+pub unsafe extern "C" fn nvda_ia2_gecko_backend_update(
+    state: *mut c_void,
+    backend: *mut c_void,
+) {
+    if state.is_null() || backend.is_null() {
+        return;
+    }
+    let state = unsafe { &mut *(state as *mut GeckoBackendState) };
+    let backend_h = VbufBackend(backend);
+    let root_doc_handle = unsafe { backend_h.root_doc_handle() };
+    let root_id = unsafe { backend_h.root_id() };
+
+    // Initial render: an empty buffer is rendered straight into
+    // `state.buffer` (it has no content to displace).
+    if !state.buffer.has_content() {
+        let acc = match unsafe { from_identifier(root_doc_handle, root_id) } {
+            Some(a) => a,
+            None => return,
+        };
+        state.init_toolkit_name(&acc);
+        let is_chrome = state.is_chrome();
+        // Take the raw pointer only now, right before the render, so no
+        // `&mut state` reborrow (init_toolkit_name above) invalidates it.
+        let main_ptr: *mut Buffer = &mut state.buffer as *mut Buffer;
+        let ctx = FillVBufCtx {
+            backend: backend_h,
+            main: VbufBuffer(main_ptr),
+            root_id,
+            is_chrome,
+        };
+        let _ = unsafe {
+            fill_vbuf(
+                &acc,
+                VbufBuffer(main_ptr),
+                None,
+                None,
+                None,
+                0,
+                None,
+                false,
+                &ctx,
+            )
+        };
+        return;
+    }
+
+    // Re-render path: drain pending invalidations into the working
+    // list, re-render each into its own temp buffer (reuse queries
+    // `state.buffer` via `ctx.main`), then atomically merge.
+    let is_chrome = state.is_chrome();
+    // From here on `state.buffer` is reached *only* through `main_ptr`
+    // so a single raw-pointer provenance covers every access and no
+    // stacked `&mut state.buffer` borrow crosses a `fill_vbuf` call.
+    let main_ptr: *mut Buffer = &mut state.buffer as *mut Buffer;
+    let working_keys = unsafe { (*main_ptr).take_pending_into_working() };
+    let mut map: Vec<(NodeKey, Buffer)> = Vec::new();
+    for key in working_keys {
+        // Identifier of the invalidated subtree root, looked up from
+        // main. Skip stale keys (a prior cascade may have removed one).
+        let identifier =
+            match unsafe { (*main_ptr).identifier_of_control_field_node(key) } {
+                Some(i) => i,
+                None => continue,
+            };
+        let acc = match unsafe {
+            from_identifier(identifier.doc_handle, identifier.id)
+        } {
+            Some(a) => a,
+            None => continue,
+        };
+        let mut temp = Buffer::new();
+        let temp_ptr: *mut Buffer = &mut temp as *mut Buffer;
+        let ctx = FillVBufCtx {
+            backend: backend_h,
+            main: VbufBuffer(main_ptr),
+            root_id,
+            is_chrome,
+        };
+        let _ = unsafe {
+            fill_vbuf(
+                &acc,
+                VbufBuffer(temp_ptr),
+                None,
+                None,
+                None,
+                0,
+                None,
+                false,
+                &ctx,
+            )
+        };
+        // `temp` is moved into `map` (its arena lives on the heap, so
+        // the move is address-stable for the stored nodes); `temp_ptr`
+        // is not used past this point.
+        map.push((key, temp));
+    }
+    unsafe { (*main_ptr).clear_working() };
+    unsafe { (*main_ptr).replace_subtrees(map) };
+}
+
+/// Dormant feature-off counterpart of the update orchestration. Gecko
+/// does not override `update()` in the feature-off build, so the C++
+/// side never routes through this extern; it exists only so the symbol
+/// is present and the crate links in both configs. Must never be called
+/// in the feature-off build.
+///
+/// # Safety
+///
+/// Never called in the feature-off build; the arguments are ignored.
+#[cfg(not(feature = "direct_rust_storage"))]
+#[no_mangle]
+pub unsafe extern "C" fn nvda_ia2_gecko_backend_update(
+    _state: *mut c_void,
+    _backend: *mut c_void,
+) {
+    debug_assert!(
+        false,
+        "nvda_ia2_gecko_backend_update called in the feature-off build \
+         (direct_rust_storage disabled); gecko must not override update()"
+    );
 }
 
 /// C-callable replacement for the body of

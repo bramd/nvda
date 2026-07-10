@@ -8,6 +8,17 @@ edition = "2021"
 # `rlib` so the unit tests in this crate can build a test binary.
 crate-type = ["staticlib", "rlib"]
 
+[features]
+# Off by default -- nvda_ia2 ships feature-OFF, rendering through the
+# C-shim into the C++ VBufStorage_buffer_t. Enabling it (the Phase 6e
+# flip, Stage D) forwards to nvda_vbuf's `direct_rust_storage` so the
+# Rust-backed newtypes and this crate's own cfg-gated code (the gecko
+# update orchestration and `FillVBufCtx.main`) switch on coherently as
+# one unit. Declared now (Stage B) so those cfg-gates are meaningful;
+# not added to any default or dependency `features` list, so the shipped
+# feature-off build is unaffected.
+direct_rust_storage = ["nvda_vbuf/direct_rust_storage"]
+
 [dependencies.nvda_vbuf]
 path = "../nvda_vbuf"
 

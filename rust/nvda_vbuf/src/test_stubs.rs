@@ -234,3 +234,15 @@ pub unsafe extern "C" fn vbuf_backend_pending_invalid_subtrees_empty(
 ) -> i32 {
     unimplemented!("vbuf_backend_pending_invalid_subtrees_empty test stub");
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn vbuf_backend_request_update(_backend: *mut c_void) {
+    unimplemented!("vbuf_backend_request_update test stub");
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn vbuf_backend_get_rust_storage_buffer(
+    _backend: *mut c_void,
+) -> *mut c_void {
+    unimplemented!("vbuf_backend_get_rust_storage_buffer test stub");
+}

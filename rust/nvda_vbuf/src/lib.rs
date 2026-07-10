@@ -75,6 +75,15 @@ unsafe extern "C" {
     pub fn vbuf_backend_pending_invalid_subtrees_empty(
         backend: *mut c_void,
     ) -> i32;
+
+    // Phase 6e (Stage A c_shim helpers). These stay routed to the
+    // C-shim in *both* configs: they arm / query the render-thread
+    // machinery, which is Win32-side C++ regardless of where the tree
+    // is stored, and neither constructs nor consumes node identity.
+    pub fn vbuf_backend_request_update(backend: *mut c_void);
+    pub fn vbuf_backend_get_rust_storage_buffer(
+        backend: *mut c_void,
+    ) -> *mut c_void;
 }
 
 // Buffer/node externs (and the backend externs that traffic in node
@@ -487,6 +496,72 @@ impl VbufBuffer {
     }
 }
 
+/// Direct-storage-only cross-buffer reuse, re-homing the
+/// `VbufBackend::reuse_existing_node` path (compiled out under the
+/// feature) onto the Rust `Buffer` for Phase 6e. See Decision 4 of
+/// `docs/plans/2026-07-11-rust-vbuf-6e-design.md`.
+#[cfg(feature = "direct_rust_storage")]
+impl VbufBuffer {
+    /// Look up a control field node in **this** (the live / "main")
+    /// buffer that is safe to reuse while `temp` re-renders a subtree.
+    /// `parent` and `previous` are nodes in `temp` (that's where the
+    /// new render is going); `(doc_handle, id)` is the identifier being
+    /// rendered.
+    ///
+    /// Delegates to [`storage::Buffer::reuse_existing_node_in_render`],
+    /// whose side effect — erasing an already-invalid match from the
+    /// working list so the in-flight render takes responsibility for
+    /// it — mirrors the C++ `reuseExistingNodeInRender` contract.
+    ///
+    /// **Ownership of the returned handle:** the reused node physically
+    /// lives in `self` (main), never in `temp`, so the returned
+    /// [`VbufControlFieldNode`]'s `buffer` back-pointer is `self.0`.
+    /// `fillVBuf` immediately feeds it to
+    /// [`VbufBuffer::add_reference_node`] on `temp`, which reads the
+    /// identifier from the referenced node's *own* (main) buffer and
+    /// stores the main-buffer key verbatim; `replace_subtrees` later
+    /// resolves that reference by moving the subtree out of main. This
+    /// matches the C++ where `reuseExistingNodeInRender` returns a node
+    /// belonging to `this` (the backend/main buffer) that is then
+    /// handed to `temp->addReferenceNodeToBuffer`.
+    ///
+    /// # Safety
+    ///
+    /// `self` (main) and `temp` must both be live and must be **distinct**
+    /// allocations (an initial render never reaches here because the
+    /// render buffer *is* main). `parent` / `previous`, when `Some`,
+    /// must be live nodes in `temp`.
+    pub unsafe fn reuse_existing_node_in_render(
+        self,
+        temp: VbufBuffer,
+        parent: Option<VbufControlFieldNode>,
+        previous: Option<VbufFieldNode>,
+        doc_handle: i32,
+        id: i32,
+    ) -> Option<VbufControlFieldNode> {
+        debug_assert!(
+            !core::ptr::eq(self.0 as *const Buffer, temp.0 as *const Buffer),
+            "reuse_existing_node_in_render requires distinct main/temp \
+             buffers",
+        );
+        let main = unsafe { &mut *self.0 };
+        let temp_ref = unsafe { &*temp.0 };
+        main.reuse_existing_node_in_render(
+            temp_ref,
+            parent.map(|p| p.0.key),
+            previous.map(|p| p.0.key),
+            doc_handle,
+            id,
+        )
+        .map(|key| {
+            VbufControlFieldNode(NodeRef {
+                buffer: self.0,
+                key,
+            })
+        })
+    }
+}
+
 impl VbufFieldNode {
     /// Add or replace an attribute. Returns `true` on success.
     ///
@@ -896,6 +971,34 @@ impl VbufBackend {
         unsafe { vbuf_backend_pending_invalid_subtrees_empty(self.0) != 0 }
     }
 
+    /// Ask the backend to re-render any invalid subtrees on the next
+    /// render-thread tick (arms the Win32 timer via `requestUpdate`).
+    /// Used by a Rust-side invalidation (Phase 6e's WinEvent dispatch)
+    /// that has already invalidated the backend's Rust `storage::Buffer`
+    /// directly and now needs the render thread to pick it up.
+    ///
+    /// # Safety
+    ///
+    /// `self` must be a live backend; must be called on the render
+    /// thread.
+    pub unsafe fn request_update(self) {
+        unsafe { vbuf_backend_request_update(self.0) }
+    }
+
+    /// The backend's embedded Rust `storage::Buffer`, or null when the
+    /// backend stores its tree in the C++ `VBufStorage_buffer_t`.
+    /// Returned as a raw `*mut c_void`; the caller casts to
+    /// `*mut storage::Buffer`. Lets `nvda_ia2` reach the live buffer
+    /// from a bare `VBufBackend_t*` where it lacks the
+    /// `GeckoBackendState`.
+    ///
+    /// # Safety
+    ///
+    /// `self` must be a live backend.
+    pub unsafe fn get_rust_storage_buffer(self) -> *mut c_void {
+        unsafe { vbuf_backend_get_rust_storage_buffer(self.0) }
+    }
+
     /// Mark `node`'s subtree for re-render on the next update tick.
     ///
     /// Only available when `direct_rust_storage` is **off**: under the
@@ -1135,6 +1238,96 @@ mod direct_tests {
             assert!(temp
                 .handle()
                 .is_node_in_buffer(reference));
+        }
+    }
+
+    #[test]
+    fn reuse_existing_node_returns_main_node() {
+        // Main holds a rendered tree: root (1,1) -> child (1,2).
+        // Temp is mid-render with a fresh root (1,1). Reusing (1,2)
+        // returns a handle pointing INTO main at the existing child.
+        let main = OwnedBuffer::new();
+        let temp = OwnedBuffer::new();
+        unsafe {
+            let root = main
+                .handle()
+                .add_control_field_node(None, None, 1, 1, true)
+                .expect("main root");
+            let child = main
+                .handle()
+                .add_control_field_node(Some(root), None, 1, 2, false)
+                .expect("main child");
+            main.handle()
+                .add_text_field_node(Some(child), None, &w("hi"))
+                .expect("child text");
+
+            let temp_root = temp
+                .handle()
+                .add_control_field_node(None, None, 1, 1, true)
+                .expect("temp root");
+
+            let reused = main
+                .handle()
+                .reuse_existing_node_in_render(
+                    temp.handle(),
+                    Some(temp_root),
+                    None,
+                    1,
+                    2,
+                )
+                .expect("reuse");
+            // The returned handle owns into MAIN, not temp, and
+            // identifies the existing child.
+            assert_eq!(reused.0.buffer, main.0);
+            assert_eq!(reused.0.key, child.0.key);
+            // Feeding it to add_reference_node on temp builds a live
+            // reference node there (the fillVBuf block1 sequence).
+            let reference = temp
+                .handle()
+                .add_reference_node(Some(temp_root), None, reused)
+                .expect("reference");
+            assert!(temp.handle().is_node_in_buffer(reference));
+        }
+    }
+
+    #[test]
+    fn reuse_existing_node_erases_from_working_and_refuses() {
+        // When the candidate is already in main's working list (it was
+        // invalidated this tick), reuse refuses (returns None) AND
+        // removes it from working so the in-flight render owns it.
+        let main = OwnedBuffer::new();
+        let temp = OwnedBuffer::new();
+        unsafe {
+            let root = main
+                .handle()
+                .add_control_field_node(None, None, 1, 1, true)
+                .expect("main root");
+            let child = main
+                .handle()
+                .add_control_field_node(Some(root), None, 1, 2, false)
+                .expect("main child");
+            // Invalidate the child and promote pending -> working.
+            // Each statement takes a fresh, short-lived borrow so no
+            // `&mut` outlives the reuse call below.
+            (*main.0).invalidate_subtree(child.0.key);
+            (*main.0).take_pending_into_working();
+            assert!(!(*main.0).working_invalid_empty());
+
+            let temp_root = temp
+                .handle()
+                .add_control_field_node(None, None, 1, 1, true)
+                .expect("temp root");
+
+            let reused = main.handle().reuse_existing_node_in_render(
+                temp.handle(),
+                Some(temp_root),
+                None,
+                1,
+                2,
+            );
+            assert!(reused.is_none());
+            // The candidate was erased from the working list.
+            assert!((*main.0).working_invalid_empty());
         }
     }
 }
