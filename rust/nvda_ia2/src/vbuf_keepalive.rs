@@ -43,6 +43,8 @@ const NVDA_VBUF_EXTERN_API_ADDRS: &[*const ()] = &[
     extern_api::nvda_vbuf_buffer_is_node_in_buffer as *const (),
     extern_api::nvda_vbuf_buffer_locate_control_field_node_at_offset
         as *const (),
+    extern_api::nvda_vbuf_buffer_locate_text_field_node_at_offset
+        as *const (),
     extern_api::nvda_vbuf_buffer_find_node_by_attributes as *const (),
     extern_api::nvda_vbuf_buffer_field_node_offsets as *const (),
     extern_api::nvda_vbuf_buffer_is_field_node_at_offset as *const (),
@@ -105,7 +107,7 @@ mod tests {
         // Sanity check: bumping NVDA_VBUF_EXTERN_API_ADDRS is the
         // hook that catches "you added a new nvda_vbuf_* function and
         // forgot the keepalive entry".
-        assert_eq!(NVDA_VBUF_EXTERN_API_ADDRS.len(), 37);
+        assert_eq!(NVDA_VBUF_EXTERN_API_ADDRS.len(), 38);
         for (i, &p) in NVDA_VBUF_EXTERN_API_ADDRS.iter().enumerate() {
             assert!(!p.is_null(), "entry {} is null", i);
         }
@@ -118,7 +120,7 @@ mod tests {
             nvda_ia2_nvda_vbuf_extern_api_addrs(&mut count)
         };
         assert!(!ptr.is_null());
-        assert_eq!(count, 37);
+        assert_eq!(count, 38);
     }
 
     /// Smoke-test that the table actually points at functioning

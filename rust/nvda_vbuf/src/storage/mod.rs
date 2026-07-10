@@ -46,6 +46,18 @@ pub struct LocateControlFieldResult {
     pub id: i32,
 }
 
+/// Result of `Buffer::buffer_locate_text_field_node_at_offset`. Holds
+/// the text-field node that contains the requested offset together
+/// with its `(start, end)` range in the buffer's rendered text. Unlike
+/// [`LocateControlFieldResult`] there is no `(docHandle, ID)` -- text
+/// field nodes carry no identifier.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct LocateTextFieldResult {
+    pub node: NodeKey,
+    pub start: i32,
+    pub end: i32,
+}
+
 /// Direction for an attribute search. Mirrors
 /// `VBufStorage_findDirection_t` in `nvdaHelper/vbufBase/storage.h`.
 /// The discriminants match the C++ enum order (and the constants in
@@ -1510,6 +1522,39 @@ impl Buffer {
         self.root.is_some()
     }
 
+    /// Buffer-level wrapper that finds the text-field node at the
+    /// given `offset`, returning it with its `(start, end)` range in
+    /// the buffer's rendered text. Mirrors
+    /// `VBufStorage_buffer_t::locateTextFieldNodeAtOffset`
+    /// (`nvdaHelper/vbufBase/storage.cpp:865`), the public buffer
+    /// method backing `VBufRemote_locateTextFieldNodeAtOffset`.
+    ///
+    /// This is the buffer-entry counterpart to the recursive
+    /// [`Buffer::locate_text_field_node_at_offset`] subtree helper --
+    /// the same `buffer_*` / bare naming split used by
+    /// [`Buffer::buffer_get_text_in_range`] vs
+    /// [`Buffer::get_text_in_range`].
+    ///
+    /// Returns `None` for an empty buffer or an out-of-range `offset`
+    /// (matching the C++ `offset < 0 || offset >= getTextLength()`
+    /// guard). Where the C++ would `nhAssert` on an internal failure
+    /// to locate a node under an in-range offset, the Rust returns
+    /// `None`.
+    pub fn buffer_locate_text_field_node_at_offset(
+        &self,
+        offset: i32,
+    ) -> Option<LocateTextFieldResult> {
+        let root = self.root?;
+        if offset < 0 || offset >= self.text_length() {
+            return None;
+        }
+        let (node, rel_within_text) =
+            self.locate_text_field_node_at_offset(root, offset)?;
+        let start = offset - rel_within_text;
+        let end = start + self.nodes[node].length;
+        Some(LocateTextFieldResult { node, start, end })
+    }
+
     /// Find the deepest control field that contains `offset`. The
     /// result is the immediate parent of the text-field at that
     /// offset, plus that parent's `(start, end)` range and its
@@ -2631,6 +2676,46 @@ mod tests {
         );
         // offset >= total length -> None
         assert_eq!(b.locate_text_field_node_at_offset(root, 5), None);
+    }
+
+    #[test]
+    fn buffer_locate_text_field_node_at_offset_returns_node_and_range() {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        // Nest t2 under an inner control field so the text node's
+        // buffer start differs from its offset within its parent.
+        let t1 = b.add_text_field_node(Some(root), None, w("abc")).unwrap();
+        let inner = b
+            .add_control_field_node(Some(root), Some(t1), cf(1, 2), false)
+            .unwrap();
+        let t2 = b.add_text_field_node(Some(inner), None, w("de")).unwrap();
+        // Empty buffer -> None.
+        assert_eq!(Buffer::new().buffer_locate_text_field_node_at_offset(0), None);
+        // offset 0 -> t1 spanning [0, 3).
+        assert_eq!(
+            b.buffer_locate_text_field_node_at_offset(0),
+            Some(LocateTextFieldResult { node: t1, start: 0, end: 3 })
+        );
+        // offset 2 still inside t1 -> same [0, 3).
+        assert_eq!(
+            b.buffer_locate_text_field_node_at_offset(2),
+            Some(LocateTextFieldResult { node: t1, start: 0, end: 3 })
+        );
+        // offset 3 -> t2 spanning [3, 5) (buffer-absolute, not
+        // parent-relative).
+        assert_eq!(
+            b.buffer_locate_text_field_node_at_offset(3),
+            Some(LocateTextFieldResult { node: t2, start: 3, end: 5 })
+        );
+        assert_eq!(
+            b.buffer_locate_text_field_node_at_offset(4),
+            Some(LocateTextFieldResult { node: t2, start: 3, end: 5 })
+        );
+        // Out-of-range offsets -> None.
+        assert_eq!(b.buffer_locate_text_field_node_at_offset(5), None);
+        assert_eq!(b.buffer_locate_text_field_node_at_offset(-1), None);
     }
 
     #[test]

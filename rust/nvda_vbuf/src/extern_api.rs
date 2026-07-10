@@ -363,6 +363,41 @@ pub unsafe extern "C" fn nvda_vbuf_buffer_locate_control_field_node_at_offset(
     key_to_ffi(r.node)
 }
 
+/// Find the text field node containing `offset`. On success, returns
+/// the node's FFI key and writes its `(start, end)` offsets to the OUT
+/// params if non-null. Returns `0` (leaving the OUT params untouched)
+/// for an empty buffer or an out-of-range `offset`.
+///
+/// Mirrors `VBufRemote_locateTextFieldNodeAtOffset` /
+/// `VBufStorage_buffer_t::locateTextFieldNodeAtOffset`.
+///
+/// # Safety
+///
+/// `buffer` must be a live buffer pointer; OUT params, when non-null,
+/// must point to writable `i32` storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nvda_vbuf_buffer_locate_text_field_node_at_offset(
+    buffer: *const Buffer,
+    offset: i32,
+    out_start: *mut i32,
+    out_end: *mut i32,
+) -> u64 {
+    let b = unsafe { buf_ref(buffer) };
+    let r = match b.buffer_locate_text_field_node_at_offset(offset) {
+        Some(r) => r,
+        None => return NVDA_VBUF_NODE_NONE,
+    };
+    unsafe {
+        if !out_start.is_null() {
+            *out_start = r.start;
+        }
+        if !out_end.is_null() {
+            *out_end = r.end;
+        }
+    }
+    key_to_ffi(r.node)
+}
+
 /// Find a field node whose attributes match `regexp`, searching from
 /// `offset` in `direction` (`0` = forward, `1` = back, `2` = up,
 /// matching `VBufStorage_findDirection_t`). `offset` of `-1` searches
@@ -1196,6 +1231,56 @@ mod tests {
                 ),
                 NVDA_VBUF_NODE_NONE
             );
+        }
+    }
+
+    #[test]
+    fn locate_text_field_at_offset_writes_out_params() {
+        let ob = OwnedBuffer::new();
+        let b = ob.ptr();
+        unsafe {
+            let root = nvda_vbuf_buffer_add_control_field_node(
+                b, 0, 0, 1, 1, 1,
+            );
+            let t1 = nvda_vbuf_buffer_add_text_field_node(
+                b,
+                root,
+                0,
+                w("abc").as_ptr(),
+                3,
+            );
+            let inner = nvda_vbuf_buffer_add_control_field_node(
+                b, root, t1, 1, 2, 0,
+            );
+            let text = w("de");
+            let t2 = nvda_vbuf_buffer_add_text_field_node(
+                b,
+                inner,
+                0,
+                text.as_ptr(),
+                text.len(),
+            );
+            // offset 0 lands in t1 -> [0, 3).
+            let (mut s, mut e) = (-1, -1);
+            let k0 = nvda_vbuf_buffer_locate_text_field_node_at_offset(
+                b, 0, &mut s, &mut e,
+            );
+            assert_eq!(k0, t1);
+            assert_eq!((s, e), (0, 3));
+            // offset 3 lands in t2 -> buffer-absolute [3, 5).
+            let (mut s2, mut e2) = (-1, -1);
+            let k3 = nvda_vbuf_buffer_locate_text_field_node_at_offset(
+                b, 3, &mut s2, &mut e2,
+            );
+            assert_eq!(k3, t2);
+            assert_eq!((s2, e2), (3, 5));
+            // Out of range -> 0, OUT params untouched.
+            let (mut s3, mut e3) = (-9, -9);
+            let miss = nvda_vbuf_buffer_locate_text_field_node_at_offset(
+                b, 99, &mut s3, &mut e3,
+            );
+            assert_eq!(miss, NVDA_VBUF_NODE_NONE);
+            assert_eq!((s3, e3), (-9, -9));
         }
     }
 
