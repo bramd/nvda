@@ -21,6 +21,7 @@ pub use node::{ControlFieldData, FieldNodeKind, Node, NodeKey, TextFieldData};
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use regex::Regex;
 use slotmap::SlotMap;
 
 /// The `(docHandle, ID)` pair that uniquely identifies a control
@@ -43,6 +44,33 @@ pub struct LocateControlFieldResult {
     pub end: i32,
     pub doc_handle: i32,
     pub id: i32,
+}
+
+/// Direction for an attribute search. Mirrors
+/// `VBufStorage_findDirection_t` in `nvdaHelper/vbufBase/storage.h`.
+/// The discriminants match the C++ enum order (and the constants in
+/// `source/virtualBuffers/__init__.py`): `forward = 0`, `back = 1`,
+/// `up = 2`.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum FindDirection {
+    /// Depth-first forward from (but excluding) the node at the start
+    /// offset.
+    Forward,
+    /// Depth-first backward from (but excluding) the node at the start
+    /// offset, skipping the enclosing parent match at the offset.
+    Back,
+    /// Walk up the ancestor chain looking for a matching enclosing
+    /// node.
+    Up,
+}
+
+/// Result of [`Buffer::find_node_by_attributes`]: the matching node
+/// plus its `(start, end)` offsets in the buffer's rendered text.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct FindNodeResult {
+    pub node: NodeKey,
+    pub start: i32,
+    pub end: i32,
 }
 
 /// Direction for tree-order traversal. Mirrors `TreeDirection` in
@@ -1529,6 +1557,245 @@ impl Buffer {
         })
     }
 
+    /// Find a field node whose attributes match `regexp`, searching
+    /// from `offset` in the given `direction`. Mirrors
+    /// `VBufStorage_buffer_t::findNodeByAttributes`
+    /// (`nvdaHelper/vbufBase/storage.cpp:973`).
+    ///
+    /// `offset` is the character offset to search from; `-1` means
+    /// "start at the root" (search the whole buffer). Any other
+    /// negative value, or an offset at/beyond the buffer's length,
+    /// yields `None`.
+    ///
+    /// `attribs` is a whitespace-separated list of attribute names
+    /// (exactly the `" ".join(reqAttrs)` string built by
+    /// `source/virtualBuffers/__init__.py::_prepareForFindByAttributes`).
+    /// For each candidate node, a `name:value;name:value;...` string
+    /// is assembled (see [`Buffer::match_attributes`]) and tested
+    /// against `regexp`.
+    ///
+    /// # Regex dialect
+    ///
+    /// The C++ original compiles `regexp` as a `std::wregex`
+    /// (ECMAScript grammar, case-sensitive) and applies it with
+    /// `std::regex_match`, i.e. the *whole* candidate string must
+    /// match. This port compiles `regexp` once with the standard
+    /// `regex` crate, wrapping it as `\A(?:<regexp>)\z` so that
+    /// `Regex::is_match` reproduces the fully-anchored `regex_match`
+    /// semantics (the `(?:...)` guards top-level alternation, which
+    /// the production patterns always contain). Matching is
+    /// case-sensitive, mirroring the C++ default.
+    ///
+    /// The production patterns (from `_prepareForFindByAttributes`)
+    /// use only alternation, non-capturing groups, character classes,
+    /// quantifiers, and `\b` word boundaries -- no backreferences or
+    /// lookaround -- so the standard `regex` crate is sufficient
+    /// (`fancy-regex` is not required). The regex is compiled once per
+    /// call, before the traversal, exactly as the C++ does; a compile
+    /// error (or non-UTF-16 `regexp`) yields `None`, mirroring the C++
+    /// `catch(...) { return NULL; }`.
+    pub fn find_node_by_attributes(
+        &self,
+        offset: i32,
+        direction: FindDirection,
+        attribs: &[u16],
+        regexp: &[u16],
+    ) -> Option<FindNodeResult> {
+        let root = self.root?;
+        if offset >= self.nodes[root].length {
+            // Empty buffer (length 0, offset >= 0) or offset past the
+            // end -> no result. Note offset == -1 always passes here.
+            return None;
+        }
+
+        // Determine the starting node and the running buffer-start
+        // offset. `bufferEnd` from the C++ is recomputed inside every
+        // direction branch before use, so it isn't tracked here.
+        let start_node;
+        let mut buffer_start;
+        if offset == -1 {
+            start_node = root;
+            buffer_start = 0;
+        } else if offset >= 0 {
+            // locate the text field node at `offset`; its global start
+            // is `offset - rel`.
+            let (text_key, rel) =
+                self.locate_text_field_node_at_offset(root, offset)?;
+            buffer_start = offset - rel;
+            start_node = text_key;
+        } else {
+            // offset < -1 is invalid.
+            return None;
+        }
+
+        // Split the attribs string at whitespace (mirrors the C++
+        // `istream_iterator<wstring>` copy into a vector).
+        let attribs_list = split_whitespace_utf16(attribs);
+
+        // Compile the regex once. `\A(?:...)\z` anchors the whole
+        // candidate string, reproducing `std::regex_match`.
+        let pattern = String::from_utf16(regexp).ok()?;
+        let regex = Regex::new(&format!(r"\A(?:{pattern})\z")).ok()?;
+
+        match direction {
+            FindDirection::Forward => {
+                let mut cursor = self.next_node_in_tree(
+                    start_node,
+                    TreeDirection::Forward,
+                    None,
+                );
+                while let Some((node, rel)) = cursor {
+                    buffer_start += rel;
+                    let length = self.nodes[node].length;
+                    let buffer_end = buffer_start + length;
+                    let n = &self.nodes[node];
+                    if length > 0
+                        && !n.is_hidden
+                        && self.match_attributes(node, &attribs_list, &regex)
+                    {
+                        return Some(FindNodeResult {
+                            node,
+                            start: buffer_start,
+                            end: buffer_end,
+                        });
+                    }
+                    cursor = self.next_node_in_tree(
+                        node,
+                        TreeDirection::Forward,
+                        None,
+                    );
+                }
+                None
+            }
+            FindDirection::Back => {
+                // Skip the first containing-parent match (the node the
+                // offset starts in, or a parent that strictly contains
+                // the offset), so "previous" doesn't return the node
+                // the caller is already inside.
+                let mut skipped_first_match = false;
+                let mut cursor = self.next_node_in_tree(
+                    start_node,
+                    TreeDirection::Back,
+                    None,
+                );
+                while let Some((node, rel)) = cursor {
+                    buffer_start += rel;
+                    let length = self.nodes[node].length;
+                    let buffer_end = buffer_start + length;
+                    let n = &self.nodes[node];
+                    if length > 0
+                        && !n.is_hidden
+                        && self.match_attributes(node, &attribs_list, &regex)
+                    {
+                        if buffer_start == offset
+                            || (!skipped_first_match
+                                && buffer_start < offset
+                                && buffer_end > offset)
+                        {
+                            skipped_first_match = true;
+                        } else {
+                            return Some(FindNodeResult {
+                                node,
+                                start: buffer_start,
+                                end: buffer_end,
+                            });
+                        }
+                    }
+                    cursor = self.next_node_in_tree(
+                        node,
+                        TreeDirection::Back,
+                        None,
+                    );
+                }
+                None
+            }
+            FindDirection::Up => {
+                // do { walk to first sibling, then step to parent } while
+                // the parent exists and is hidden or doesn't match.
+                let mut node = start_node;
+                loop {
+                    // Walk to the first sibling, decrementing
+                    // buffer_start by each sibling's length as we pass
+                    // it (mirrors the C++ comma-operator update, which
+                    // subtracts the *new* previous node's length).
+                    while let Some(prev) = self.nodes[node].previous {
+                        node = prev;
+                        buffer_start -= self.nodes[node].length;
+                    }
+                    // Step up to the parent. No parent -> no enclosing
+                    // match; return None.
+                    let parent = self.nodes[node].parent?;
+                    node = parent;
+                    let buffer_end = buffer_start + self.nodes[node].length;
+                    let n = &self.nodes[node];
+                    if !n.is_hidden
+                        && self.match_attributes(node, &attribs_list, &regex)
+                    {
+                        return Some(FindNodeResult {
+                            node,
+                            start: buffer_start,
+                            end: buffer_end,
+                        });
+                    }
+                    // else: loop again, walking up from this parent.
+                }
+            }
+        }
+    }
+
+    /// Build the `name:value;name:value;...` candidate string for
+    /// `key` and test it against `regex`. Mirrors
+    /// `VBufStorage_fieldNode_t::matchAttributes`
+    /// (`nvdaHelper/vbufBase/storage.cpp:151`).
+    ///
+    /// For each attribute name in `attribs`, the escaped name, a
+    /// `:`, the escaped attribute value (empty when the node lacks
+    /// the attribute), and a `;` are appended. A name beginning with
+    /// `parent::` (and only when the node has a parent) is looked up
+    /// on the parent node instead, with the prefix stripped. Values
+    /// are truncated to 100 UTF-16 code units before escaping, exactly
+    /// as the C++ does (`regexAttribValueLimit`).
+    fn match_attributes(
+        &self,
+        key: NodeKey,
+        attribs: &[Vec<u16>],
+        regex: &Regex,
+    ) -> bool {
+        // The max source length (in UTF-16 code units) of an attribute
+        // value included in the candidate string. The C++ truncates
+        // large values (e.g. `name`) because `regex_match` can throw
+        // on very large inputs; since matches only test non-emptiness
+        // of such values, truncation is safe.
+        const VALUE_LIMIT: usize = 100;
+        let node = &self.nodes[key];
+        let mut candidate: Vec<u16> = Vec::new();
+        for name in attribs {
+            push_escaped_attribute(&mut candidate, name, 0);
+            candidate.push(b':' as u16);
+            // A name may redirect to the parent via a `parent::`
+            // prefix at index 0 (e.g. "parent::IAccessible2::role").
+            // The redirect only applies when the node actually has a
+            // parent; otherwise the full name is looked up on the node
+            // itself (and typically won't exist), matching the C++.
+            let value = match node.parent {
+                Some(parent) if name.starts_with(&PARENT_PREFIX) => self
+                    .nodes[parent]
+                    .get_attribute(&name[PARENT_PREFIX.len()..]),
+                _ => node.get_attribute(name),
+            };
+            if let Some(val) = value {
+                push_escaped_attribute(&mut candidate, val, VALUE_LIMIT);
+            }
+            candidate.push(b';' as u16);
+        }
+        // Convert to UTF-8 for the regex. The candidate is built from
+        // BMP-heavy attribute text; `from_utf16_lossy` maps any stray
+        // unpaired surrogate to U+FFFD, which cannot spuriously match
+        // the ASCII-structured production patterns.
+        let candidate = String::from_utf16_lossy(&candidate);
+        regex.is_match(&candidate)
+    }
+
     /// Return the identifier of a control field (or reference)
     /// node, or `None` if the key is stale or the node is a text
     /// variant. Mirrors
@@ -1933,6 +2200,61 @@ fn walk_back_to_control_field(
         }
     }
     None
+}
+
+/// The `parent::` redirect prefix used by
+/// [`Buffer::match_attributes`], as UTF-16 code units.
+const PARENT_PREFIX: [u16; 8] = [
+    b'p' as u16,
+    b'a' as u16,
+    b'r' as u16,
+    b'e' as u16,
+    b'n' as u16,
+    b't' as u16,
+    b':' as u16,
+    b':' as u16,
+];
+
+/// Split a UTF-16 string on whitespace runs, dropping empty tokens.
+/// Mirrors the C++ `istream_iterator<wstring>` extraction used to
+/// split the attribs string in `findNodeByAttributes`.
+fn split_whitespace_utf16(s: &[u16]) -> Vec<Vec<u16>> {
+    let mut out: Vec<Vec<u16>> = Vec::new();
+    let mut cur: Vec<u16> = Vec::new();
+    for &c in s {
+        if is_whitespace_w(c) {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(c);
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Append `text` to `out`, backslash-escaping each `:`, `;`, and `\`.
+/// When `max_len > 0`, at most `max_len` source code units are copied
+/// (the escape backslashes don't count toward the limit). Mirrors
+/// `outputEscapedAttribute` in `nvdaHelper/vbufBase/storage.cpp:130`.
+fn push_escaped_attribute(out: &mut Vec<u16>, text: &[u16], max_len: usize) {
+    const COLON: u16 = b':' as u16;
+    const SEMI: u16 = b';' as u16;
+    const BACKSLASH: u16 = b'\\' as u16;
+    let mut count = 0usize;
+    for &c in text {
+        if c == COLON || c == SEMI || c == BACKSLASH {
+            out.push(BACKSLASH);
+        }
+        out.push(c);
+        count += 1;
+        if max_len > 0 && count == max_len {
+            break;
+        }
+    }
 }
 
 /// Borrow the underlying text of a text-field node, or `None` for
@@ -3176,5 +3498,412 @@ mod tests {
             .unwrap();
         b.clear();
         assert_eq!(b.identifier_of_control_field_node(root), None);
+    }
+
+    // ---- findNodeByAttributes ----------------------------------------
+
+    fn u(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    fn set_attr(b: &mut Buffer, key: NodeKey, name: &str, value: &str) {
+        b.get_mut(key).unwrap().add_attribute(&u(name), &u(value));
+    }
+
+    /// Three siblings under a block root:
+    ///   c1 role=heading level=1 > "Title"   [0,5)
+    ///   c2 role=paragraph        > "Body"    [5,9)
+    ///   c3 role=heading level=2  > "Sub"     [9,12)
+    /// Returns the buffer and `[c1, c2, c3]`.
+    fn build_headings() -> (Buffer, [NodeKey; 3]) {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let c1 = b
+            .add_control_field_node(Some(root), None, cf(1, 2), false)
+            .unwrap();
+        set_attr(&mut b, c1, "role", "heading");
+        set_attr(&mut b, c1, "level", "1");
+        b.add_text_field_node(Some(c1), None, u("Title")).unwrap();
+        let c2 = b
+            .add_control_field_node(Some(root), Some(c1), cf(1, 3), false)
+            .unwrap();
+        set_attr(&mut b, c2, "role", "paragraph");
+        b.add_text_field_node(Some(c2), None, u("Body")).unwrap();
+        let c3 = b
+            .add_control_field_node(Some(root), Some(c2), cf(1, 4), false)
+            .unwrap();
+        set_attr(&mut b, c3, "role", "heading");
+        set_attr(&mut b, c3, "level", "2");
+        b.add_text_field_node(Some(c3), None, u("Sub")).unwrap();
+        (b, [c1, c2, c3])
+    }
+
+    // The exact `(attribs, regexp)` a heading quick-nav search produces
+    // via `_prepareForFindByAttributes({"role": ["heading"]})`.
+    const HEADING_ATTRIBS: &str = "role";
+    const HEADING_REGEXP: &str = "role:(?:heading;)";
+
+    #[test]
+    fn find_forward_skips_start_node_and_finds_next_heading() {
+        let (b, [_c1, _c2, c3]) = build_headings();
+        // Start inside c1's text (offset 0). Forward begins at the
+        // node *after* the start node, so c1 (the heading we're in) is
+        // skipped and the next heading (c3) is returned.
+        let r = b
+            .find_node_by_attributes(
+                0,
+                FindDirection::Forward,
+                &u(HEADING_ATTRIBS),
+                &u(HEADING_REGEXP),
+            )
+            .expect("forward heading");
+        assert_eq!(r.node, c3);
+        assert_eq!((r.start, r.end), (9, 12));
+    }
+
+    #[test]
+    fn find_forward_from_minus_one_includes_first_heading() {
+        let (b, [c1, ..]) = build_headings();
+        // offset -1 starts at the root, so the very first heading (c1)
+        // is a valid result -- unlike starting at offset 0.
+        let r = b
+            .find_node_by_attributes(
+                -1,
+                FindDirection::Forward,
+                &u(HEADING_ATTRIBS),
+                &u(HEADING_REGEXP),
+            )
+            .expect("forward-from-root heading");
+        assert_eq!(r.node, c1);
+        assert_eq!((r.start, r.end), (0, 5));
+    }
+
+    #[test]
+    fn find_back_skips_containing_node_and_finds_previous_heading() {
+        let (b, [c1, _c2, _c3]) = build_headings();
+        // Start inside c3's text (offset 10, c3 spans [9,12)). Back
+        // skips c3 (the heading strictly containing the offset) and
+        // returns the previous heading c1.
+        let r = b
+            .find_node_by_attributes(
+                10,
+                FindDirection::Back,
+                &u(HEADING_ATTRIBS),
+                &u(HEADING_REGEXP),
+            )
+            .expect("back heading");
+        assert_eq!(r.node, c1);
+        assert_eq!((r.start, r.end), (0, 5));
+    }
+
+    #[test]
+    fn find_no_match_returns_none() {
+        let (b, _) = build_headings();
+        assert!(b
+            .find_node_by_attributes(
+                -1,
+                FindDirection::Forward,
+                &u("role"),
+                &u("role:(?:banner;)"),
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn find_empty_buffer_returns_none() {
+        let b = Buffer::new();
+        assert!(b
+            .find_node_by_attributes(
+                -1,
+                FindDirection::Forward,
+                &u(HEADING_ATTRIBS),
+                &u(HEADING_REGEXP),
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn find_offset_past_end_returns_none() {
+        let (b, _) = build_headings();
+        // root length is 12; offset == length and beyond both fail.
+        for offset in [12, 13, 100] {
+            assert!(b
+                .find_node_by_attributes(
+                    offset,
+                    FindDirection::Forward,
+                    &u(HEADING_ATTRIBS),
+                    &u(HEADING_REGEXP),
+                )
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn find_invalid_offset_returns_none() {
+        let (b, _) = build_headings();
+        // offset < -1 is invalid.
+        assert!(b
+            .find_node_by_attributes(
+                -2,
+                FindDirection::Forward,
+                &u(HEADING_ATTRIBS),
+                &u(HEADING_REGEXP),
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn find_bad_regexp_returns_none() {
+        let (b, _) = build_headings();
+        // An unbalanced group fails to compile -> None (mirrors the
+        // C++ catch that returns NULL).
+        assert!(b
+            .find_node_by_attributes(
+                -1,
+                FindDirection::Forward,
+                &u("role"),
+                &u("role:(?:heading;"),
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn find_skips_hidden_nodes() {
+        let (mut b, [_c1, _c2, c3]) = build_headings();
+        // Hide the second heading; a forward search from the root now
+        // must not return it.
+        b.get_mut(c3).unwrap().is_hidden = true;
+        // From offset 0 (inside c1) there is no other visible heading.
+        assert!(b
+            .find_node_by_attributes(
+                0,
+                FindDirection::Forward,
+                &u(HEADING_ATTRIBS),
+                &u(HEADING_REGEXP),
+            )
+            .is_none());
+    }
+
+    /// Nested layout to exercise the "up" direction:
+    ///   c_region role=main
+    ///     "aa"                       [0,2)
+    ///     c_h role=heading > "bb"    [2,4)
+    /// Root carries role=document.
+    fn build_nested() -> (Buffer, NodeKey, NodeKey) {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        set_attr(&mut b, root, "role", "document");
+        let c_region = b
+            .add_control_field_node(Some(root), None, cf(1, 2), false)
+            .unwrap();
+        set_attr(&mut b, c_region, "role", "main");
+        // "aa" is the region's first child; c_h follows it.
+        let t_aa =
+            b.add_text_field_node(Some(c_region), None, u("aa")).unwrap();
+        let c_h = b
+            .add_control_field_node(
+                Some(c_region),
+                Some(t_aa),
+                cf(1, 3),
+                false,
+            )
+            .unwrap();
+        set_attr(&mut b, c_h, "role", "heading");
+        b.add_text_field_node(Some(c_h), None, u("bb")).unwrap();
+        (b, c_region, c_h)
+    }
+
+    #[test]
+    fn find_up_returns_nearest_matching_ancestor() {
+        let (b, _c_region, c_h) = build_nested();
+        // From offset 2 (start of c_h's "bb"), searching up for a
+        // heading returns the immediate parent c_h.
+        let r = b
+            .find_node_by_attributes(
+                2,
+                FindDirection::Up,
+                &u("role"),
+                &u("role:(?:heading;)"),
+            )
+            .expect("up heading");
+        assert_eq!(r.node, c_h);
+        assert_eq!((r.start, r.end), (2, 4));
+    }
+
+    #[test]
+    fn find_up_walks_past_non_matching_ancestor_and_adjusts_start() {
+        let (b, c_region, _c_h) = build_nested();
+        // From offset 2, searching up for role=main skips c_h (heading)
+        // and reaches c_region, whose start offset is 0 -- verifying
+        // the buffer_start decrement across the preceding "aa" sibling.
+        let r = b
+            .find_node_by_attributes(
+                2,
+                FindDirection::Up,
+                &u("role"),
+                &u("role:(?:main;)"),
+            )
+            .expect("up region");
+        assert_eq!(r.node, c_region);
+        assert_eq!((r.start, r.end), (0, 4));
+    }
+
+    #[test]
+    fn find_up_no_ancestor_match_returns_none() {
+        let (b, _c_region, _c_h) = build_nested();
+        assert!(b
+            .find_node_by_attributes(
+                2,
+                FindDirection::Up,
+                &u("role"),
+                &u("role:(?:banner;)"),
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn find_up_from_minus_one_returns_none() {
+        // offset -1 starts at the root, which has no parent, so "up"
+        // immediately runs out of ancestors.
+        let (b, _) = build_headings();
+        assert!(b
+            .find_node_by_attributes(
+                -1,
+                FindDirection::Up,
+                &u(HEADING_ATTRIBS),
+                &u(HEADING_REGEXP),
+            )
+            .is_none());
+    }
+
+    /// Two landmark siblings, to exercise the word-match and
+    /// not-empty regex dialects produced by
+    /// `_prepareForFindByAttributes`:
+    ///   c1 landmark=mainland          (no name)   [0,2)
+    ///   c2 landmark="banner main area" name=Skip  [2,4)
+    fn build_landmarks() -> (Buffer, NodeKey, NodeKey) {
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let c1 = b
+            .add_control_field_node(Some(root), None, cf(1, 2), false)
+            .unwrap();
+        set_attr(&mut b, c1, "landmark", "mainland");
+        b.add_text_field_node(Some(c1), None, u("aa")).unwrap();
+        let c2 = b
+            .add_control_field_node(Some(root), Some(c1), cf(1, 3), false)
+            .unwrap();
+        set_attr(&mut b, c2, "landmark", "banner main area");
+        set_attr(&mut b, c2, "name", "Skip");
+        b.add_text_field_node(Some(c2), None, u("bb")).unwrap();
+        (b, c1, c2)
+    }
+
+    #[test]
+    fn find_word_match_pattern_respects_word_boundaries() {
+        let (b, _c1, c2) = build_landmarks();
+        // Word-match for "main": `_prepareForFindByAttributes(
+        //   {"landmark": [VBufStorage_findMatch_word("main")]})`.
+        // Only c2 ("banner main area") matches; c1 ("mainland") does
+        // not, because "main" is not a whole word there.
+        let regexp = r"landmark:(?:\\;|[^;])*\b(?:main)\b(?:\\;|[^;])*;";
+        let r = b
+            .find_node_by_attributes(
+                -1,
+                FindDirection::Forward,
+                &u("landmark"),
+                &u(regexp),
+            )
+            .expect("word match");
+        assert_eq!(r.node, c2);
+    }
+
+    #[test]
+    fn find_not_empty_pattern_requires_a_value() {
+        let (b, _c1, c2) = build_landmarks();
+        // not-empty for "name": `_prepareForFindByAttributes(
+        //   {"name": [VBufStorage_findMatch_notEmpty]})`. c1 has no
+        // name (candidate "name:;") so is skipped; c2 has name=Skip.
+        let regexp = r"name:(?:\\;|[^;])+;";
+        let r = b
+            .find_node_by_attributes(
+                -1,
+                FindDirection::Forward,
+                &u("name"),
+                &u(regexp),
+            )
+            .expect("not-empty match");
+        assert_eq!(r.node, c2);
+    }
+
+    #[test]
+    fn find_match_any_value_pattern_and_escaping() {
+        // "match any (or no) value" pattern for an attribute, plus a
+        // value that contains an escaped semicolon, to check the
+        // escaping in the candidate string lines up with the
+        // `(?:\\;|[^;])*` the Python emits.
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let c1 = b
+            .add_control_field_node(Some(root), None, cf(1, 2), false)
+            .unwrap();
+        // A value with a raw ';' -- match_attributes escapes it to
+        // "\;", which the `\\;` alternative in the pattern matches.
+        set_attr(&mut b, c1, "data", "a;b");
+        b.add_text_field_node(Some(c1), None, u("x")).unwrap();
+        let regexp = r"data:(?:\\;|[^;])*;";
+        let r = b
+            .find_node_by_attributes(
+                -1,
+                FindDirection::Forward,
+                &u("data"),
+                &u(regexp),
+            )
+            .expect("any-value match with escaped semicolon");
+        assert_eq!(r.node, c1);
+    }
+
+    #[test]
+    fn find_multi_attrib_and_parent_prefix() {
+        // Two attributes (space-separated) plus a `parent::` redirect.
+        // Layout: parent c_row has role=row; child c_cell has
+        // role=cell. Search cells whose parent is a row.
+        let mut b = Buffer::new();
+        let root = b
+            .add_control_field_node(None, None, cf(1, 1), true)
+            .unwrap();
+        let c_row = b
+            .add_control_field_node(Some(root), None, cf(1, 2), false)
+            .unwrap();
+        set_attr(&mut b, c_row, "role", "row");
+        let c_cell = b
+            .add_control_field_node(Some(c_row), None, cf(1, 3), false)
+            .unwrap();
+        set_attr(&mut b, c_cell, "role", "cell");
+        b.add_text_field_node(Some(c_cell), None, u("data")).unwrap();
+        // attribs: "role parent::role" (names are unescaped in the
+        // attribs list). The `:` in the "parent::role" name is escaped
+        // both in the candidate string (by match_attributes) and in
+        // the regexp (by `_prepareForFindByAttributes`'s `escape`,
+        // which maps ':' -> `\\:`). The candidate for c_cell is
+        // "role:cell;parent\:\:role:row;".
+        let attribs = "role parent::role";
+        let regexp = r"role:(?:cell;)parent\\:\\:role:(?:row;)";
+        let r = b
+            .find_node_by_attributes(
+                -1,
+                FindDirection::Forward,
+                &u(attribs),
+                &u(regexp),
+            )
+            .expect("parent-prefix match");
+        assert_eq!(r.node, c_cell);
     }
 }

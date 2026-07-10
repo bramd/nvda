@@ -35,15 +35,13 @@
 //!   Phase 6e will pick the right shape.
 //! * `replace_subtrees`. Same reason -- it consumes owned temp
 //!   `Buffer`s and is exercised through `update`.
-//! * `find_node_by_attributes`. Pending a regex dependency on the
-//!   crate.
 
 use core::ffi::c_void;
 
 use slotmap::{Key, KeyData};
 
 use crate::storage::{
-    Buffer, ControlFieldIdentifier, FieldNodeKind, NodeKey,
+    Buffer, ControlFieldIdentifier, FieldNodeKind, FindDirection, NodeKey,
 };
 
 // ---------------------------------------------------------------------
@@ -360,6 +358,66 @@ pub unsafe extern "C" fn nvda_vbuf_buffer_locate_control_field_node_at_offset(
         }
         if !out_id.is_null() {
             *out_id = r.id;
+        }
+    }
+    key_to_ffi(r.node)
+}
+
+/// Find a field node whose attributes match `regexp`, searching from
+/// `offset` in `direction` (`0` = forward, `1` = back, `2` = up,
+/// matching `VBufStorage_findDirection_t`). `offset` of `-1` searches
+/// from the root of the buffer.
+///
+/// `attribs_ptr` + `attribs_len` is the whitespace-separated
+/// attribute-name list (UTF-16); `regexp_ptr` + `regexp_len` is the
+/// match pattern (UTF-16). On a hit, returns the node's FFI key and
+/// writes its `(start, end)` offsets to the OUT params (when
+/// non-null). Returns `0` (and leaves the OUT params untouched) on no
+/// match, an unknown `direction`, an invalid `offset`, or a regex
+/// that fails to compile.
+///
+/// Mirrors `VBufRemote_findNodeByAttributes` /
+/// `VBufStorage_buffer_t::findNodeByAttributes`.
+///
+/// # Safety
+///
+/// `buffer` must be a live buffer pointer; `attribs_ptr` /
+/// `regexp_ptr` must each point to at least their declared lengths of
+/// `u16`; OUT params, when non-null, must point to writable `i32`
+/// storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nvda_vbuf_buffer_find_node_by_attributes(
+    buffer: *const Buffer,
+    offset: i32,
+    direction: i32,
+    attribs_ptr: *const u16,
+    attribs_len: usize,
+    regexp_ptr: *const u16,
+    regexp_len: usize,
+    out_start: *mut i32,
+    out_end: *mut i32,
+) -> u64 {
+    let b = unsafe { buf_ref(buffer) };
+    let dir = match direction {
+        0 => FindDirection::Forward,
+        1 => FindDirection::Back,
+        2 => FindDirection::Up,
+        _ => return NVDA_VBUF_NODE_NONE,
+    };
+    let attribs =
+        unsafe { core::slice::from_raw_parts(attribs_ptr, attribs_len) };
+    let regexp =
+        unsafe { core::slice::from_raw_parts(regexp_ptr, regexp_len) };
+    let r = match b.find_node_by_attributes(offset, dir, attribs, regexp) {
+        Some(r) => r,
+        None => return NVDA_VBUF_NODE_NONE,
+    };
+    unsafe {
+        if !out_start.is_null() {
+            *out_start = r.start;
+        }
+        if !out_end.is_null() {
+            *out_end = r.end;
         }
     }
     key_to_ffi(r.node)
@@ -1336,6 +1394,108 @@ mod tests {
             // No-op setters on stale keys are harmless (don't panic).
             nvda_vbuf_node_set_is_block(b, root, 1);
             nvda_vbuf_node_set_always_rerender_descendants(b, root, 1);
+        }
+    }
+
+    #[test]
+    fn find_node_by_attributes_round_trip() {
+        let ob = OwnedBuffer::new();
+        let b = ob.ptr();
+        unsafe {
+            // root(block) > c1(role=heading)>"Title" , c2(role=link)>"link"
+            let root = nvda_vbuf_buffer_add_control_field_node(
+                b, 0, 0, 1, 1, 1,
+            );
+            let c1 = nvda_vbuf_buffer_add_control_field_node(
+                b, root, 0, 1, 2, 0,
+            );
+            let role = w("role");
+            let heading = w("heading");
+            nvda_vbuf_node_add_attribute(
+                b,
+                c1,
+                role.as_ptr(),
+                role.len(),
+                heading.as_ptr(),
+                heading.len(),
+            );
+            let title = w("Title");
+            let _ = nvda_vbuf_buffer_add_text_field_node(
+                b,
+                c1,
+                0,
+                title.as_ptr(),
+                title.len(),
+            );
+            let c2 = nvda_vbuf_buffer_add_control_field_node(
+                b, root, c1, 1, 3, 0,
+            );
+            let link = w("link");
+            nvda_vbuf_node_add_attribute(
+                b,
+                c2,
+                role.as_ptr(),
+                role.len(),
+                link.as_ptr(),
+                link.len(),
+            );
+            let txt = w("link");
+            let _ = nvda_vbuf_buffer_add_text_field_node(
+                b,
+                c2,
+                0,
+                txt.as_ptr(),
+                txt.len(),
+            );
+
+            let attribs = w("role");
+            let regexp = w("role:(?:heading;)");
+            let (mut start, mut end) = (-1i32, -1i32);
+            // Forward from root (offset -1) finds c1 (the heading).
+            let found = nvda_vbuf_buffer_find_node_by_attributes(
+                b,
+                -1,
+                0, // forward
+                attribs.as_ptr(),
+                attribs.len(),
+                regexp.as_ptr(),
+                regexp.len(),
+                &mut start,
+                &mut end,
+            );
+            assert_eq!(found, c1);
+            assert_eq!((start, end), (0, 5));
+
+            // Unknown direction -> NONE, OUT params untouched.
+            let (mut s2, mut e2) = (-7i32, -7i32);
+            let none = nvda_vbuf_buffer_find_node_by_attributes(
+                b,
+                -1,
+                9, // invalid direction
+                attribs.as_ptr(),
+                attribs.len(),
+                regexp.as_ptr(),
+                regexp.len(),
+                &mut s2,
+                &mut e2,
+            );
+            assert_eq!(none, NVDA_VBUF_NODE_NONE);
+            assert_eq!((s2, e2), (-7, -7));
+
+            // No-match pattern -> NONE.
+            let no_regexp = w("role:(?:banner;)");
+            let miss = nvda_vbuf_buffer_find_node_by_attributes(
+                b,
+                -1,
+                0,
+                attribs.as_ptr(),
+                attribs.len(),
+                no_regexp.as_ptr(),
+                no_regexp.len(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            );
+            assert_eq!(miss, NVDA_VBUF_NODE_NONE);
         }
     }
 
