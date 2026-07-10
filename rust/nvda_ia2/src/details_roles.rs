@@ -25,27 +25,6 @@ const ATTR_NAME_DETAILS_ROLES: &[u16] = &[
     b's' as u16,
 ];
 
-/// C-callable replacement. `node` is a `VBufStorage_controlFieldNode_t*`;
-/// `role_ptr` + `role_len` describe the role-name string to append.
-///
-/// # Safety
-///
-/// * `node` must be a valid `VBufStorage_controlFieldNode_t*` for the
-///   duration of the call.
-/// * `role_ptr` must point to `role_len` valid `u16`s.
-#[no_mangle]
-pub unsafe extern "C" fn nvda_ia2_extend_details_roles_attribute(
-    node: *mut core::ffi::c_void,
-    role_ptr: *const u16,
-    role_len: usize,
-) {
-    if node.is_null() || (role_len > 0 && role_ptr.is_null()) {
-        return;
-    }
-    let role = unsafe { core::slice::from_raw_parts(role_ptr, role_len) };
-    unsafe { extend_details_roles_attribute(VbufFieldNode(node), role) };
-}
-
 /// Rust-side variant for callers that already hold a `VbufFieldNode`
 /// handle (e.g. the `aria_details` port).
 ///

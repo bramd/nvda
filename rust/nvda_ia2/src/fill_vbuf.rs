@@ -37,6 +37,7 @@ use crate::acc_description::get_acc_description_native;
 use crate::aria_details::fill_vbuf_aria_details_native;
 use crate::aria_error::fill_vbuf_aria_error_native;
 use crate::attribs::parse_attribs;
+use crate::bstr::is_bstr_null;
 use crate::child_count::get_child_count_native;
 use crate::fetch::fetch_ia2_attributes_native;
 use crate::hyperlink_getter::HyperlinkGetter;
@@ -52,7 +53,7 @@ use crate::selected_item::get_selected_item;
 use crate::table_cell::{fill_table_cell_info_native, get_table_id_from_cell};
 use crate::textbox_in_combobox::get_text_box_in_combo_box;
 use nvda_vbuf::{VbufBackend, VbufBuffer, VbufControlFieldNode, VbufFieldNode};
-use windows::core::{Interface, BSTR, VARIANT};
+use windows::core::{Interface, VARIANT};
 use windows::Win32::System::Com::IDispatch;
 use windows::Win32::UI::Accessibility::{AccessibleChildren, IAccessible};
 
@@ -265,8 +266,10 @@ pub unsafe fn block1(
         }
     };
 
-    // Block 1 / step 6: IA2 attributes.
-    let attribs = fetch_ia2_attributes_native(pacc);
+    // Block 1 / step 6: IA2 attributes. A NULL BSTR (no attributes)
+    // is collapsed to an empty map here — this path doesn't need the
+    // NULL-vs-empty distinction the FFI shim preserves.
+    let attribs = fetch_ia2_attributes_native(pacc).unwrap_or_default();
     apply_ia2_attribs_to_node(new_parent_node, &attribs);
 
     // Block 1 / step 7: role + role normalization.
@@ -573,14 +576,6 @@ fn xml_roles_contains_word(
 
 /// VT_I4 raw vt code, per OAIDL.h.
 const VT_I4_RAW: u16 = 3;
-
-/// Probe whether a `BSTR` was returned NULL versus zero-length. See
-/// the same trick in `acc_description.rs`.
-fn is_bstr_null(bstr: &BSTR) -> bool {
-    let raw_ptr: *const u16 =
-        unsafe { *(bstr as *const _ as *const *const u16) };
-    raw_ptr.is_null()
-}
 
 /// Apply each `(key, val)` pair from the IA2 attributes map onto the
 /// vbuf control field node as an `IAccessible2::attribute_<key>`

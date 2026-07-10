@@ -4,6 +4,7 @@
 //! This module exposes the pure `is_empty_text` helper and the
 //! `nvda_ia2_get_text_from_iaccessible` extern C shim for C++ callers.
 
+use crate::bstr::is_bstr_null;
 use crate::interfaces::{IAccessible2, IAccessibleHypertext, IAccessibleText};
 use std::collections::BTreeMap;
 use windows::core::{Interface, BSTR, VARIANT};
@@ -289,19 +290,6 @@ fn variant_dispatch_ptr(v: &VARIANT) -> *mut core::ffi::c_void {
         return core::ptr::null_mut();
     }
     unsafe { inner.Anonymous.pdispVal }
-}
-
-/// `BSTR::is_empty()` returns true for both NULL and zero-length BSTRs.
-/// We need to distinguish: a zero-length BSTR is treated as "got the call
-/// back, but no text" (still trigger the trailing-space append at the end
-/// of the text branch) while a NULL BSTR is "the call returned nothing
-/// usable" (skip the branch entirely). Mirrors the trick used in
-/// `fetch.rs`. SAFETY: `windows::core::BSTR` is `#[repr(transparent)]`
-/// over a single `*const u16` field; verified in
-/// `windows-strings-0.1.0/src/bstr.rs:6`.
-fn is_bstr_null(bstr: &BSTR) -> bool {
-    let raw_ptr: *const u16 = unsafe { *(bstr as *const _ as *const *const u16) };
-    raw_ptr.is_null()
 }
 
 #[cfg(test)]

@@ -44,27 +44,6 @@ pub enum HeaderAxis {
     Row = 1,
 }
 
-/// C-callable replacement for `getTableIDFromCell`. Returns 0 if any
-/// step in the COM chain fails (matching the C++ behavior).
-///
-/// # Safety
-///
-/// `cell` must be a valid `IAccessibleTableCell*` for the duration.
-#[no_mangle]
-pub unsafe extern "C" fn nvda_ia2_get_table_id_from_cell(
-    cell: *mut core::ffi::c_void,
-) -> i32 {
-    if cell.is_null() {
-        return 0;
-    }
-    let cell_ref: &IAccessibleTableCell =
-        match IAccessibleTableCell::from_raw_borrowed(&cell) {
-            Some(c) => c,
-            None => return 0,
-        };
-    get_table_id_from_cell(cell_ref).unwrap_or(0)
-}
-
 /// Rust-native variant of `getTableIDFromCell` for in-crate callers.
 pub(crate) fn get_table_id_from_cell(cell: &IAccessibleTableCell) -> Option<i32> {
     let unk: IUnknown = unsafe { cell.get_table() }.ok()?;
@@ -107,30 +86,6 @@ pub(crate) unsafe fn fill_table_cell_info_native(
 
     fill_table_headers(node, cell, HeaderAxis::Column);
     fill_table_headers(node, cell, HeaderAxis::Row);
-}
-
-/// C-callable replacement for `fillTableCellInfo_IATable2`. Writes row
-/// / column position and span attributes, then calls into
-/// `fill_table_headers` for both axes.
-///
-/// # Safety
-///
-/// * `node` must be a valid `VBufStorage_controlFieldNode_t*`.
-/// * `cell` must be a valid `IAccessibleTableCell*`.
-#[no_mangle]
-pub unsafe extern "C" fn nvda_ia2_fill_table_cell_info(
-    node: *mut core::ffi::c_void,
-    cell: *mut core::ffi::c_void,
-) {
-    if node.is_null() || cell.is_null() {
-        return;
-    }
-    let cell_ref: &IAccessibleTableCell =
-        match IAccessibleTableCell::from_raw_borrowed(&cell) {
-            Some(c) => c,
-            None => return,
-        };
-    unsafe { fill_table_cell_info_native(VbufFieldNode(node), cell_ref) };
 }
 
 fn write_int_attribute(node: VbufFieldNode, name: &[u16], value: i32) {

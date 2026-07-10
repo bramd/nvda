@@ -7,29 +7,30 @@
 use std::collections::BTreeMap;
 
 use crate::attribs::{parse_attribs, AttribCallback};
+use crate::bstr::is_bstr_null;
 use crate::interfaces::IAccessible2;
 use windows::core::Interface;
 
 /// Rust-native variant of `fetchIA2Attributes` for in-crate callers.
-/// Returns an empty map when the call fails or returns a NULL BSTR
-/// (mirroring the C++ "no attributes" sentinel).
+/// Returns `Some(map)` when the call succeeds and returns a non-NULL
+/// BSTR (an empty attribute string parses to an empty map, still
+/// `Some`). Returns `None` when the COM call fails or returns a NULL
+/// BSTR (the C++ "no attributes" sentinel). Keeping the NULL-vs-empty
+/// distinction here lets the FFI shim report it faithfully.
 pub(crate) fn fetch_ia2_attributes_native(
     acc: &IAccessible2,
-) -> BTreeMap<String, String> {
+) -> Option<BTreeMap<String, String>> {
     let bstr = match unsafe { acc.get_attributes() } {
         Ok(b) => b,
-        Err(_) => return BTreeMap::new(),
+        Err(_) => return None,
     };
     // NULL BSTR == no attributes; an empty (non-NULL) BSTR is a
     // successful empty parse.
-    let raw_ptr: *const u16 = unsafe {
-        *(&bstr as *const _ as *const *const u16)
-    };
-    if raw_ptr.is_null() {
-        return BTreeMap::new();
+    if is_bstr_null(&bstr) {
+        return None;
     }
     let s = bstr.to_string();
-    parse_attribs(&s)
+    Some(parse_attribs(&s))
 }
 
 /// C-callable replacement for `fetchIA2Attributes`.
@@ -63,22 +64,14 @@ pub unsafe extern "C" fn nvda_ia2_fetch_attributes(
         Some(a) => a,
         None => return false,
     };
-    // Distinguish "COM call returned NULL BSTR" (false) from "valid
-    // empty attribute string" (true with zero callbacks). The native
-    // helper collapses both into an empty map, so probe the BSTR
-    // directly here.
-    let bstr = match unsafe { acc.get_attributes() } {
-        Ok(b) => b,
-        Err(_) => return false,
+    // The native helper preserves the "COM call returned NULL BSTR"
+    // (`None`, reported as `false`) versus "valid empty attribute
+    // string" (`Some(empty)`, reported as `true` with zero callbacks)
+    // distinction, so we can delegate to it directly.
+    let map = match fetch_ia2_attributes_native(acc) {
+        Some(m) => m,
+        None => return false,
     };
-    let raw_ptr: *const u16 = unsafe {
-        *(&bstr as *const _ as *const *const u16)
-    };
-    if raw_ptr.is_null() {
-        return false;
-    }
-    let s = bstr.to_string();
-    let map = parse_attribs(&s);
     for (k, v) in map {
         let k_utf16: Vec<u16> = k.encode_utf16().collect();
         let v_utf16: Vec<u16> = v.encode_utf16().collect();

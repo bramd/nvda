@@ -83,6 +83,13 @@ impl GeckoBackendState {
     pub fn is_chrome(&self) -> bool {
         self.toolkit_name == "Chrome".encode_utf16().collect::<Vec<u16>>()
     }
+
+    /// Populate the cached toolkit name from `acc`. Mirrors
+    /// `versionSpecificInit`; shared by that entry point and the
+    /// root-call branch of `render`.
+    fn init_toolkit_name(&mut self, acc: &IAccessible2) {
+        self.toolkit_name = get_toolkit_name_native(acc);
+    }
 }
 
 impl Default for GeckoBackendState {
@@ -173,7 +180,7 @@ pub unsafe extern "C" fn nvda_ia2_gecko_backend_version_specific_init(
         Some(a) => a,
         None => return,
     };
-    state.toolkit_name = get_toolkit_name_native(acc);
+    state.init_toolkit_name(acc);
 }
 
 /// C-callable replacement for `GeckoVBufBackend_t::render`. Resolves
@@ -212,7 +219,7 @@ pub unsafe extern "C" fn nvda_ia2_gecko_backend_render(
     };
     if is_root_call {
         let state_mut = unsafe { &mut *(state as *mut GeckoBackendState) };
-        state_mut.toolkit_name = get_toolkit_name_native(&acc);
+        state_mut.init_toolkit_name(&acc);
     }
     let is_chrome = unsafe { &*(state as *const GeckoBackendState) }.is_chrome();
 

@@ -79,33 +79,3 @@ pub(crate) unsafe fn fill_vbuf_aria_error_native(
         node.add_attribute(ATTR_NAME_ERROR_MESSAGE, &text_buf);
     }
 }
-
-/// C-callable replacement.
-///
-/// `pacc` is the source IAccessible2 (borrowed). `node` is the
-/// `VBufStorage_controlFieldNode_t*` to set `errorMessage` on.
-/// `is_chrome` is `true` when the toolkit is Chrome (workaround for
-/// the `max_targets`-ignoring bug in Chrome's IA2 implementation).
-///
-/// # Safety
-///
-/// * `pacc` must be a valid `IAccessible2*` for the duration.
-/// * `node` must be a valid `VBufStorage_controlFieldNode_t*` for the
-///   duration.
-#[no_mangle]
-pub unsafe extern "C" fn nvda_ia2_fill_vbuf_aria_error(
-    pacc: *mut core::ffi::c_void,
-    node: *mut core::ffi::c_void,
-    is_chrome: bool,
-) {
-    if pacc.is_null() || node.is_null() {
-        return;
-    }
-    let acc: &IAccessible2 = match IAccessible2::from_raw_borrowed(&pacc) {
-        Some(a) => a,
-        None => return,
-    };
-    unsafe {
-        fill_vbuf_aria_error_native(acc, VbufFieldNode(node), is_chrome);
-    }
-}

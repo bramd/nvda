@@ -20,6 +20,7 @@ pub mod acc_description;
 pub mod aria_details;
 pub mod aria_error;
 pub mod attribs;
+pub mod bstr;
 pub mod child_count;
 pub mod details_roles;
 pub mod fetch;
