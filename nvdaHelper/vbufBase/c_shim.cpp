@@ -244,3 +244,19 @@ extern "C" void* vbuf_backend_reuse_existing_node(
 		doc_handle,
 		id);
 }
+
+/* Arms the render-thread timer so the backend re-renders any invalid
+   nodes on the next update tick. Lets a Rust-side invalidation (gecko's
+   WinEvent dispatch, Phase 6e) request an update after invalidating its
+   Rust storage::Buffer directly. */
+extern "C" void vbuf_backend_request_update(void* backend) {
+	static_cast<VBufBackend_t*>(backend)->requestUpdate();
+}
+
+/* Returns the backend's Rust storage::Buffer, or NULL when the backend
+   uses C++ storage. Lets nvda_ia2 reach the buffer from a bare
+   VBufBackend_t* where it lacks the GeckoBackendState. See
+   VBufBackend_t::getRustStorageBuffer for the Phase 6e contract. */
+extern "C" void* vbuf_backend_get_rust_storage_buffer(void* backend) {
+	return static_cast<VBufBackend_t*>(backend)->getRustStorageBuffer();
+}

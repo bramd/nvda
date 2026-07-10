@@ -75,11 +75,6 @@ static LRESULT CALLBACK destroy_callWndProcHook(int code, WPARAM wParam, LPARAM 
 	const int renderThreadID;
 
 /**
- * Requests that the backend should update any invalid nodes  when it can in the next little while.
- */
-	void requestUpdate();
-
-/**
  * Cancels any pending request to update invalid nodes.
  */
 	void cancelPendingUpdate();
@@ -107,8 +102,11 @@ static LRESULT CALLBACK destroy_callWndProcHook(int code, WPARAM wParam, LPARAM 
 /**
  * Updates the content of the buffer.
  * If no content yet exists it renders the entire document. If content exists it only re-renders nodes marked as invalid.
+ * Virtual so a backend that stores its tree outside the C++ VBufStorage_buffer_t (e.g. the gecko_ia2 backend, which
+ * homes its live tree in a Rust storage::Buffer under Phase 6e) can override the drain/render/merge orchestration
+ * while still being driven through the base render-thread machinery (timer proc, renderThread_initialize, forceUpdate).
  */
-	void update();
+	virtual void update();
 
 /**
  * Destructor, (protected as you must use the destroy method).
@@ -152,6 +150,14 @@ static LRESULT CALLBACK destroy_callWndProcHook(int code, WPARAM wParam, LPARAM 
 	virtual void forceUpdate();
 
 /**
+ * Requests that the backend should update any invalid nodes when it can in the next little while.
+ * Public so that a backend which invalidates its subtrees outside the C++ storage (e.g. the gecko_ia2 backend,
+ * whose Rust-side WinEvent dispatch invalidates the Rust storage::Buffer under Phase 6e) can arm the render-thread
+ * timer via the c_shim without breaking encapsulation of the render-thread machinery.
+ */
+	void requestUpdate();
+
+/**
  * Clears the content of the backend and terminates any code used for rendering.
  */
 	virtual void terminate();
@@ -184,6 +190,19 @@ static LRESULT CALLBACK destroy_callWndProcHook(int code, WPARAM wParam, LPARAM 
 	bool pendingInvalidSubtreesEmpty() const {
 		return pendingInvalidSubtreesList.empty();
 	}
+
+/**
+ * @return the backend's Rust storage::Buffer when this backend homes its live tree in Rust rather than in the C++
+ * VBufStorage_buffer_t, or NULL when the backend uses C++ storage.
+ *
+ * Phase 6e contract: the gecko_ia2 backend renders into, and reads out of, a Rust storage::Buffer (embedded in its
+ * GeckoBackendState) instead of the inherited C++ storage. vbufRemote's read RPCs branch on this accessor: a non-null
+ * result means node handles for this buffer are Rust slotmap keys (u64) to be routed through the nvda_vbuf_* C ABI,
+ * while NULL means the legacy path (a narrowed VBufStorage_fieldNode_t* through the C++ storage virtuals). The base
+ * implementation returns NULL so every existing backend keeps the C++ storage with no change; only gecko_ia2 overrides
+ * this. Returned as void* to keep backend.h free of Rust/FFI types; callers cast to the Rust Buffer pointer.
+ */
+	virtual void* getRustStorageBuffer() { return nullptr; }
 
 };
 
