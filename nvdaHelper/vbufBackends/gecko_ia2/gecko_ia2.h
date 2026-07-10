@@ -20,20 +20,6 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 class GeckoVBufBackend_t: public VBufBackend_t {
 	private:
 
-	/* Thin shim that delegates to nvda_ia2_fill_vbuf in Rust.
-	 * Recursion stays Rust-side; the C++ side only converts member
-	 * state (toolkitName, rootID, this) into FFI args.
-	 */
-	VBufStorage_fieldNode_t* fillVBuf(
-		IAccessible2* pacc,
-		VBufStorage_buffer_t* buffer,
-		VBufStorage_controlFieldNode_t* parentNode,
-		VBufStorage_fieldNode_t* previousNode,
-		IAccessibleTable2* paccTable2=NULL,
-		long tableID=0, const wchar_t* parentPresentationalRowNumber=NULL,
-		bool ignoreInteractiveUnlabelledGraphics=false
-	);
-
 	void versionSpecificInit(IAccessible2* pacc);
 
 	/* Per-instance Rust state. Allocated by
@@ -54,6 +40,22 @@ class GeckoVBufBackend_t: public VBufBackend_t {
 
 	virtual void renderThread_terminate();
 
+	/* Phase 6e (Stage D): gecko homes its live tree in a Rust
+	 * storage::Buffer (embedded in GeckoBackendState), so it overrides
+	 * update() to run the Rust drain/render/merge orchestration against
+	 * that buffer instead of the inherited C++ VBufStorage_buffer_t. The
+	 * base render-thread machinery (timer, forceUpdate,
+	 * renderThread_initialize) reaches this through the now-virtual
+	 * update().
+	 */
+	virtual void update();
+
+	/* Vestigial after Stage D: update() is overridden and does all the
+	 * rendering, so render() is never on the live path. It stays a
+	 * concrete stub only because the base declares it pure-virtual and
+	 * the class must remain instantiable. Its former body lives in the
+	 * Rust renderer (fill_vbuf) driven by update().
+	 */
 	virtual void render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode=NULL);
 
 	virtual ~GeckoVBufBackend_t();
@@ -61,6 +63,14 @@ class GeckoVBufBackend_t: public VBufBackend_t {
 	public:
 
 	GeckoVBufBackend_t(int docHandle, int ID);
+
+	/* Phase 6e (Stage D): advertises this backend's embedded Rust
+	 * storage::Buffer so vbufRemote's read RPCs route through the
+	 * nvda_vbuf_* u64-key ABI instead of the legacy C++ storage virtuals.
+	 * Returns the address of state.buffer via
+	 * nvda_ia2_gecko_backend_get_buffer(rustState).
+	 */
+	virtual void* getRustStorageBuffer();
 
 };
 

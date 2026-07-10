@@ -2,20 +2,22 @@
 //! `nvdaHelper/vbufBackends/gecko_ia2/gecko_ia2.cpp:408`.
 //!
 //! Carved into blocks per the design doc at
-//! `docs/plans/2026-05-06-rust-fill-vbuf-design.md`. The single
-//! C-callable entry point [`nvda_ia2_fill_vbuf`] is the integration
-//! contract — it replaces the *body* of the C++ `fillVBuf` method on
-//! the final flip. The C++ method shrinks to a one-liner that
-//! converts member state to FFI args.
+//! `docs/plans/2026-05-06-rust-fill-vbuf-design.md`. The Rust-internal
+//! entry point is [`fill_vbuf`]; as of the Phase 6e flip (Stage D) it is
+//! driven from the update orchestration in
+//! [`crate::gecko_backend_state::nvda_ia2_gecko_backend_update`], which
+//! renders straight into the backend's embedded Rust `storage::Buffer`
+//! (initial render) or a temp `Buffer` (partial render, reuse querying
+//! the live buffer via `FillVBufCtx.main`). The former C-callable
+//! `nvda_ia2_fill_vbuf` extern (which the old C++ `render()` delegated
+//! to) was removed at the flip — see the note where it used to live.
 //!
 //! Recursion stays Rust-side: [`fill_vbuf`] (the Rust internal
 //! function) calls itself directly. The C++ side does not see the
 //! recursive calls.
 //!
-//! All seven blocks are implemented; [`fill_vbuf`] is now a complete
-//! port of the C++ original. The C++ side does not yet delegate to
-//! the extern shim ([`nvda_ia2_fill_vbuf`]) — that flip is a separate
-//! commit so the swap is bisectable.
+//! All seven blocks are implemented; [`fill_vbuf`] is a complete port of
+//! the C++ original.
 //!
 //! Block carve-up (lines refer to gecko_ia2.cpp before the flip):
 //!
@@ -30,7 +32,6 @@
 //! |   7   | name attr / desc-is-content / aria-details    | 1206-1245    |
 #![allow(dead_code)]
 
-use core::ffi::c_void;
 use std::collections::BTreeMap;
 
 use crate::acc_description::get_acc_description_native;
@@ -2103,102 +2104,15 @@ pub(crate) unsafe fn fill_vbuf(
     Some(cont.parent_node.as_field_node())
 }
 
-/// Single C-callable entry point. Replaces the *body* of
-/// `GeckoVBufBackend_t::fillVBuf` once every block is implemented.
-/// The C++ method itself stays as a one-liner that unpacks `this`-
-/// owned state into the FFI arguments.
-///
-/// Returns the resulting field node pointer, or `NULL` on bail.
-/// Caller does not own the returned pointer; vbufBase manages node
-/// lifetime through the buffer.
-///
-/// # Safety
-///
-/// * `pacc` must be a valid `IAccessible2*`; not consumed.
-/// * `buffer` must be a valid `VBufStorage_buffer_t*`.
-/// * `parent_node`, `previous_node`, `pacc_table2` may be `NULL` to
-///   indicate "absent"; otherwise must be valid pointers of their
-///   respective C++ types.
-/// * `parent_pres_row_num_ptr` may be `NULL` (with `_len == 0`) for
-///   absent; otherwise must point to `_len` valid `u16`s.
-/// * `backend` must be a valid `VBufBackend_t*`.
-/// * Caller (the C++ `fillVBuf` shim) must hold the render-thread
-///   invariants vbufBase requires.
-#[no_mangle]
-#[allow(clippy::too_many_arguments)]
-pub unsafe extern "C" fn nvda_ia2_fill_vbuf(
-    pacc: *mut c_void,
-    buffer: *mut c_void,
-    parent_node: *mut c_void,
-    previous_node: *mut c_void,
-    pacc_table2: *mut c_void,
-    table_id: i32,
-    parent_pres_row_num_ptr: *const u16,
-    parent_pres_row_num_len: usize,
-    ignore_interactive_unlabelled_graphics: bool,
-    backend: *mut c_void,
-    root_id: i32,
-    is_chrome: bool,
-) -> *mut c_void {
-    if pacc.is_null() || buffer.is_null() || backend.is_null() {
-        return core::ptr::null_mut();
-    }
-    let acc: &IAccessible2 = match IAccessible2::from_raw_borrowed(&pacc) {
-        Some(a) => a,
-        None => return core::ptr::null_mut(),
-    };
-    let table2: Option<&IAccessibleTable2> = if pacc_table2.is_null() {
-        None
-    } else {
-        IAccessibleTable2::from_raw_borrowed(&pacc_table2)
-    };
-
-    let buffer = VbufBuffer(buffer);
-    let backend = VbufBackend(backend);
-    let parent = if parent_node.is_null() {
-        None
-    } else {
-        Some(VbufControlFieldNode(parent_node))
-    };
-    let previous = if previous_node.is_null() {
-        None
-    } else {
-        Some(VbufFieldNode(previous_node))
-    };
-    let pres_row: Option<&[u16]> =
-        if parent_pres_row_num_ptr.is_null() || parent_pres_row_num_len == 0 {
-            None
-        } else {
-            Some(unsafe {
-                core::slice::from_raw_parts(
-                    parent_pres_row_num_ptr,
-                    parent_pres_row_num_len,
-                )
-            })
-        };
-
-    let ctx = FillVBufCtx {
-        backend,
-        root_id,
-        is_chrome,
-    };
-    match unsafe {
-        fill_vbuf(
-            acc,
-            buffer,
-            parent,
-            previous,
-            table2,
-            table_id,
-            pres_row,
-            ignore_interactive_unlabelled_graphics,
-            &ctx,
-        )
-    } {
-        Some(node) => node.0,
-        None => core::ptr::null_mut(),
-    }
-}
+// NOTE (Phase 6e, Stage D): the former `nvda_ia2_fill_vbuf` extern "C"
+// entry point was removed at the flip. Its only C++ caller was
+// `GeckoVBufBackend_t::fillVBuf` (itself only reached from the old
+// `render()`), and gecko's `render()` is now a vestigial stub -- the
+// live path drives [`fill_vbuf`] directly from the Rust update
+// orchestration ([`crate::gecko_backend_state::nvda_ia2_gecko_backend_update`]),
+// which sets `FillVBufCtx.main` from `state.buffer`. With no remaining
+// caller (verified by grep), leaving the extern would be dead FFI
+// surface, so it and its C++ declaration were deleted together.
 
 #[cfg(test)]
 mod tests {

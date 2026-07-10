@@ -8,15 +8,18 @@ edition = "2021"
 # `rlib` so the unit tests in this crate can build a test binary.
 crate-type = ["staticlib", "rlib"]
 
+# ON by default as of the Phase 6e flip (Stage D). The production scons
+# build runs `cargo build --release --package nvda_ia2` with NO
+# `--features` flags, so the flip has to ride the default feature set:
+# with `direct_rust_storage` in `default`, the shipped staticlib renders
+# gecko into, and reads out of, the Rust `storage::Buffer`.
+# `direct_rust_storage` forwards to nvda_vbuf's feature of the same name
+# so the Rust-backed newtypes and this crate's own cfg-gated code (the
+# gecko update orchestration and `FillVBufCtx.main`) switch on coherently
+# as one unit. The feature-OFF build (the revert config) is reached with
+# `--no-default-features`.
 [features]
-# Off by default -- nvda_ia2 ships feature-OFF, rendering through the
-# C-shim into the C++ VBufStorage_buffer_t. Enabling it (the Phase 6e
-# flip, Stage D) forwards to nvda_vbuf's `direct_rust_storage` so the
-# Rust-backed newtypes and this crate's own cfg-gated code (the gecko
-# update orchestration and `FillVBufCtx.main`) switch on coherently as
-# one unit. Declared now (Stage B) so those cfg-gates are meaningful;
-# not added to any default or dependency `features` list, so the shipped
-# feature-off build is unaffected.
+default = ["direct_rust_storage"]
 direct_rust_storage = ["nvda_vbuf/direct_rust_storage"]
 
 [dependencies.nvda_vbuf]

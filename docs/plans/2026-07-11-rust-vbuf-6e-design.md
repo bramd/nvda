@@ -1,7 +1,9 @@
 # Phase 6e: gecko_ia2 live on the Rust vbuf storage
 
-**Status:** design (2026-07-11). Not yet implemented. Gated on a
-Firefox + Chrome smoke test at the flip commit.
+**Status:** implemented, pending smoke test (2026-07-11). Stages A–D
+landed; the flip (Stage D) rides `nvda_ia2`'s `default = ["direct_rust_storage"]`
+feature. Gated on a Firefox + Chrome smoke test before the flip commit is
+considered done.
 
 Phase 6d-a/6d-b built and tested the Rust `storage::Buffer`, a parallel
 `nvda_vbuf_*` C ABI over it (`extern_api.rs`), and a `direct_rust_storage`

@@ -1,7 +1,7 @@
 # Wiring the Rust vbuf storage into the live code path
 
-**Status:** 6d-a and 6d-b done (2026-07-10). Next: Phase 6e, gated on
-a Firefox/Chrome smoke test.
+**Status:** Phase 6e stages A–D implemented (2026-07-11), pending a
+Firefox/Chrome smoke test at the flip.
 
 Progress log:
 
@@ -12,6 +12,22 @@ Progress log:
   and `locateTextFieldNodeAtOffset` ported, and every `VBufRemote_*`
   RPC audited against the Rust Buffer (see
   `2026-07-10-vbufremote-coverage-audit.md`).
+* 2026-07-11: Phase 6e stages A–D landed (see
+  `2026-07-11-rust-vbuf-6e-design.md`). Stage D is THE FLIP: gecko_ia2
+  now renders into, and reads out of, the Rust `storage::Buffer`. The
+  flip rides `nvda_ia2`'s new `default = ["direct_rust_storage"]` (the
+  production scons build passes no `--features`). `GeckoVBufBackend_t`
+  overrides the now-virtual `update()` (Rust drain/render/merge over
+  `state.buffer`, notify only on the re-render branch as the base does)
+  and `getRustStorageBuffer()`; `render()` is a vestigial stub and the
+  dead `nvda_ia2_gecko_backend_render` / `nvda_ia2_fill_vbuf` externs
+  (plus the C++ `fillVBuf` shim) were removed. WinEvent dispatch and
+  `isRootDocAlive` re-homed onto `state.buffer` (Decision 5). The
+  `vbuf_keepalive` module retired (Decision 6): the twelve read externs
+  now have real C++ callers via vbufRemote (Stage C), proven by the
+  `nvdaHelperRemote.dll` link. Feature-off (`--no-default-features`)
+  remains the `git revert` path and still compiles. Pending the
+  Firefox/Chrome smoke test before the flip is considered done.
 
 Phase 6b/6c built a Rust port of `vbufBase`'s storage and backend
 orchestration in `rust/nvda_vbuf/`. 69 tests cover every surface

@@ -42,4 +42,3 @@ pub mod textbox_in_combobox;
 pub mod toolkit_name;
 pub mod types;
 pub mod utf16;
-pub mod vbuf_keepalive;
