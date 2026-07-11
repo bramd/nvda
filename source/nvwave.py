@@ -14,11 +14,7 @@ from typing import (
 from enum import Enum, auto
 from ctypes import (
 	c_void_p,
-	CFUNCTYPE,
-	c_float,
-	c_char_p,
-	cast,
-	string_at,
+	c_char,
 )
 import atexit
 import weakref
@@ -328,11 +324,28 @@ class WavePlayer(garbageHandler.TrackedObject):
 		# turn off trimming temporarily.
 		if self._purpose is AudioPurpose.SPEECH and self._isLeadingSilenceInserted:
 			self.startTrimmingLeadingSilence(False)
-		# wasPlay_feed requires c_char_p, so cast data to c_char_p before calling.
-		# Casting bytes to c_char_p is also fine, as long as the original data is not released.
-		dataptr = cast(data, c_char_p)
+		# The Rust WasapiPlayer.feed() takes a single buffer-protocol object and
+		# copies it; it has no separate size parameter and does not accept a raw
+		# ctypes pointer. Callers, however, still use the historical
+		# (data, size) forms: a bytes-like object (size optional), a c_void_p
+		# into foreign memory with an explicit size (e.g. eSpeak / OneCore push
+		# a pointer into the synth's own wave buffer), or None/0 to register an
+		# index callback without feeding audio. Normalise all of these into a
+		# zero-copy view of exactly the requested bytes before handing it over.
+		if data is None:
+			buf = b""
+		elif isinstance(data, c_void_p):
+			address = data.value
+			if not address or not size:
+				buf = b""
+			else:
+				buf = (c_char * size).from_address(address)
+		else:
+			buf = memoryview(data).cast("B")
+			if size is not None:
+				buf = buf[:size]
 		try:
-			feedId = self._player.feed(data)
+			feedId = self._player.feed(buf)
 		except WindowsError:
 			# #16722: This might occur on a Remote Desktop server when a client session
 			# disconnects without exiting NVDA. That will cause audio to become
