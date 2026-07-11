@@ -283,7 +283,12 @@ pub unsafe fn block1(
 
     // Block 1 / step 5: add the new control field node. The C++ code
     // reassigns `parentNode` to the new node and resets `previousNode`
-    // to NULL; we just produce the new control field node.
+    // to NULL. Here block1 only produces the new control field node
+    // (returned as `cont.parent_node`); the `previousNode = NULL` reset
+    // is done by the caller `fill_vbuf`, which shadows `previous` to
+    // `None` before running blocks 4-7. Do NOT thread the incoming
+    // sibling `previous` into this node's children -- its parent is the
+    // grandparent, and the storage rejects such an anchor.
     let new_parent_node = match unsafe {
         buffer.add_control_field_node(parent, previous, doc_handle, id, true)
     } {
