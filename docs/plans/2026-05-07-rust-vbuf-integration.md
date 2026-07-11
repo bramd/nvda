@@ -28,6 +28,23 @@ Progress log:
   `nvdaHelperRemote.dll` link. Feature-off (`--no-default-features`)
   remains the `git revert` path and still compiles. Pending the
   Firefox/Chrome smoke test before the flip is considered done.
+* 2026-07-11 (post-flip smoke test): the first live browse-mode test
+  surfaced two bugs, both now fixed. (1) The Rust `fill_vbuf` port had
+  never reset `previous` to `None` after creating a control node
+  (the C++ `fillVBuf` does, right after `addControlFieldNode`), so
+  every element below the document root anchored its children on a
+  stale *sibling* `previous`; both storages reject `previous->parent
+  != parent` (storage.cpp:462), silently dropping all body text while
+  the control-field skeleton still rendered. The bug predated 6e (it
+  was latent while the C++ storage was fed the same bad anchor) and
+  only became visible once a freshly built DLL rendered gecko through
+  the Rust `fill_vbuf`; fixed by shadowing `previous = None` after
+  block1. (2) Unrelated audio regression from the Rust WasapiPlayer
+  port: `nvwave.WavePlayer.feed` ignored `size` and passed raw
+  `c_void_p` pointers straight to the Rust `feed(&[u8])`, breaking
+  eSpeak/OneCore output; fixed by normalising the `(data, size)`
+  caller forms into a buffer view. Both fixes rebuilt into the x64 +
+  x86 DLLs; awaiting a re-test.
 
 Phase 6b/6c built a Rust port of `vbufBase`'s storage and backend
 orchestration in `rust/nvda_vbuf/`. 69 tests cover every surface
