@@ -14,7 +14,7 @@ from typing import (
 from enum import Enum, auto
 from ctypes import (
 	c_void_p,
-	c_char,
+	string_at,
 )
 import atexit
 import weakref
@@ -324,26 +324,25 @@ class WavePlayer(garbageHandler.TrackedObject):
 		# turn off trimming temporarily.
 		if self._purpose is AudioPurpose.SPEECH and self._isLeadingSilenceInserted:
 			self.startTrimmingLeadingSilence(False)
-		# The Rust WasapiPlayer.feed() takes a single buffer-protocol object and
-		# copies it; it has no separate size parameter and does not accept a raw
+		# The Rust WasapiPlayer.feed() takes a `bytes` object (PyO3 extracts
+		# `&[u8]` only from `bytes` -- NOT from memoryview, bytearray or ctypes
+		# arrays). It has no separate size parameter and does not accept a raw
 		# ctypes pointer. Callers, however, still use the historical
 		# (data, size) forms: a bytes-like object (size optional), a c_void_p
 		# into foreign memory with an explicit size (e.g. eSpeak / OneCore push
 		# a pointer into the synth's own wave buffer), or None/0 to register an
-		# index callback without feeding audio. Normalise all of these into a
-		# zero-copy view of exactly the requested bytes before handing it over.
+		# index callback without feeding audio. Normalise all of these to a
+		# `bytes` object of exactly the requested length.
 		if data is None:
 			buf = b""
 		elif isinstance(data, c_void_p):
 			address = data.value
-			if not address or not size:
-				buf = b""
-			else:
-				buf = (c_char * size).from_address(address)
+			buf = string_at(address, size) if address and size else b""
+		elif size is None and isinstance(data, bytes):
+			buf = data
 		else:
-			buf = memoryview(data).cast("B")
-			if size is not None:
-				buf = buf[:size]
+			mv = memoryview(data).cast("B")
+			buf = mv[:size].tobytes() if size is not None else mv.tobytes()
 		try:
 			feedId = self._player.feed(buf)
 		except WindowsError:
