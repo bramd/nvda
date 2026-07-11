@@ -1997,6 +1997,21 @@ pub(crate) unsafe fn fill_vbuf(
         Block1Outcome::Continue(c) => c,
     };
 
+    // C++ `fillVBuf` resets `previousNode = NULL` immediately after
+    // creating the new control field node (gecko_ia2.cpp:468). Every
+    // node rendered from here on (the table summary in block 4, the
+    // text segments / children in block 5, the fallback content in
+    // block 6, aria-details in block 7) is a child of the NEW control
+    // node `cont.parent_node`, so the incoming *sibling* `previous`
+    // must NOT carry into those blocks: it belongs to this node's
+    // parent, not to this node. Threading it onward makes the storage
+    // (correctly) reject each such insert -- `previous.parent` is the
+    // grandparent, not `cont.parent_node` -- which silently drops the
+    // text of every non-first child, leaving control-field structure
+    // but no body text. Shadow the parameter to `None` to reproduce the
+    // C++ reset for all subsequent blocks.
+    let previous: Option<VbufFieldNode> = None;
+
     // Block 2.
     let mut block2_state = unsafe {
         block2(pacc, cont.parent_node, cont.role, &cont.attribs, cont.id, ctx)
