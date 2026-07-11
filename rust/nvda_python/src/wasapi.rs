@@ -93,10 +93,40 @@ impl SendPtr {
 pub struct WasapiPlayer {
     inner: Mutex<WasapiPlayerInner>,
     stop_handle: StopHandle,
-    /// Kept for `Drop` semantics — the inner-crate callback closure also holds
-    /// a clone, but we keep the original here so dropping the WasapiPlayer
-    /// drops both references.
-    _callback: Py<PyAny>,
+    /// The Python feed-done callable, invoked by [`WasapiPlayer::fire_pending`]
+    /// once per completed feed id.
+    callback: Py<PyAny>,
+    /// Completed feed ids awaiting delivery to `callback`. The inner-crate
+    /// callback closure (which runs while the `inner` mutex is held) only
+    /// pushes ids here — a cheap Rust-only lock, never the GIL. The Python
+    /// callback is fired later by `fire_pending`, AFTER `inner` is released,
+    /// so `feed`/`sync` never hold `inner` while re-acquiring the GIL. That
+    /// ordering (inner-then-GIL under the lock, GIL-then-inner in every other
+    /// method) is what deadlocked against `setChannelVolume` etc.
+    pending: Arc<Mutex<Vec<u32>>>,
+}
+
+impl WasapiPlayer {
+    /// Drain the completed-feed-id queue and invoke the Python callback for
+    /// each, in order. Must be called with the GIL held and, crucially,
+    /// WITHOUT holding `inner` — the callback runs arbitrary Python that may
+    /// re-enter player methods. Callback errors are logged and swallowed,
+    /// matching the historical WINFUNCTYPE behavior.
+    fn fire_pending(&self, py: Python<'_>) {
+        // Only the pending queue's own lock is held here, and only long
+        // enough to move the ids out; the callbacks fire with no lock held.
+        let ids: Vec<u32> = {
+            let mut q = self.pending.lock().unwrap();
+            std::mem::take(&mut *q)
+        };
+        for id in ids {
+            if let Err(e) = self.callback.call1(py, (id,)) {
+                log::warn!(
+                    "WasapiPlayer feed-done callback raised: {e:?} (feed_id={id})",
+                );
+            }
+        }
+    }
 }
 
 #[pymethods]
@@ -104,7 +134,6 @@ impl WasapiPlayer {
     #[new]
     #[pyo3(signature = (endpointId, channels, samplesPerSec, bitsPerSample, callback))]
     fn new(
-        py: Python<'_>,
         endpointId: &str,
         channels: u16,
         samplesPerSec: u32,
@@ -118,26 +147,19 @@ impl WasapiPlayer {
         })?;
         let counters = global.counters.clone();
 
-        // Wrap the Python callable in a Send closure that briefly re-acquires
-        // the GIL to invoke it. This matches the C++ WINFUNCTYPE behavior:
-        // the callback fires immediately inside the WASAPI feed loop (between
-        // buffer writes) so onDone notifications -- e.g. synthIndexReached
-        // for TTS -- arrive without the ~100ms feed-loop-wait latency the
-        // previous queue-and-drain pattern added.
-        //
-        // Errors from the Python callback are swallowed with a debug log;
-        // matches the C++ behavior, which had no error-propagation path
-        // either (Python exceptions raised in WINFUNCTYPE callbacks became
-        // thread state that got cleared at the next normal Python boundary).
-        let callback_for_inner = callback.clone_ref(py);
+        // The inner player invokes this closure while it holds the `inner`
+        // mutex (from inside the WASAPI feed loop). It must therefore NOT
+        // acquire the GIL — doing so established an inner-then-GIL lock order
+        // that deadlocked against every other method's GIL-then-inner order
+        // (e.g. setChannelVolume). Instead it just records the completed feed
+        // id in a Rust-only queue; the Python callback is fired afterwards by
+        // `fire_pending`, once `inner` has been released. onDone latency is
+        // still low: the queue is drained at the end of the same feed()/sync()
+        // call, not on the ~100ms feed-loop timer the old queue-and-drain used.
+        let pending: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+        let pending_for_inner = Arc::clone(&pending);
         let callback_fn: Box<dyn Fn(u32) + Send> = Box::new(move |feed_id: u32| {
-            Python::attach(|py| {
-                if let Err(e) = callback_for_inner.call1(py, (feed_id,)) {
-                    log::warn!(
-                        "WasapiPlayer feed-done callback raised: {e:?} (feed_id={feed_id})",
-                    );
-                }
-            });
+            pending_for_inner.lock().unwrap().push(feed_id);
         });
 
         let inner = WasapiPlayerInner::new(
@@ -155,7 +177,8 @@ impl WasapiPlayer {
         Ok(Self {
             inner: Mutex::new(inner),
             stop_handle,
-            _callback: callback,
+            callback,
+            pending,
         })
     }
 
@@ -172,8 +195,7 @@ impl WasapiPlayer {
 
     fn feed(&self, py: Python<'_>, data: &[u8]) -> PyResult<u32> {
         let data_owned = data.to_vec();
-        let feed_id;
-        {
+        let result = {
             // IMPORTANT: `player` (MutexGuard) MUST outlive the `py.detach()`
             // call below. The raw pointer in SendPtr is derived from the guard,
             // so the guard must stay alive until detach returns. It drops at the
@@ -184,11 +206,12 @@ impl WasapiPlayer {
             // preventing other methods (except stop via StopHandle) from
             // accessing inner. This matches the C++ behavior where the GIL
             // is released for all ctypes calls.
-            feed_id = py.detach(move || unsafe {
-                player_ptr.as_mut().feed(&data_owned, true)
-            }).map_err(to_os_error)?;
-        }
-        Ok(feed_id)
+            py.detach(move || unsafe { player_ptr.as_mut().feed(&data_owned, true) })
+        };
+        // `inner` is released; now deliver any feed-done callbacks the inner
+        // player queued during the feed loop (see `pending` / `fire_pending`).
+        self.fire_pending(py);
+        result.map_err(to_os_error)
     }
 
     fn stop(&self) -> PyResult<()> {
@@ -203,27 +226,27 @@ impl WasapiPlayer {
     }
 
     fn sync(&self, py: Python<'_>) -> PyResult<()> {
-        {
+        let result = {
             // See feed() for why the MutexGuard must outlive py.detach().
             let mut player = self.inner.lock().unwrap();
             let player_ptr = SendPtr(&mut *player as *mut WasapiPlayerInner);
-            py.detach(move || unsafe {
-                player_ptr.as_mut().sync()
-            }).map_err(to_os_error)?;
-        }
-        Ok(())
+            py.detach(move || unsafe { player_ptr.as_mut().sync() })
+        };
+        // `inner` released; deliver callbacks the sync fired (see fire_pending).
+        self.fire_pending(py);
+        result.map_err(to_os_error)
     }
 
     fn idle(&self, py: Python<'_>) -> PyResult<()> {
-        {
+        let result = {
             // See feed() for why the MutexGuard must outlive py.detach().
             let mut player = self.inner.lock().unwrap();
             let player_ptr = SendPtr(&mut *player as *mut WasapiPlayerInner);
-            py.detach(move || unsafe {
-                player_ptr.as_mut().idle()
-            }).map_err(to_os_error)?;
-        }
-        Ok(())
+            py.detach(move || unsafe { player_ptr.as_mut().idle() })
+        };
+        // `inner` released; deliver any callbacks the idle/sync fired.
+        self.fire_pending(py);
+        result.map_err(to_os_error)
     }
 
     fn pause(&self, py: Python<'_>) -> PyResult<()> {
