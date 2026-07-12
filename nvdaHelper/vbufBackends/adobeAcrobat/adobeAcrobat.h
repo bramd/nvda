@@ -15,54 +15,16 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 #ifndef VIRTUALBUFFER_BACKENDS_ADOBEACROBAT_H
 #define VIRTUALBUFFER_BACKENDS_ADOBEACROBAT_H
 
-#include <map>
-#include <string>
-#include <list>
 #include <vbufBase/backend.h>
-#include <AcrobatAccess.h>
-
-class AdobeAcrobatVBufStorage_controlFieldNode_t;
-
-typedef struct {
-	int uniqueId;
-	int type;
-} TableHeaderInfo;
-
-typedef struct TableInfo_t {
-	long tableID{ 0 };
-	int curRowNumber{ 0 };
-	int curColumnNumber{ 0 };
-	// Maps column numbers to remaining row spans.
-	std::map<int, int> columnRowSpans;
-	// Maps column numbers to table-columnheadercells attribute values.
-	std::map<int, std::wstring> columnHeaders;
-	// Maps row numbers to table-rowheadercells attribute values.
-	std::map<int, std::wstring> rowHeaders;
-	// Maps node id strings to TableHeaderInfo.
-	std::map<std::wstring, TableHeaderInfo> headersInfo;
-	// Lists nodes with explicit headers along with their Headers attribute string.
-	std::list<std::pair<AdobeAcrobatVBufStorage_controlFieldNode_t*, std::wstring>> nodesWithExplicitHeaders;
-} TableInfo;
 
 class AdobeAcrobatVBufBackend_t: public VBufBackend_t {
 	private:
 
-	std::wstring* getPageNum(IPDDomNode* domNode);
-
-	AdobeAcrobatVBufStorage_controlFieldNode_t* fillVBuf(int docHandle, IAccessible* pacc, VBufStorage_buffer_t* buffer,
-		AdobeAcrobatVBufStorage_controlFieldNode_t* parentNode, VBufStorage_fieldNode_t* previousNode,
-		AdobeAcrobatVBufStorage_controlFieldNode_t* oldNode,
-		TableInfo* tableInfo = NULL, std::wstring* pageNum = NULL
-	);
-
-	bool isXFA = true;
-
-	IPDDomDocPagination* docPagination = nullptr;
-
 	/* Per-instance Rust state (AcrobatBackendState). Allocated by
 	 * acrobat_backend_create() in the constructor and freed by
 	 * acrobat_backend_destroy() in the destructor. Homes the live tree in
-	 * a Rust storage::Buffer plus the isXFA / docPagination render state.
+	 * a Rust storage::Buffer plus the isXFA / docPagination render state
+	 * (the render logic itself lives in the nvda_acrobat crate).
 	 */
 	void* rustState = nullptr;
 
@@ -83,9 +45,10 @@ class AdobeAcrobatVBufBackend_t: public VBufBackend_t {
 	virtual void update();
 
 	/* Vestigial after the Rust flip: update() is overridden and does all
-	 * the rendering against the Rust buffer, so this C++ render() (and the
-	 * fillVBuf it drives) is no longer on the live path. Kept only to
-	 * satisfy the base's pure-virtual render().
+	 * the rendering against the Rust buffer (via the nvda_acrobat
+	 * fill_vbuf renderer), so this C++ render() is never on the live path.
+	 * Kept as an empty stub only to satisfy the base's pure-virtual
+	 * render().
 	 */
 	virtual void render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode);
 
