@@ -479,12 +479,27 @@ changes runtime behavior.
   smoke test (arrow-key reading, headings/links navigation, a table, a
   live region / dynamic update, focus tracking, find-in-page).
 
-### Stage E — cleanup (optional, post-settle)
+### Stage E — cleanup (done, post-settle)
 
-Once 6e is comfortable, `render()`'s vestigial gecko override and the
-now-dead feature-off branches inside `nvda_ia2` can be pruned. Phase 6f
-(delete `gecko_ia2.cpp`, move the factory into Rust) proceeds from here,
-as previously planned.
+The `direct_rust_storage` Cargo feature is **removed** and its
+Rust-backed code un-gated to be the only path: every
+`#[cfg(not(feature = "direct_rust_storage"))]` block (the old C-shim
+storage path) is deleted and every `#[cfg(feature = "direct_rust_storage")]`
+block is now unconditional. The buffer/node newtypes
+(`VbufBuffer`/`VbufFieldNode`/`VbufControlFieldNode`) are unconditionally
+Rust-backed (`*mut Buffer` / `NodeRef`); the now-dead `vbuf_buffer_*` /
+`vbuf_node_*` C-shim externs and their Rust test stubs are removed (the
+`vbuf_backend_*` externs stay — they still drive the render-thread
+machinery). `nvda_ia2` now builds with **no** `--features` flags, matching
+the scons production config.
+
+`GeckoVBufBackend_t::render()` stays a vestigial concrete stub: the base
+`VBufBackend_t::render` is pure-virtual (`backend.h:100`,
+`... =0;`), so gecko must keep a concrete override to remain
+instantiable even though the live path (the `update()` override) never
+calls it. The design's "prune render()" is therefore not actionable and
+was intentionally left in place. Phase 6f (delete `gecko_ia2.cpp`, move
+the factory into Rust) proceeds from here, as previously planned.
 
 ## Reversal path
 
@@ -507,6 +522,15 @@ Stages A–C are behavior-preserving and need not be reverted to restore
 the old runtime behavior — only Stage D flips live behavior, so only
 Stage D must be reverted. That is the concrete meaning of the 6d plan's
 "route gecko_ia2 back through the C-shim by reverting the wiring."
+
+**After Stage E, the rollback changes.** `--no-default-features` is no
+longer a valid rollback: the feature is gone and the feature-off C-shim
+storage path no longer exists in the Rust source. To route gecko back
+through the C++ `VBufStorage_buffer_t`, `git revert` **both** the Stage E
+cleanup commit **and** the Stage D flip commit (`9cd359fd0`) — the revert
+of Stage E restores the feature-gated dual paths, and the revert of Stage
+D restores the feature-off default and removes gecko's `update()` /
+`getRustStorageBuffer()` overrides.
 
 ## What stays C++ indefinitely (unchanged from the 6d plan)
 

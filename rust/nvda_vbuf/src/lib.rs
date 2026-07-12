@@ -11,26 +11,22 @@
 //! symbols are defined in `c_shim.cpp` and reach `nvdaHelperRemote.dll`
 //! through whichever staticlib crate ultimately links into the DLL.
 //!
-//! # The `direct_rust_storage` feature (Phase 6d-b)
+//! # Storage backing (Phase 6e)
 //!
-//! With the feature **off** (the default) the newtypes wrap
-//! `*mut c_void` and every buffer/node method forwards to the `vbuf_*`
-//! externs in `c_shim.cpp` -- exactly the historical behaviour.
-//!
-//! With the feature **on** the newtypes wrap the Rust
-//! [`storage::Buffer`] directly and the buffer/node methods call
-//! `Buffer` methods -- no FFI hop. A node handle then cannot be a bare
-//! pointer (Rust node identity is a 64-bit slotmap [`storage::NodeKey`]
-//! and x86 pointers are 32-bit), so the node newtypes carry a
-//! `(buffer, key)` back-pointer struct. [`VbufBackend`] stays routed to
-//! the C-shim in both configs; its buffer-upcast / node-level methods
-//! are incoherent under the feature and are therefore compiled out of
-//! it (see [`VbufBackend`]). See
-//! `docs/plans/2026-07-10-rust-vbuf-6db-direct-storage.md`.
+//! The buffer/node newtypes wrap the Rust [`storage::Buffer`] directly
+//! and their methods call `Buffer` methods -- no FFI hop. A node handle
+//! cannot be a bare pointer (Rust node identity is a 64-bit slotmap
+//! [`storage::NodeKey`] and x86 pointers are 32-bit), so the node
+//! newtypes carry a `(buffer, key)` back-pointer struct. [`VbufBackend`]
+//! stays routed to the C-shim: it drives the Win32 render-thread
+//! machinery (timer, hooks, `requestUpdate`), which is C++-side
+//! regardless of where the tree is stored. The transitional Cargo
+//! feature that used to gate the old C-shim storage path was removed
+//! once Rust storage was verified live (Phase 6e Stage E); see
+//! `docs/plans/2026-07-11-rust-vbuf-6e-design.md`.
 
 use core::ffi::c_void;
 
-#[cfg(feature = "direct_rust_storage")]
 use storage::{Buffer, ControlFieldIdentifier, FieldNodeKind, NodeKey};
 
 #[cfg(feature = "test_stubs")]
@@ -54,19 +50,13 @@ pub mod backend;
 /// crossing into C++. See module docs for conventions.
 pub mod extern_api;
 
-/// Callback invoked once with an OUT string from a `vbuf_node_get_*`
-/// call. The pointer + length describe a wide-string range borrowed
-/// from a `std::wstring` inside the C++ shim and is only valid for the
-/// duration of the callback; copy if you need to keep it.
-pub type VbufStringCallback =
-    unsafe extern "C" fn(ctx: *mut c_void, ptr: *const u16, len: usize);
-
 // ---------------------------------------------------------------------
 // C-shim externs
 // ---------------------------------------------------------------------
 
-// Backend-level externs that stay routed to the C-shim in *both*
-// configs (they neither construct nor consume Rust node identity).
+// Backend-level externs routed to the C-shim: they drive the Win32
+// render-thread machinery and neither construct nor consume Rust node
+// identity (the tree itself lives in the Rust `storage::Buffer`).
 unsafe extern "C" {
     pub fn vbuf_backend_get_root_doc_handle(backend: *mut c_void) -> i32;
     pub fn vbuf_backend_get_root_id(backend: *mut c_void) -> i32;
@@ -76,124 +66,13 @@ unsafe extern "C" {
         backend: *mut c_void,
     ) -> i32;
 
-    // Phase 6e (Stage A c_shim helpers). These stay routed to the
-    // C-shim in *both* configs: they arm / query the render-thread
-    // machinery, which is Win32-side C++ regardless of where the tree
-    // is stored, and neither constructs nor consumes node identity.
+    // Phase 6e (Stage A c_shim helpers): they arm / query the
+    // render-thread machinery, which is Win32-side C++ regardless of
+    // where the tree is stored, and neither constructs nor consumes
+    // node identity.
     pub fn vbuf_backend_request_update(backend: *mut c_void);
     pub fn vbuf_backend_get_rust_storage_buffer(
         backend: *mut c_void,
-    ) -> *mut c_void;
-}
-
-// Buffer/node externs (and the backend externs that traffic in node
-// handles) are only reached when the feature is off; under the feature
-// the equivalent operations run against the Rust `Buffer` instead.
-#[cfg(not(feature = "direct_rust_storage"))]
-unsafe extern "C" {
-    pub fn vbuf_buffer_add_control_field_node(
-        buffer: *mut c_void,
-        parent: *mut c_void,
-        previous: *mut c_void,
-        doc_handle: i32,
-        id: i32,
-        is_block: i32,
-    ) -> *mut c_void;
-
-    pub fn vbuf_buffer_add_text_field_node(
-        buffer: *mut c_void,
-        parent: *mut c_void,
-        previous: *mut c_void,
-        text_ptr: *const u16,
-        text_len: usize,
-    ) -> *mut c_void;
-
-    pub fn vbuf_buffer_add_reference_node(
-        buffer: *mut c_void,
-        parent: *mut c_void,
-        previous: *mut c_void,
-        node: *mut c_void,
-    ) -> *mut c_void;
-
-    pub fn vbuf_buffer_get_control_field_node_with_identifier(
-        buffer: *mut c_void,
-        doc_handle: i32,
-        id: i32,
-    ) -> *mut c_void;
-
-    pub fn vbuf_buffer_is_descendant_node(
-        buffer: *mut c_void,
-        parent: *mut c_void,
-        descendant: *mut c_void,
-    ) -> i32;
-
-    pub fn vbuf_buffer_is_node_in_buffer(
-        buffer: *mut c_void,
-        node: *mut c_void,
-    ) -> i32;
-
-    pub fn vbuf_node_add_attribute(
-        node: *mut c_void,
-        name_ptr: *const u16,
-        name_len: usize,
-        value_ptr: *const u16,
-        value_len: usize,
-    ) -> i32;
-
-    pub fn vbuf_node_get_attribute(
-        node: *mut c_void,
-        name_ptr: *const u16,
-        name_len: usize,
-        ctx: *mut c_void,
-        cb: VbufStringCallback,
-    ) -> i32;
-
-    pub fn vbuf_node_get_attributes_string(
-        node: *mut c_void,
-        ctx: *mut c_void,
-        cb: VbufStringCallback,
-    );
-
-    pub fn vbuf_node_get_length(node: *mut c_void) -> i32;
-    pub fn vbuf_node_is_block(node: *mut c_void) -> i32;
-    pub fn vbuf_node_set_is_block(node: *mut c_void, value: i32);
-    pub fn vbuf_node_is_hidden(node: *mut c_void) -> i32;
-    pub fn vbuf_node_set_is_hidden(node: *mut c_void, value: i32);
-    pub fn vbuf_node_has_useful_content(node: *mut c_void) -> i32;
-    pub fn vbuf_node_content_matches_string(
-        node: *mut c_void,
-        str_ptr: *const u16,
-        str_len: usize,
-    ) -> i32;
-
-    pub fn vbuf_node_set_always_rerender_descendants(
-        node: *mut c_void,
-        value: i32,
-    );
-    pub fn vbuf_node_set_always_rerender_children(
-        node: *mut c_void,
-        value: i32,
-    );
-    pub fn vbuf_node_set_deny_reuse_if_previous_siblings_changed(
-        node: *mut c_void,
-        value: i32,
-    );
-    pub fn vbuf_node_set_requires_parent_update(
-        node: *mut c_void,
-        value: i32,
-    );
-
-    pub fn vbuf_backend_invalidate_subtree(
-        backend: *mut c_void,
-        node: *mut c_void,
-    ) -> i32;
-
-    pub fn vbuf_backend_reuse_existing_node(
-        backend: *mut c_void,
-        parent: *mut c_void,
-        previous: *mut c_void,
-        doc_handle: i32,
-        id: i32,
     ) -> *mut c_void;
 }
 
@@ -201,64 +80,39 @@ unsafe extern "C" {
 // Opaque-handle newtypes
 // ---------------------------------------------------------------------
 //
-// The public method *surface* below is identical in both feature
-// configs; only the wrapped handle representation and the method bodies
-// differ. With the feature off the handles are raw C++ pointers; with
-// it on, buffer handles are `*mut storage::Buffer` and node handles are
-// a `(buffer, key)` back-pointer.
+// Buffer handles are `*mut storage::Buffer` and node handles are a
+// `(buffer, key)` back-pointer into the owning Rust arena.
 
 /// A `(*mut storage::Buffer, NodeKey)` back-pointer used as the node
-/// handle under `direct_rust_storage`. The buffer pointer lets the
-/// buffer-less node methods (`get_length`, `add_attribute`, ...) reach
-/// their owning arena, matching the C++ node's implicit buffer access.
-#[cfg(feature = "direct_rust_storage")]
+/// handle. The buffer pointer lets the buffer-less node methods
+/// (`get_length`, `add_attribute`, ...) reach their owning arena,
+/// matching the C++ node's implicit buffer access.
 #[derive(Clone, Copy)]
 pub struct NodeRef {
     pub buffer: *mut Buffer,
     pub key: NodeKey,
 }
 
-/// A `VBufStorage_buffer_t*` (also reached as the upcast of a
-/// `VBufBackend_t*` since the backend IS-A buffer).
-#[cfg(not(feature = "direct_rust_storage"))]
-#[derive(Clone, Copy)]
-pub struct VbufBuffer(pub *mut c_void);
-
 /// A live Rust [`storage::Buffer`]. Owned elsewhere (a `Box<Buffer>` /
 /// an embedding struct); this handle only borrows it for the duration
 /// of each call.
-#[cfg(feature = "direct_rust_storage")]
 #[derive(Clone, Copy)]
 pub struct VbufBuffer(pub *mut Buffer);
 
-/// A `VBufStorage_fieldNode_t*` (text or control field node).
-#[cfg(not(feature = "direct_rust_storage"))]
-#[derive(Clone, Copy)]
-pub struct VbufFieldNode(pub *mut c_void);
-
 /// A field node (text or control) identified by its buffer + slotmap
 /// key.
-#[cfg(feature = "direct_rust_storage")]
 #[derive(Clone, Copy)]
 pub struct VbufFieldNode(pub NodeRef);
 
-/// A `VBufStorage_controlFieldNode_t*`. Subtype of `VbufFieldNode`;
-/// `as_field_node()` upcasts when a field-node-only API is needed.
-#[cfg(not(feature = "direct_rust_storage"))]
-#[derive(Clone, Copy)]
-pub struct VbufControlFieldNode(pub *mut c_void);
-
 /// A control field node identified by its buffer + slotmap key.
 /// Subtype of `VbufFieldNode`; `as_field_node()` upcasts.
-#[cfg(feature = "direct_rust_storage")]
 #[derive(Clone, Copy)]
 pub struct VbufControlFieldNode(pub NodeRef);
 
-/// A `VBufBackend_t*`. Stays routed to the C-shim in both feature
-/// configs (Phase 6e re-homes backend orchestration onto the Rust
-/// `Buffer`). Subtype of `VbufBuffer`; `as_buffer()` upcasts -- but
-/// only when the feature is off, since under it a C++ backend pointer
-/// is not a Rust `Buffer`.
+/// A `VBufBackend_t*`. Stays routed to the C-shim: it drives the Win32
+/// render-thread machinery (timer, hooks, `requestUpdate`), while the
+/// live tree lives in the Rust `storage::Buffer`. A C++ backend pointer
+/// is not a Rust `Buffer`, so there is no `as_buffer()` upcast.
 #[derive(Clone, Copy)]
 pub struct VbufBackend(pub *mut c_void);
 
@@ -278,41 +132,20 @@ impl VbufBuffer {
         id: i32,
         is_block: bool,
     ) -> Option<VbufControlFieldNode> {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            let raw = unsafe {
-                vbuf_buffer_add_control_field_node(
-                    self.0,
-                    parent.map(|p| p.0).unwrap_or(core::ptr::null_mut()),
-                    previous.map(|p| p.0).unwrap_or(core::ptr::null_mut()),
-                    doc_handle,
-                    id,
-                    is_block as i32,
-                )
-            };
-            if raw.is_null() {
-                None
-            } else {
-                Some(VbufControlFieldNode(raw))
-            }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            let b = unsafe { &mut *self.0 };
-            let identifier = ControlFieldIdentifier { doc_handle, id };
-            b.add_control_field_node(
-                parent.map(|p| p.0.key),
-                previous.map(|p| p.0.key),
-                identifier,
-                is_block,
-            )
-            .map(|key| {
-                VbufControlFieldNode(NodeRef {
-                    buffer: self.0,
-                    key,
-                })
+        let b = unsafe { &mut *self.0 };
+        let identifier = ControlFieldIdentifier { doc_handle, id };
+        b.add_control_field_node(
+            parent.map(|p| p.0.key),
+            previous.map(|p| p.0.key),
+            identifier,
+            is_block,
+        )
+        .map(|key| {
+            VbufControlFieldNode(NodeRef {
+                buffer: self.0,
+                key,
             })
-        }
+        })
     }
 
     /// Create a new text field node containing `text` (UTF-16) attached
@@ -327,38 +160,18 @@ impl VbufBuffer {
         previous: Option<VbufFieldNode>,
         text: &[u16],
     ) -> Option<VbufFieldNode> {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            let raw = unsafe {
-                vbuf_buffer_add_text_field_node(
-                    self.0,
-                    parent.map(|p| p.0).unwrap_or(core::ptr::null_mut()),
-                    previous.map(|p| p.0).unwrap_or(core::ptr::null_mut()),
-                    text.as_ptr(),
-                    text.len(),
-                )
-            };
-            if raw.is_null() {
-                None
-            } else {
-                Some(VbufFieldNode(raw))
-            }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            let b = unsafe { &mut *self.0 };
-            b.add_text_field_node(
-                parent.map(|p| p.0.key),
-                previous.map(|p| p.0.key),
-                text.to_vec(),
-            )
-            .map(|key| {
-                VbufFieldNode(NodeRef {
-                    buffer: self.0,
-                    key,
-                })
+        let b = unsafe { &mut *self.0 };
+        b.add_text_field_node(
+            parent.map(|p| p.0.key),
+            previous.map(|p| p.0.key),
+            text.to_vec(),
+        )
+        .map(|key| {
+            VbufFieldNode(NodeRef {
+                buffer: self.0,
+                key,
             })
-        }
+        })
     }
 
     /// Add a reference node copying from an existing control field node.
@@ -373,44 +186,25 @@ impl VbufBuffer {
         previous: Option<VbufFieldNode>,
         node: VbufControlFieldNode,
     ) -> Option<VbufFieldNode> {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            let raw = unsafe {
-                vbuf_buffer_add_reference_node(
-                    self.0,
-                    parent.map(|p| p.0).unwrap_or(core::ptr::null_mut()),
-                    previous.map(|p| p.0).unwrap_or(core::ptr::null_mut()),
-                    node.0,
-                )
-            };
-            if raw.is_null() {
-                None
-            } else {
-                Some(VbufFieldNode(raw))
-            }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            // The referenced node's identifier and key come from its
-            // own buffer; only the identifier is looked up here and the
-            // key is stored verbatim for `replace_subtrees` resolution.
-            let referenced = node.0;
-            let identifier = unsafe { &*referenced.buffer }
-                .identifier_of_control_field_node(referenced.key)?;
-            let b = unsafe { &mut *self.0 };
-            b.add_reference_node(
-                parent.map(|p| p.0.key),
-                previous.map(|p| p.0.key),
-                identifier,
-                referenced.key,
-            )
-            .map(|key| {
-                VbufFieldNode(NodeRef {
-                    buffer: self.0,
-                    key,
-                })
+        // The referenced node's identifier and key come from its
+        // own buffer; only the identifier is looked up here and the
+        // key is stored verbatim for `replace_subtrees` resolution.
+        let referenced = node.0;
+        let identifier = unsafe { &*referenced.buffer }
+            .identifier_of_control_field_node(referenced.key)?;
+        let b = unsafe { &mut *self.0 };
+        b.add_reference_node(
+            parent.map(|p| p.0.key),
+            previous.map(|p| p.0.key),
+            identifier,
+            referenced.key,
+        )
+        .map(|key| {
+            VbufFieldNode(NodeRef {
+                buffer: self.0,
+                key,
             })
-        }
+        })
     }
 
     /// Look up a control field node by `(docHandle, ID)`.
@@ -423,33 +217,15 @@ impl VbufBuffer {
         doc_handle: i32,
         id: i32,
     ) -> Option<VbufControlFieldNode> {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            let raw = unsafe {
-                vbuf_buffer_get_control_field_node_with_identifier(
-                    self.0,
-                    doc_handle,
-                    id,
-                )
-            };
-            if raw.is_null() {
-                None
-            } else {
-                Some(VbufControlFieldNode(raw))
-            }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            let b = unsafe { &*self.0 };
-            b.get_control_field_node_with_identifier(doc_handle, id).map(
-                |key| {
-                    VbufControlFieldNode(NodeRef {
-                        buffer: self.0,
-                        key,
-                    })
-                },
-            )
-        }
+        let b = unsafe { &*self.0 };
+        b.get_control_field_node_with_identifier(doc_handle, id).map(
+            |key| {
+                VbufControlFieldNode(NodeRef {
+                    buffer: self.0,
+                    key,
+                })
+            },
+        )
     }
 
     /// `true` if `descendant` is reachable through `parent`'s subtree.
@@ -462,21 +238,8 @@ impl VbufBuffer {
         parent: VbufFieldNode,
         descendant: VbufFieldNode,
     ) -> bool {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            unsafe {
-                vbuf_buffer_is_descendant_node(
-                    self.0,
-                    parent.0,
-                    descendant.0,
-                ) != 0
-            }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            unsafe { &*self.0 }
-                .is_descendant_node(parent.0.key, descendant.0.key)
-        }
+        unsafe { &*self.0 }
+            .is_descendant_node(parent.0.key, descendant.0.key)
     }
 
     /// `true` if `node` belongs to this buffer.
@@ -485,22 +248,12 @@ impl VbufBuffer {
     ///
     /// Both handles must be live.
     pub unsafe fn is_node_in_buffer(self, node: VbufFieldNode) -> bool {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            unsafe { vbuf_buffer_is_node_in_buffer(self.0, node.0) != 0 }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            unsafe { &*self.0 }.contains(node.0.key)
-        }
+        unsafe { &*self.0 }.contains(node.0.key)
     }
 }
 
-/// Direct-storage-only cross-buffer reuse, re-homing the
-/// `VbufBackend::reuse_existing_node` path (compiled out under the
-/// feature) onto the Rust `Buffer` for Phase 6e. See Decision 4 of
-/// `docs/plans/2026-07-11-rust-vbuf-6e-design.md`.
-#[cfg(feature = "direct_rust_storage")]
+/// Cross-buffer reuse over the Rust `Buffer` (Phase 6e). See Decision 4
+/// of `docs/plans/2026-07-11-rust-vbuf-6e-design.md`.
 impl VbufBuffer {
     /// Look up a control field node in **this** (the live / "main")
     /// buffer that is safe to reuse while `temp` re-renders a subtree.
@@ -563,174 +316,74 @@ impl VbufBuffer {
 }
 
 impl VbufFieldNode {
-    /// Add or replace an attribute. Returns `true` on success.
-    ///
-    /// Under `direct_rust_storage`, a stale key returns `false` (the
-    /// C++ shim would dereference a dangling pointer instead).
+    /// Add or replace an attribute. Returns `true` on success; a stale
+    /// key returns `false`.
     ///
     /// # Safety
     ///
     /// `self` must be a live field node.
     pub unsafe fn add_attribute(self, name: &[u16], value: &[u16]) -> bool {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            unsafe {
-                vbuf_node_add_attribute(
-                    self.0,
-                    name.as_ptr(),
-                    name.len(),
-                    value.as_ptr(),
-                    value.len(),
-                ) != 0
-            }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            match unsafe { &mut *self.0.buffer }.get_mut(self.0.key) {
-                Some(n) => n.add_attribute(name, value),
-                None => false,
-            }
+        match unsafe { &mut *self.0.buffer }.get_mut(self.0.key) {
+            Some(n) => n.add_attribute(name, value),
+            None => false,
         }
     }
 
     /// Returns the attribute value as a UTF-16 `Vec`, or `None` if the
-    /// attribute is absent (or, under `direct_rust_storage`, the key is
-    /// stale).
+    /// attribute is absent or the key is stale.
     ///
     /// # Safety
     ///
     /// `self` must be a live field node.
     pub unsafe fn get_attribute(self, name: &[u16]) -> Option<Vec<u16>> {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            struct Ctx(Option<Vec<u16>>);
-            unsafe extern "C" fn cb(
-                ctx: *mut c_void,
-                ptr: *const u16,
-                len: usize,
-            ) {
-                let ctx = unsafe { &mut *(ctx as *mut Ctx) };
-                ctx.0 = Some(
-                    unsafe { core::slice::from_raw_parts(ptr, len) }.to_vec(),
-                );
-            }
-            let mut ctx = Ctx(None);
-            let found = unsafe {
-                vbuf_node_get_attribute(
-                    self.0,
-                    name.as_ptr(),
-                    name.len(),
-                    &mut ctx as *mut _ as *mut c_void,
-                    cb,
-                )
-            };
-            if found != 0 {
-                ctx.0
-            } else {
-                None
-            }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            unsafe { &*self.0.buffer }
-                .get(self.0.key)
-                .and_then(|n| n.get_attribute(name).map(|v| v.to_vec()))
-        }
+        unsafe { &*self.0.buffer }
+            .get(self.0.key)
+            .and_then(|n| n.get_attribute(name).map(|v| v.to_vec()))
     }
 
     /// Returns the `name:value;...`-formatted string of every attribute
-    /// (empty for a stale key under `direct_rust_storage`).
+    /// (empty for a stale key).
     ///
     /// # Safety
     ///
     /// `self` must be a live field node.
     pub unsafe fn get_attributes_string(self) -> Vec<u16> {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            struct Ctx(Vec<u16>);
-            unsafe extern "C" fn cb(
-                ctx: *mut c_void,
-                ptr: *const u16,
-                len: usize,
-            ) {
-                let ctx = unsafe { &mut *(ctx as *mut Ctx) };
-                ctx.0 =
-                    unsafe { core::slice::from_raw_parts(ptr, len) }.to_vec();
-            }
-            let mut ctx = Ctx(Vec::new());
-            unsafe {
-                vbuf_node_get_attributes_string(
-                    self.0,
-                    &mut ctx as *mut _ as *mut c_void,
-                    cb,
-                );
-            }
-            ctx.0
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            unsafe { &*self.0.buffer }
-                .get(self.0.key)
-                .map(|n| n.get_attributes_string())
-                .unwrap_or_default()
-        }
+        unsafe { &*self.0.buffer }
+            .get(self.0.key)
+            .map(|n| n.get_attributes_string())
+            .unwrap_or_default()
     }
 
-    /// Rendered length of this node (`0` for a stale key under
-    /// `direct_rust_storage`).
+    /// Rendered length of this node (`0` for a stale key).
     ///
     /// # Safety
     ///
     /// `self` must be a live field node.
     pub unsafe fn get_length(self) -> i32 {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            unsafe { vbuf_node_get_length(self.0) }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            unsafe { &*self.0.buffer }
-                .get(self.0.key)
-                .map(|n| n.length)
-                .unwrap_or(0)
-        }
+        unsafe { &*self.0.buffer }
+            .get(self.0.key)
+            .map(|n| n.length)
+            .unwrap_or(0)
     }
 
     /// # Safety
     ///
     /// `self` must be a live field node.
     pub unsafe fn is_block(self) -> bool {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            unsafe { vbuf_node_is_block(self.0) != 0 }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            unsafe { &*self.0.buffer }
-                .get(self.0.key)
-                .map(|n| n.is_block)
-                .unwrap_or(false)
-        }
+        unsafe { &*self.0.buffer }
+            .get(self.0.key)
+            .map(|n| n.is_block)
+            .unwrap_or(false)
     }
 
-    /// Set the `isBlock` flag. No-op for a stale key under
-    /// `direct_rust_storage`.
+    /// Set the `isBlock` flag. No-op for a stale key.
     ///
     /// # Safety
     ///
     /// `self` must be a live field node.
     pub unsafe fn set_is_block(self, value: bool) {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            unsafe { vbuf_node_set_is_block(self.0, value as i32) }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            if let Some(n) =
-                unsafe { &mut *self.0.buffer }.get_mut(self.0.key)
-            {
-                n.is_block = value;
-            }
+        if let Some(n) = unsafe { &mut *self.0.buffer }.get_mut(self.0.key) {
+            n.is_block = value;
         }
     }
 
@@ -738,37 +391,20 @@ impl VbufFieldNode {
     ///
     /// `self` must be a live field node.
     pub unsafe fn is_hidden(self) -> bool {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            unsafe { vbuf_node_is_hidden(self.0) != 0 }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            unsafe { &*self.0.buffer }
-                .get(self.0.key)
-                .map(|n| n.is_hidden)
-                .unwrap_or(false)
-        }
+        unsafe { &*self.0.buffer }
+            .get(self.0.key)
+            .map(|n| n.is_hidden)
+            .unwrap_or(false)
     }
 
-    /// Set the `isHidden` flag. No-op for a stale key under
-    /// `direct_rust_storage`.
+    /// Set the `isHidden` flag. No-op for a stale key.
     ///
     /// # Safety
     ///
     /// `self` must be a live field node.
     pub unsafe fn set_is_hidden(self, value: bool) {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            unsafe { vbuf_node_set_is_hidden(self.0, value as i32) }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            if let Some(n) =
-                unsafe { &mut *self.0.buffer }.get_mut(self.0.key)
-            {
-                n.is_hidden = value;
-            }
+        if let Some(n) = unsafe { &mut *self.0.buffer }.get_mut(self.0.key) {
+            n.is_hidden = value;
         }
     }
 
@@ -780,14 +416,7 @@ impl VbufFieldNode {
     ///
     /// `self` must be a live field node.
     pub unsafe fn has_useful_content(self) -> bool {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            unsafe { vbuf_node_has_useful_content(self.0) != 0 }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            unsafe { &*self.0.buffer }.node_has_useful_content(self.0.key)
-        }
+        unsafe { &*self.0.buffer }.node_has_useful_content(self.0.key)
     }
 
     /// `true` when the node's rendered text content equals `s`. See
@@ -797,18 +426,7 @@ impl VbufFieldNode {
     ///
     /// `self` must be a live field node.
     pub unsafe fn content_matches_string(self, s: &[u16]) -> bool {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            unsafe {
-                vbuf_node_content_matches_string(self.0, s.as_ptr(), s.len())
-                    != 0
-            }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            unsafe { &*self.0.buffer }
-                .node_content_matches_string(self.0.key, s)
-        }
+        unsafe { &*self.0.buffer }.node_content_matches_string(self.0.key, s)
     }
 }
 
@@ -823,17 +441,8 @@ impl VbufControlFieldNode {
     ///
     /// `self` must be a live control field node.
     pub unsafe fn set_always_rerender_descendants(self, value: bool) {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            unsafe {
-                vbuf_node_set_always_rerender_descendants(self.0, value as i32)
-            }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            unsafe {
-                self.with_control(|d| d.always_rerender_descendants = value)
-            }
+        unsafe {
+            self.with_control(|d| d.always_rerender_descendants = value)
         }
     }
 
@@ -841,18 +450,7 @@ impl VbufControlFieldNode {
     ///
     /// `self` must be a live control field node.
     pub unsafe fn set_always_rerender_children(self, value: bool) {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            unsafe {
-                vbuf_node_set_always_rerender_children(self.0, value as i32)
-            }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            unsafe {
-                self.with_control(|d| d.always_rerender_children = value)
-            }
-        }
+        unsafe { self.with_control(|d| d.always_rerender_children = value) }
     }
 
     /// # Safety
@@ -862,22 +460,10 @@ impl VbufControlFieldNode {
         self,
         value: bool,
     ) {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            unsafe {
-                vbuf_node_set_deny_reuse_if_previous_siblings_changed(
-                    self.0,
-                    value as i32,
-                )
-            }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            unsafe {
-                self.with_control(|d| {
-                    d.deny_reuse_if_previous_siblings_changed = value
-                })
-            }
+        unsafe {
+            self.with_control(|d| {
+                d.deny_reuse_if_previous_siblings_changed = value
+            })
         }
     }
 
@@ -885,24 +471,12 @@ impl VbufControlFieldNode {
     ///
     /// `self` must be a live control field node.
     pub unsafe fn set_requires_parent_update(self, value: bool) {
-        #[cfg(not(feature = "direct_rust_storage"))]
-        {
-            unsafe {
-                vbuf_node_set_requires_parent_update(self.0, value as i32)
-            }
-        }
-        #[cfg(feature = "direct_rust_storage")]
-        {
-            unsafe {
-                self.with_control(|d| d.requires_parent_update = value)
-            }
-        }
+        unsafe { self.with_control(|d| d.requires_parent_update = value) }
     }
 }
 
-/// Direct-storage-only helper: run `f` against this node's control
-/// field data. No-op for a stale key or a non-control node.
-#[cfg(feature = "direct_rust_storage")]
+/// Helper: run `f` against this node's control field data. No-op for a
+/// stale key or a non-control node.
 impl VbufControlFieldNode {
     #[inline]
     unsafe fn with_control<F: FnOnce(&mut storage::ControlFieldData)>(
@@ -918,18 +492,6 @@ impl VbufControlFieldNode {
 }
 
 impl VbufBackend {
-    /// Upcast to the buffer base type for use with `VbufBuffer` methods.
-    ///
-    /// Only available when `direct_rust_storage` is **off**: under the
-    /// feature a `VbufBuffer` wraps a `*mut storage::Buffer`, and the
-    /// C++ backend pointer is not a Rust `Buffer`, so the upcast would
-    /// be a lie. Backend-as-buffer access returns in Phase 6e once
-    /// backend orchestration is re-homed onto the Rust `Buffer`.
-    #[cfg(not(feature = "direct_rust_storage"))]
-    pub fn as_buffer(self) -> VbufBuffer {
-        VbufBuffer(self.0)
-    }
-
     /// # Safety
     ///
     /// `self` must be a live backend.
@@ -998,75 +560,16 @@ impl VbufBackend {
     pub unsafe fn get_rust_storage_buffer(self) -> *mut c_void {
         unsafe { vbuf_backend_get_rust_storage_buffer(self.0) }
     }
-
-    /// Mark `node`'s subtree for re-render on the next update tick.
-    ///
-    /// Only available when `direct_rust_storage` is **off**: under the
-    /// feature node handles are Rust keys, incompatible with the C++
-    /// backend that still owns invalidation. Re-homed in Phase 6e.
-    ///
-    /// # Safety
-    ///
-    /// `self` must be a live backend; `node` must be a live control
-    /// field node owned by this backend.
-    #[cfg(not(feature = "direct_rust_storage"))]
-    pub unsafe fn invalidate_subtree(
-        self,
-        node: VbufControlFieldNode,
-    ) -> bool {
-        unsafe { vbuf_backend_invalidate_subtree(self.0, node.0) != 0 }
-    }
-
-    /// Look up an existing control field node on this backend that is
-    /// safe to reuse during a partial re-render. Returns `None` when no
-    /// matching node exists, when the backend has been told to always
-    /// rerender that subtree, or when the node refused reuse.
-    /// See `VBufBackend_t::reuseExistingNodeInRender` in
-    /// `nvdaHelper/vbufBase/backend.cpp` for the full reuse contract.
-    ///
-    /// Only available when `direct_rust_storage` is **off**: under the
-    /// feature node handles are Rust keys, incompatible with the C++
-    /// backend. Re-homed in Phase 6e.
-    ///
-    /// # Safety
-    ///
-    /// `self` must be a live backend; `parent` and `previous`, when
-    /// `Some`, must be live nodes belonging to a buffer in mid-render.
-    #[cfg(not(feature = "direct_rust_storage"))]
-    pub unsafe fn reuse_existing_node(
-        self,
-        parent: Option<VbufControlFieldNode>,
-        previous: Option<VbufFieldNode>,
-        doc_handle: i32,
-        id: i32,
-    ) -> Option<VbufControlFieldNode> {
-        let raw = unsafe {
-            vbuf_backend_reuse_existing_node(
-                self.0,
-                parent.map(|p| p.0).unwrap_or(core::ptr::null_mut()),
-                previous.map(|p| p.0).unwrap_or(core::ptr::null_mut()),
-                doc_handle,
-                id,
-            )
-        };
-        if raw.is_null() {
-            None
-        } else {
-            Some(VbufControlFieldNode(raw))
-        }
-    }
 }
 
 // =====================================================================
-// Direct-storage wrapper tests
+// Storage wrapper tests
 // =====================================================================
 //
 // These exercise the newtype surface end-to-end against the *real*
-// Rust `Buffer` (only reachable when the feature is on; otherwise the
-// methods would need the C++ shim, which a stand-alone test binary
-// can't link).
+// Rust `Buffer`.
 
-#[cfg(all(test, feature = "direct_rust_storage"))]
+#[cfg(test)]
 mod direct_tests {
     use super::*;
 

@@ -221,9 +221,9 @@ pub struct Block1Continue {
 ///
 /// # Safety
 ///
-/// `pacc` must point at a live `IAccessible2`; `buffer`, `ctx.backend`
-/// (and `ctx.main` under `direct_rust_storage`), `parent`, `previous`
-/// (if `Some`) must be live for the duration.
+/// `pacc` must point at a live `IAccessible2`; `buffer`, `ctx.backend`,
+/// `ctx.main`, `parent`, `previous` (if `Some`) must be live for the
+/// duration.
 pub unsafe fn block1(
     pacc: &IAccessible2,
     buffer: VbufBuffer,
@@ -354,15 +354,17 @@ pub unsafe fn block1(
 /// pointing at a reuse-eligible node in the backend's live/main storage,
 /// or `None` when reuse doesn't apply.
 ///
-/// Returns `None` for an initial render (where `buffer` *is* the main
-/// storage), mirroring the C++ `buffer != this` guard — an initial
-/// render has nothing to reuse against.
+/// The reuse query runs against the Rust main `Buffer` (`ctx.main`)
+/// directly; `buffer` is the temp render buffer. Returns `None` for an
+/// initial render (where `buffer` *is* the main storage), mirroring the
+/// C++ `buffer != this` guard — an initial render has nothing to reuse
+/// against and `buffer` must be a distinct allocation from `ctx.main`
+/// otherwise.
 ///
 /// # Safety
 ///
 /// All borrowed handles must be live; `parent_node` / `previous` belong
 /// to `buffer` (the in-flight render target).
-#[cfg(not(feature = "direct_rust_storage"))]
 unsafe fn reuse_existing_node(
     ctx: &FillVBufCtx,
     buffer: VbufBuffer,
@@ -371,36 +373,9 @@ unsafe fn reuse_existing_node(
     doc_handle: i32,
     id: i32,
 ) -> Option<VbufControlFieldNode> {
-    // Feature-off: the backend IS-A C++ buffer; skip reuse when we're
-    // rendering straight into it (the initial render).
-    if buffer.0 == ctx.backend.as_buffer().0 {
-        return None;
-    }
-    unsafe {
-        ctx.backend
-            .reuse_existing_node(Some(parent_node), previous, doc_handle, id)
-    }
-}
-
-/// See the feature-off variant. Under `direct_rust_storage` the reuse
-/// query runs against the Rust main `Buffer` (`ctx.main`) directly;
-/// `buffer` is the temp render buffer and must be a distinct allocation.
-///
-/// # Safety
-///
-/// See the feature-off variant.
-#[cfg(feature = "direct_rust_storage")]
-unsafe fn reuse_existing_node(
-    ctx: &FillVBufCtx,
-    buffer: VbufBuffer,
-    parent_node: VbufControlFieldNode,
-    previous: Option<VbufFieldNode>,
-    doc_handle: i32,
-    id: i32,
-) -> Option<VbufControlFieldNode> {
-    // Feature-on: `ctx.main` is the live Rust buffer. An initial render
-    // targets it directly (buffer == main); reuse only applies when
-    // `buffer` is a distinct temp buffer.
+    // `ctx.main` is the live Rust buffer. An initial render targets it
+    // directly (buffer == main); reuse only applies when `buffer` is a
+    // distinct temp buffer.
     if buffer.0 == ctx.main.0 {
         return None;
     }
@@ -1943,17 +1918,15 @@ pub unsafe fn block7(
 /// Constructed once at the C++ entry point, then borrowed by every
 /// recursive Rust frame.
 pub struct FillVBufCtx {
-    /// The vbuf backend handle, used for cross-buffer reuse via
-    /// [`VbufBackend::reuse_existing_node`] when `direct_rust_storage`
-    /// is off. Equivalent to `this` in the C++ original.
+    /// The vbuf backend handle. Equivalent to `this` in the C++
+    /// original; used to drive the render-thread machinery
+    /// (`force_update`, `request_update`, root identifiers).
     pub backend: VbufBackend,
-    /// The backend's live ("main") Rust `storage::Buffer` handle. Under
-    /// `direct_rust_storage`, cross-buffer reuse queries this directly
-    /// (the C++ backend is not a Rust `Buffer`, so
-    /// [`VbufBackend::reuse_existing_node`] is compiled out). Set once
-    /// by the update orchestration from `state.buffer`; a partial
-    /// re-render's temp buffer is a *different* allocation from `main`.
-    #[cfg(feature = "direct_rust_storage")]
+    /// The backend's live ("main") Rust `storage::Buffer` handle.
+    /// Cross-buffer reuse queries this directly (the C++ backend is not
+    /// a Rust `Buffer`). Set once by the update orchestration from
+    /// `state.buffer`; a partial re-render's temp buffer is a
+    /// *different* allocation from `main`.
     pub main: VbufBuffer,
     /// The IA2 unique ID of the document root node. Used for the
     /// `isRoot` check (gecko_ia2.cpp:620). Equivalent to

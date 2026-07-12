@@ -15,16 +15,13 @@ use core::ffi::c_void;
 
 use windows::core::Interface;
 
-#[cfg(feature = "direct_rust_storage")]
 use crate::fill_vbuf::{fill_vbuf, FillVBufCtx};
 use crate::from_identifier::from_identifier;
 use crate::interfaces::IAccessible2;
 use crate::toolkit_name::get_toolkit_name_native;
 use nvda_vbuf::storage::Buffer;
-use nvda_vbuf::VbufBackend;
-#[cfg(feature = "direct_rust_storage")]
 use nvda_vbuf::storage::{FieldNodeKind, NodeKey};
-#[cfg(feature = "direct_rust_storage")]
+use nvda_vbuf::VbufBackend;
 use nvda_vbuf::VbufBuffer;
 
 // MSAA event IDs (oleacc.h).
@@ -74,12 +71,11 @@ pub struct GeckoBackendState {
     /// because the Rust drop path may run on a thread different
     /// from the one that created the COM pointer.
     pub root_doc_acc: Option<IAccessible2>,
-    /// The live gecko storage tree (Phase 6e). Present in both feature
-    /// configs but only rendered into / read from once
-    /// `direct_rust_storage` is enabled at the flip (Stage D); until
-    /// then it stays empty and the C++ `VBufStorage_buffer_t` remains
-    /// the live storage. Embedding it here ties its lifetime to the
-    /// per-backend Rust state (created/destroyed with `GeckoBackendState`).
+    /// The live gecko storage tree (Phase 6e). Rendered into and read
+    /// out of by the gecko backend; the C++ `VBufStorage_buffer_t` is no
+    /// longer used for gecko storage. Embedding it here ties its
+    /// lifetime to the per-backend Rust state (created/destroyed with
+    /// `GeckoBackendState`).
     pub buffer: Buffer,
 }
 
@@ -153,9 +149,7 @@ pub unsafe extern "C" fn nvda_ia2_gecko_backend_destroy(
 /// Address of this backend's embedded Rust `storage::Buffer`. Backs
 /// `GeckoVBufBackend_t::getRustStorageBuffer` (routed through
 /// `nvda_ia2_gecko_backend_get_buffer`) and, transitively, the
-/// vbufRemote read RPCs and the update orchestration. Present in both
-/// feature configs; the buffer is only *live* once
-/// `direct_rust_storage` is enabled (Stage D).
+/// vbufRemote read RPCs and the update orchestration.
 ///
 /// # Safety
 ///
@@ -266,7 +260,6 @@ pub unsafe extern "C" fn nvda_ia2_gecko_backend_version_specific_init(
 /// * Must run on the render thread with the backend lock held (the C++
 ///   `update()` override acquires it), so no other thread touches
 ///   `state.buffer` for the duration.
-#[cfg(feature = "direct_rust_storage")]
 #[no_mangle]
 pub unsafe extern "C" fn nvda_ia2_gecko_backend_update(
     state: *mut c_void,
@@ -373,29 +366,6 @@ pub unsafe extern "C" fn nvda_ia2_gecko_backend_update(
     true
 }
 
-/// Dormant feature-off counterpart of the update orchestration. Gecko
-/// does not override `update()` in the feature-off build, so the C++
-/// side never routes through this extern; it exists only so the symbol
-/// is present and the crate links in both configs. Must never be called
-/// in the feature-off build.
-///
-/// # Safety
-///
-/// Never called in the feature-off build; the arguments are ignored.
-#[cfg(not(feature = "direct_rust_storage"))]
-#[no_mangle]
-pub unsafe extern "C" fn nvda_ia2_gecko_backend_update(
-    _state: *mut c_void,
-    _backend: *mut c_void,
-) -> bool {
-    debug_assert!(
-        false,
-        "nvda_ia2_gecko_backend_update called in the feature-off build \
-         (direct_rust_storage disabled); gecko must not override update()"
-    );
-    false
-}
-
 /// C-callable replacement for the body of
 /// `GeckoVBufBackend_t::renderThread_initialize` past the parent-
 /// class call: resolves the root `(doc_handle, id)` to an
@@ -464,17 +434,10 @@ pub unsafe extern "C" fn nvda_ia2_gecko_backend_is_root_doc_alive(
     if state.is_null() || backend.is_null() {
         return 0;
     }
-    // Pending update -> short-circuit alive. Under `direct_rust_storage`
-    // the pending-invalid list lives on `state.buffer` (gecko invalidates
-    // the Rust storage directly), so the C++ backend's list is always
-    // empty for gecko and must not be consulted (Decision 5). Feature-off
-    // keeps reading the C++ backend's list.
-    #[cfg(not(feature = "direct_rust_storage"))]
-    let has_pending = {
-        let backend_h = VbufBackend(backend);
-        !unsafe { backend_h.pending_invalid_subtrees_empty() }
-    };
-    #[cfg(feature = "direct_rust_storage")]
+    // Pending update -> short-circuit alive. The pending-invalid list
+    // lives on `state.buffer` (gecko invalidates the Rust storage
+    // directly), so the C++ backend's list is always empty for gecko and
+    // must not be consulted (Decision 5).
     let has_pending = !unsafe {
         (*(state as *mut GeckoBackendState))
             .buffer
@@ -603,100 +566,57 @@ pub unsafe extern "C" fn nvda_ia2_gecko_backend_dispatch_win_event(
         return WinEventOutcome::StopAll as i32;
     }
 
-    // The storage tail differs by config (Decision 5). Feature-off
-    // routes node identity / invalidation through the C++ backend's
-    // storage virtuals; feature-on operates on `state.buffer` directly
-    // (Rust slotmap keys) and arms the render-thread timer through the
+    // Storage tail (Decision 5): operate on `state.buffer` directly
+    // (Rust slotmap keys) and arm the render-thread timer through the
     // c_shim `requestUpdate` forwarder.
-    #[cfg(not(feature = "direct_rust_storage"))]
-    {
-        // Look up the affected node by (docHandle, ID). Skip if it
-        // isn't in this backend's buffer.
-        let node = match unsafe {
-            backend_h
-                .as_buffer()
-                .get_control_field_node_with_identifier(doc_handle, id)
-        } {
-            Some(n) => n,
-            None => return WinEventOutcome::Continue as i32,
-        };
+    let state_ptr = state as *mut GeckoBackendState;
+    // Look up the affected node by (docHandle, ID) in the Rust
+    // storage. Skip if it isn't in this backend's buffer. `key` is a
+    // `Copy` slotmap handle, so no borrow of `state.buffer` outlives
+    // this statement -- important because
+    // `nvda_ia2_gecko_backend_is_root_doc_alive` below re-borrows
+    // `state` internally.
+    let key = match unsafe {
+        (*state_ptr)
+            .buffer
+            .get_control_field_node_with_identifier(doc_handle, id)
+    } {
+        Some(k) => k,
+        None => return WinEventOutcome::Continue as i32,
+    };
 
-        // If the root document accessible reports IA2_STATE_DEFUNCT,
-        // the buffer is stale -- clear it. NVDA hasn't realised yet, so
-        // proceeding would scribble across a different document's
-        // identifier space.
-        let alive = unsafe {
-            nvda_ia2_gecko_backend_is_root_doc_alive(state, backend) != 0
-        };
-        if !alive {
-            unsafe { backend_h.clear_buffer() };
-            return WinEventOutcome::Continue as i32;
-        }
-
-        if event_id == EVENT_OBJECT_HIDE {
-            // The accessible was moved (Gecko fires hide+insert on
-            // moves with a single insertion at the subtree root).
-            // Force a re-render of every descendant; the parent will
-            // separately fire a text-removed event so we don't need
-            // to invalidate this node directly.
-            unsafe { node.set_always_rerender_descendants(true) };
-            return WinEventOutcome::Continue as i32;
-        }
-
-        unsafe { backend_h.invalidate_subtree(node) };
-        WinEventOutcome::Continue as i32
+    // If the root document accessible reports IA2_STATE_DEFUNCT,
+    // the buffer is stale -- clear it. NVDA hasn't realised yet, so
+    // proceeding would scribble across a different document's
+    // identifier space.
+    let alive = unsafe {
+        nvda_ia2_gecko_backend_is_root_doc_alive(state, backend) != 0
+    };
+    if !alive {
+        unsafe { (*state_ptr).buffer.clear() };
+        return WinEventOutcome::Continue as i32;
     }
-    #[cfg(feature = "direct_rust_storage")]
-    {
-        let state_ptr = state as *mut GeckoBackendState;
-        // Look up the affected node by (docHandle, ID) in the Rust
-        // storage. Skip if it isn't in this backend's buffer. `key` is a
-        // `Copy` slotmap handle, so no borrow of `state.buffer` outlives
-        // this statement -- important because
-        // `nvda_ia2_gecko_backend_is_root_doc_alive` below re-borrows
-        // `state` internally.
-        let key = match unsafe {
-            (*state_ptr)
-                .buffer
-                .get_control_field_node_with_identifier(doc_handle, id)
-        } {
-            Some(k) => k,
-            None => return WinEventOutcome::Continue as i32,
-        };
 
-        // If the root document accessible reports IA2_STATE_DEFUNCT,
-        // the buffer is stale -- clear it. NVDA hasn't realised yet, so
-        // proceeding would scribble across a different document's
-        // identifier space.
-        let alive = unsafe {
-            nvda_ia2_gecko_backend_is_root_doc_alive(state, backend) != 0
-        };
-        if !alive {
-            unsafe { (*state_ptr).buffer.clear() };
-            return WinEventOutcome::Continue as i32;
-        }
-
-        if event_id == EVENT_OBJECT_HIDE {
-            // The accessible was moved (Gecko fires hide+insert on
-            // moves with a single insertion at the subtree root).
-            // Force a re-render of every descendant; the parent will
-            // separately fire a text-removed event so we don't need
-            // to invalidate this node directly.
-            if let Some(n) = unsafe { (*state_ptr).buffer.get_mut(key) } {
-                if let FieldNodeKind::Control(d) = &mut n.kind {
-                    d.always_rerender_descendants = true;
-                }
+    if event_id == EVENT_OBJECT_HIDE {
+        // The accessible was moved (Gecko fires hide+insert on
+        // moves with a single insertion at the subtree root).
+        // Force a re-render of every descendant; the parent will
+        // separately fire a text-removed event so we don't need
+        // to invalidate this node directly.
+        if let Some(n) = unsafe { (*state_ptr).buffer.get_mut(key) } {
+            if let FieldNodeKind::Control(d) = &mut n.kind {
+                d.always_rerender_descendants = true;
             }
-            return WinEventOutcome::Continue as i32;
         }
-
-        // Invalidate the Rust subtree, then arm the render-thread timer
-        // via `requestUpdate` -- faithfully reproducing the C++
-        // `invalidateSubtree` ... `requestUpdate()` tail, whose two
-        // halves are split across the FFI boundary here.
-        if unsafe { (*state_ptr).buffer.invalidate_subtree(key) } {
-            unsafe { backend_h.request_update() };
-        }
-        WinEventOutcome::Continue as i32
+        return WinEventOutcome::Continue as i32;
     }
+
+    // Invalidate the Rust subtree, then arm the render-thread timer
+    // via `requestUpdate` -- faithfully reproducing the C++
+    // `invalidateSubtree` ... `requestUpdate()` tail, whose two
+    // halves are split across the FFI boundary here.
+    if unsafe { (*state_ptr).buffer.invalidate_subtree(key) } {
+        unsafe { backend_h.request_update() };
+    }
+    WinEventOutcome::Continue as i32
 }
