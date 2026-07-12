@@ -1,0 +1,26 @@
+[package]
+name = "nvda_mshtml"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# `staticlib` so nvdaHelperRemote.dll can link the C-ABI shims (added when
+# the backend adapter lands in a later stage). `rlib` so the unit tests in
+# this crate can build a test binary. Like nvda_acrobat, this crate is
+# force-linked into nvda_ia2.lib (the single aggregate Rust staticlib) so
+# nvda_vbuf's `#[no_mangle]` symbols aren't duplicated across archives.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies.windows-core]
+version = "0.58"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
+]
