@@ -138,7 +138,8 @@ impl IAccID {
 // GetChild, GetName, GetValue, IsSame, GetTextContent, GetLocation,
 // GetFontInfo, GetFromID, GetIAccessible, ScrollTo, GetTextInLines.
 // Used: GetType, GetChildCount, GetChild, GetName, GetValue, GetTextContent,
-// GetFontInfo (the last used, so trailing slots are omitted).
+// GetFontInfo. All 14 slots are declared (placeholders for the unused
+// ones) because IPDDomElement inherits this as its base vtable.
 
 windows_core::imp::define_interface!(
     IPDDomNode,
@@ -190,6 +191,15 @@ pub struct IPDDomNode_Vtbl {
         green: *mut f32,
         blue: *mut f32,
     ) -> HRESULT,
+    // Trailing IPDDomNode methods we don't call. They MUST still be
+    // declared: IPDDomElement inherits this vtable as its base, so its own
+    // methods sit after ALL of IPDDomNode's slots -- omitting these would
+    // place IPDDomElement's methods 4 slots too early (wrong vtable offset
+    // -> crash).
+    pub GetFromID: usize,
+    pub GetIAccessible: usize,
+    pub ScrollTo: usize,
+    pub GetTextInLines: usize,
 }
 
 /// Result of [`IPDDomNode::get_font_info`] (IDL `GetFontInfo`). `status`
@@ -592,10 +602,11 @@ mod tests {
         let p = size_of::<usize>();
         // IAccID: IUnknown + 1
         assert_eq!(size_of::<IAccID_Vtbl>(), size_of::<IUnknown_Vtbl>() + p);
-        // IPDDomNode: IDispatch + 10 (GetParent..GetFontInfo)
+        // IPDDomNode: IDispatch + 14 (GetParent..GetTextInLines) -- the
+        // full method set, since IPDDomElement inherits it as its base.
         assert_eq!(
             size_of::<IPDDomNode_Vtbl>(),
-            size_of::<IDispatch_Vtbl>() + 10 * p
+            size_of::<IDispatch_Vtbl>() + 14 * p
         );
         // IPDDomElement: IPDDomNode + 4 (GetTagName..GetAttribute)
         assert_eq!(
