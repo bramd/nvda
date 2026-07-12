@@ -1,0 +1,42 @@
+[package]
+name = "vbuf_bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# This crate exists ONLY to benchmark the Rust `nvda_vbuf::storage::Buffer`
+# against the original C++ `VBufStorage_buffer_t` in one process. It is a
+# standalone workspace member that the scons production build never touches
+# (the DLL build only compiles `--package nvda_ia2 --package
+# nvda_input_hooks`; see `nvdaHelper/remote/sconscript`). Its `build.rs`
+# compiles `nvdaHelper/vbufBase/storage.cpp` + `utils.cpp` + a thin shim, so
+# it must never be pulled into a DLL build (that would duplicate the C++
+# storage symbols). Keeping it out of the scons package list guarantees that.
+
+[lib]
+# An (empty) lib so the build-script's compiled C++ static lib links into the
+# bench binaries in this package. `bench`/`test` are off so `cargo bench`
+# doesn't spin up a libtest harness for it (which would reject criterion's
+# CLI args like --sample-size).
+path = "src/lib.rs"
+bench = false
+test = false
+
+[build-dependencies]
+cc = "1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+# `nvda_vbuf` is a dev-dependency (only the bench uses it, not the empty lib)
+# with `test_stubs` enabled: the crate's default (C-shim) wrappers reference
+# `vbuf_*` extern "C" symbols defined in nvdaHelper/vbufBase/c_shim.cpp, which
+# this standalone bench binary does not link. `test_stubs` supplies panicking
+# Rust definitions of those symbols to satisfy the linker; the benchmark never
+# calls them (it drives `nvda_vbuf::storage::Buffer` directly). Under resolver
+# v2 this feature is scoped to this package's builds only and never reaches the
+# scons DLL build (which compiles nvda_ia2 / nvda_input_hooks, not vbuf_bench).
+nvda_vbuf = { path = "../nvda_vbuf", features = ["test_stubs"] }
+
+[[bench]]
+name = "storage"
+harness = false
