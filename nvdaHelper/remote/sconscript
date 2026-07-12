@@ -154,14 +154,25 @@ if isRustArch:
 
 	inputHooksCrate = Dir("#rust/nvda_input_hooks")
 	ia2Crate = Dir("#rust/nvda_ia2")
+	# nvda_acrobat rides inside nvda_ia2.lib (nvda_ia2 depends on it), so
+	# its sources feed the same change-detection glob but it needs no
+	# separate --package / .lib. nvda_vbuf is a shared dependency of both
+	# backends; glob it too so storage/orchestration edits re-run cargo.
+	acrobatCrate = Dir("#rust/nvda_acrobat")
+	vbufCrate = Dir("#rust/nvda_vbuf")
 
 	# Glob source files so SCons re-runs cargo when any .rs or Cargo.toml changes.
 	rustSources = (
 		env.Glob(inputHooksCrate.path + "/src/*.rs")
 		+ env.Glob(ia2Crate.path + "/src/*.rs")
+		+ env.Glob(acrobatCrate.path + "/src/*.rs")
+		+ env.Glob(vbufCrate.path + "/src/*.rs")
+		+ env.Glob(vbufCrate.path + "/src/**/*.rs")
 		+ [
 			inputHooksCrate.File("Cargo.toml"),
 			ia2Crate.File("Cargo.toml"),
+			acrobatCrate.File("Cargo.toml"),
+			vbufCrate.File("Cargo.toml"),
 			rustWorkspaceDir.File("Cargo.toml"),
 		]
 	)

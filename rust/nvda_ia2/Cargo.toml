@@ -20,6 +20,16 @@ crate-type = ["staticlib", "rlib"]
 [dependencies.nvda_vbuf]
 path = "../nvda_vbuf"
 
+# nvda_ia2.lib is the single aggregate Rust vbuf-backend staticlib the
+# DLL links (nvdaHelper/remote/sconscript). It force-includes the sibling
+# backends here so their C-ABI symbols (acrobat_backend_*) land in this
+# one archive. Linking each backend as its own staticlib instead would
+# duplicate nvda_vbuf's `#[no_mangle]` extern_api symbols
+# (nvda_vbuf_buffer_*) across archives -> multiply-defined-symbol link
+# errors. A single staticlib bundles nvda_vbuf exactly once.
+[dependencies.nvda_acrobat]
+path = "../nvda_acrobat"
+
 # Same path-dep, but with the `test_stubs` feature so `cargo test
 # --lib` here can link without the C++ vbuf shim being present.
 # Resolver = "2" keeps the feature scoped to test/bench builds, so the

@@ -19,9 +19,24 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 #include <oleacc.h>
 #include <common/ia2utils.h>
 #include <remote/nvdaHelperRemote.h>
+#include <remote/nvdaControllerInternal.h>
 #include <vbufBase/backend.h>
 #include <common/log.h>
 #include "adobeAcrobat.h"
+
+extern "C" {
+	// Per-instance Rust state + C-ABI entry points (nvda_acrobat crate).
+	void* acrobat_backend_create();
+	void acrobat_backend_destroy(void* state);
+	void* acrobat_backend_get_buffer(void* state);
+	void acrobat_backend_clear_buffer(void* state);
+	// Drives the Rust drain/render/merge over the embedded Buffer;
+	// returns true when the caller should fire vbufChangeNotify.
+	bool acrobat_backend_update(void* state, void* backend);
+	// Looks up (docHandle, id) in the Rust Buffer and, if present,
+	// invalidates its subtree + arms the update timer.
+	void acrobat_backend_invalidate_node(void* state, void* backend, int docHandle, int ID);
+}
 
 const int TEXTFLAG_UNDERLINE = 0x1;
 const int TEXTFLAG_STRIKETHROUGH = 0x2;
@@ -781,14 +796,12 @@ void CALLBACK AdobeAcrobatVBufBackend_t::renderThread_winEventProcHook(HWINEVENT
 	}
 	LOG_DEBUG(L"found active backend for this window at "<<backend);
 
-	VBufStorage_buffer_t* buffer=backend;
-	VBufStorage_controlFieldNode_t* node=buffer->getControlFieldNodeWithIdentifier(docHandle,ID);
-	if(!node) {
-		LOG_DEBUG(L"No nodes to use, returning");
-		return;
-	}
-
-	backend->invalidateSubtree(node);
+	// The live tree is in the Rust storage::Buffer, so route the node
+	// lookup + invalidation there (the inherited C++ VBufStorage_buffer_t
+	// is empty). This hook only matches Acrobat document windows, so the
+	// matched backend is always an AdobeAcrobatVBufBackend_t.
+	auto* acrobatBackend = static_cast<AdobeAcrobatVBufBackend_t*>(backend);
+	acrobat_backend_invalidate_node(acrobatBackend->rustState, backend, docHandle, ID);
 }
 
 void AdobeAcrobatVBufBackend_t::renderThread_initialize() {
@@ -800,8 +813,10 @@ void AdobeAcrobatVBufBackend_t::renderThread_initialize() {
 void AdobeAcrobatVBufBackend_t::renderThread_terminate() {
 	unregisterWinEventHook(renderThread_winEventProcHook);
 	LOG_DEBUG(L"Unregistered winEvent hook");
-	if (this->docPagination)
-		this->docPagination->Release();
+	// The live tree + docPagination now live in the Rust state; empty the
+	// Rust storage::Buffer (the docPagination interface is released when
+	// the Rust state is dropped in the destructor).
+	acrobat_backend_clear_buffer(this->rustState);
 	VBufBackend_t::renderThread_terminate();
 }
 
@@ -850,16 +865,40 @@ void AdobeAcrobatVBufBackend_t::render(VBufStorage_buffer_t* buffer, int docHand
 	LOG_DEBUG(L"Rendering done");
 }
 
+void AdobeAcrobatVBufBackend_t::update() {
+	// Drive the Rust drain/render/merge orchestration over the embedded
+	// storage::Buffer. The lock is held across the whole Rust update (so
+	// no vbufRemote reader thread materializes a &Buffer while the render
+	// thread holds a &mut Buffer); the change-notify fires OUTSIDE the
+	// lock, and only when the orchestration reports it took the re-render
+	// branch (the base update() skips vbufChangeNotify on the initial
+	// render, which acrobat_backend_update preserves by returning false).
+	this->lock.acquire();
+	const bool shouldNotify = acrobat_backend_update(this->rustState, this);
+	this->lock.release();
+	if (shouldNotify) {
+		nvdaControllerInternal_vbufChangeNotify(this->rootDocHandle, this->rootID);
+	}
+}
+
+void* AdobeAcrobatVBufBackend_t::getRustStorageBuffer() {
+	return acrobat_backend_get_buffer(this->rustState);
+}
+
 AdobeAcrobatVBufBackend_t::AdobeAcrobatVBufBackend_t(int docHandle, int ID)
 	: VBufBackend_t(docHandle,ID)
 	, isXFA(true)
 	, docPagination(nullptr)
+	, rustState(acrobat_backend_create())
 {
 	LOG_DEBUG(L"AdobeAcrobat backend constructor");
 }
 
 AdobeAcrobatVBufBackend_t::~AdobeAcrobatVBufBackend_t() {
 	LOG_DEBUG(L"AdobeAcrobat backend destructor");
+	// Frees the AcrobatBackendState (its Drop releases docPagination).
+	acrobat_backend_destroy(this->rustState);
+	this->rustState = nullptr;
 }
 
 VBufBackend_t* AdobeAcrobatVBufBackend_t_createInstance(int docHandle, int ID) {

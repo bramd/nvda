@@ -16,6 +16,13 @@
 // the textFromIAccessible port in the follow-up PR.
 #![allow(dead_code)]
 
+// Force-link the sibling Acrobat backend so its C-ABI symbols
+// (acrobat_backend_*) are bundled into this crate's staticlib. See the
+// nvda_acrobat dependency note in Cargo.toml: nvda_ia2.lib is the single
+// aggregate Rust vbuf-backend archive the DLL links, so every backend
+// must ride in it rather than as a separate staticlib.
+extern crate nvda_acrobat as _;
+
 pub mod acc_description;
 pub mod aria_details;
 pub mod aria_error;

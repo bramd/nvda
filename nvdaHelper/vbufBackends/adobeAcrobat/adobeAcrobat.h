@@ -59,6 +59,13 @@ class AdobeAcrobatVBufBackend_t: public VBufBackend_t {
 
 	IPDDomDocPagination* docPagination = nullptr;
 
+	/* Per-instance Rust state (AcrobatBackendState). Allocated by
+	 * acrobat_backend_create() in the constructor and freed by
+	 * acrobat_backend_destroy() in the destructor. Homes the live tree in
+	 * a Rust storage::Buffer plus the isXFA / docPagination render state.
+	 */
+	void* rustState = nullptr;
+
 	protected:
 
 	static void CALLBACK renderThread_winEventProcHook(HWINEVENTHOOK hookID, DWORD eventID, HWND hwnd, long objectID, long childID, DWORD threadID, DWORD time);
@@ -67,6 +74,19 @@ class AdobeAcrobatVBufBackend_t: public VBufBackend_t {
 
 	virtual void renderThread_terminate();
 
+	/* This backend homes its live tree in a Rust storage::Buffer (in
+	 * AcrobatBackendState), so it overrides update() to run the shared
+	 * Rust drain/render/merge orchestration against that buffer instead of
+	 * the inherited C++ VBufStorage_buffer_t. The base render-thread
+	 * machinery reaches this through the now-virtual update().
+	 */
+	virtual void update();
+
+	/* Vestigial after the Rust flip: update() is overridden and does all
+	 * the rendering against the Rust buffer, so this C++ render() (and the
+	 * fillVBuf it drives) is no longer on the live path. Kept only to
+	 * satisfy the base's pure-virtual render().
+	 */
 	virtual void render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode);
 
 	virtual ~AdobeAcrobatVBufBackend_t();
@@ -74,6 +94,13 @@ class AdobeAcrobatVBufBackend_t: public VBufBackend_t {
 	public:
 
 	AdobeAcrobatVBufBackend_t(int docHandle, int ID);
+
+	/* Advertises this backend's embedded Rust storage::Buffer so
+	 * vbufRemote's read RPCs route through the nvda_vbuf_* u64-key ABI
+	 * instead of the legacy C++ storage virtuals. Returns the address of
+	 * state.buffer via acrobat_backend_get_buffer(rustState).
+	 */
+	virtual void* getRustStorageBuffer();
 
 };
 
