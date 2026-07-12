@@ -293,7 +293,9 @@ pub unsafe extern "C" fn nvda_ia2_gecko_backend_update(
             main_ptr,
             root_doc_handle,
             root_id,
-            |target, main, doc_handle, id| {
+            // gecko ignores `old_node`: cross-render reuse is driven by
+            // `ctx.main` + identifier, not the base render's `oldNode`.
+            |target, main, doc_handle, id, _old_node| {
                 let acc = match from_identifier(doc_handle, id) {
                     Some(a) => a,
                     None => return false,

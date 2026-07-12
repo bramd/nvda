@@ -9,6 +9,16 @@ edition = "2021"
 # this crate can build a test binary.
 crate-type = ["staticlib", "rlib"]
 
+[dependencies.nvda_vbuf]
+path = "../nvda_vbuf"
+
+# Same path-dep with the `test_stubs` feature so `cargo test --lib` here
+# can link without the C++ vbuf shim present. Resolver = "2" keeps it
+# scoped to test/bench builds; the shipped staticlib never sees the stubs.
+[dev-dependencies.nvda_vbuf]
+path = "../nvda_vbuf"
+features = ["test_stubs"]
+
 [dependencies.windows-core]
 version = "0.58"
 

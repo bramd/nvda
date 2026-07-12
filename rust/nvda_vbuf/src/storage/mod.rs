@@ -1889,6 +1889,13 @@ impl Buffer {
         }
     }
 
+    /// The parent (always a control field node) of `key`, or `None` for
+    /// the root or a stale key. Mirrors
+    /// `VBufStorage_fieldNode_t::getParent`.
+    pub fn parent_of(&self, key: NodeKey) -> Option<NodeKey> {
+        self.nodes.get(key)?.parent
+    }
+
     /// Compute the offset of `key` from the start of the tree by
     /// summing the lengths of every preceding sibling (recursively
     /// up the parent chain). Mirrors

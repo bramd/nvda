@@ -228,6 +228,24 @@ impl VbufBuffer {
         )
     }
 
+    /// Wrap a raw `NodeKey` (e.g. the `old_node` handed to a
+    /// `run_raw_update` render closure) into a control field node handle
+    /// on this buffer. The key must denote a control field node.
+    ///
+    /// # Safety
+    ///
+    /// Buffer must be live and `key` must be a live control field node in
+    /// it.
+    pub unsafe fn control_field_node(
+        self,
+        key: storage::NodeKey,
+    ) -> VbufControlFieldNode {
+        VbufControlFieldNode(NodeRef {
+            buffer: self.0,
+            key,
+        })
+    }
+
     /// `true` if `descendant` is reachable through `parent`'s subtree.
     ///
     /// # Safety
@@ -472,6 +490,21 @@ impl VbufControlFieldNode {
     /// `self` must be a live control field node.
     pub unsafe fn set_requires_parent_update(self, value: bool) {
         unsafe { self.with_control(|d| d.requires_parent_update = value) }
+    }
+
+    /// The parent control field node, or `None` for the tree root or a
+    /// stale key. Mirrors `VBufStorage_fieldNode_t::getParent` (the
+    /// parent of any node is always a control field node).
+    ///
+    /// # Safety
+    ///
+    /// The underlying buffer must be live.
+    pub unsafe fn parent(self) -> Option<VbufControlFieldNode> {
+        let key = unsafe { &*self.0.buffer }.parent_of(self.0.key)?;
+        Some(VbufControlFieldNode(NodeRef {
+            buffer: self.0.buffer,
+            key,
+        }))
     }
 }
 

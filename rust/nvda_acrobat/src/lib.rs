@@ -10,4 +10,6 @@
 //! `fill_vbuf` render and the backend adapter land in later stages and
 //! reuse the shared `nvda_vbuf::backend::run_raw_update` orchestration.
 
+pub mod backend_state;
+pub mod fill_vbuf;
 pub mod interfaces;

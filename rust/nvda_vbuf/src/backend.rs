@@ -30,13 +30,16 @@ use crate::storage::{Buffer, NodeKey};
 /// back into `main` via [`Buffer::replace_subtrees`]. If `main` has no
 /// content, performs an initial render straight into it.
 ///
-/// `render(target, main, doc_handle, id)` renders the subtree rooted at
-/// `(doc_handle, id)` into `*target`, may query `*main` for
+/// `render(target, main, doc_handle, id, old_node)` renders the subtree
+/// rooted at `(doc_handle, id)` into `*target`, may query `*main` for
 /// reference-reuse, and returns `true` when it produced a subtree to
 /// merge. Returning `false` skips this subtree — the existing content is
 /// left untouched — mirroring the C++ `continue` taken when the
 /// accessible cannot be resolved. On the initial render `target == main`
-/// (the same buffer; it has no content to displace).
+/// (the same buffer; it has no content to displace) and `old_node` is
+/// `None`; on a re-render `old_node` is the `main` node being replaced
+/// (the base `VBufBackend_t::render`'s `oldNode` argument), which a
+/// backend may consult for inherited state.
 ///
 /// Returns `true` when the re-render branch ran and `false` on the
 /// initial render, reproducing `VBufBackend_t::update`'s notify
@@ -57,13 +60,13 @@ pub unsafe fn run_raw_update(
     main: *mut Buffer,
     root_doc_handle: i32,
     root_id: i32,
-    mut render: impl FnMut(*mut Buffer, *mut Buffer, i32, i32) -> bool,
+    mut render: impl FnMut(*mut Buffer, *mut Buffer, i32, i32, Option<NodeKey>) -> bool,
 ) -> bool {
     // Initial render: an empty buffer is rendered straight into `main`
     // (it has no content to displace). The base `update()`'s `else`
     // branch does not fire vbufChangeNotify -- return `false`.
     if !unsafe { (*main).has_content() } {
-        render(main, main, root_doc_handle, root_id);
+        render(main, main, root_doc_handle, root_id, None);
         return false;
     }
 
@@ -85,7 +88,7 @@ pub unsafe fn run_raw_update(
         // `temp` is moved into `map` only after `render` returns, so
         // `temp_ptr` is never used past the move; the arena is
         // heap-allocated, so the move is address-stable for stored nodes.
-        if render(temp_ptr, main, identifier.doc_handle, identifier.id) {
+        if render(temp_ptr, main, identifier.doc_handle, identifier.id, Some(key)) {
             map.push((key, temp));
         }
     }
@@ -127,7 +130,7 @@ mod tests {
         let main_ptr: *mut Buffer = &mut main;
         let mut calls: Vec<(i32, i32, bool)> = Vec::new();
         let notify = unsafe {
-            run_raw_update(main_ptr, 7, 42, |target, m, dh, id| {
+            run_raw_update(main_ptr, 7, 42, |target, m, dh, id, _old| {
                 // On the initial render the target and main alias.
                 calls.push((dh, id, target == m));
                 render_text(target, dh, id, "hello");
@@ -153,7 +156,7 @@ mod tests {
         let mut main = Buffer::new();
         unsafe {
             let p: *mut Buffer = &mut main;
-            run_raw_update(p, 1, 1, |t, _m, dh, id| {
+            run_raw_update(p, 1, 1, |t, _m, dh, id, _old| {
                 render_text(t, dh, id, "FIRST");
                 true
             });
@@ -166,7 +169,7 @@ mod tests {
         let mut calls: Vec<(i32, i32)> = Vec::new();
         let notify = unsafe {
             let p: *mut Buffer = &mut main;
-            run_raw_update(p, 1, 1, |t, _m, dh, id| {
+            run_raw_update(p, 1, 1, |t, _m, dh, id, _old| {
                 calls.push((dh, id));
                 render_text(t, dh, id, "SECOND");
                 true
@@ -188,7 +191,7 @@ mod tests {
         let mut main = Buffer::new();
         unsafe {
             let p: *mut Buffer = &mut main;
-            run_raw_update(p, 1, 1, |t, _m, dh, id| {
+            run_raw_update(p, 1, 1, |t, _m, dh, id, _old| {
                 render_text(t, dh, id, "hello");
                 true
             });
@@ -197,7 +200,7 @@ mod tests {
         let mut count = 0;
         let notify = unsafe {
             let p: *mut Buffer = &mut main;
-            run_raw_update(p, 1, 1, |_t, _m, _dh, _id| {
+            run_raw_update(p, 1, 1, |_t, _m, _dh, _id, _old| {
                 count += 1;
                 true
             })
@@ -212,7 +215,7 @@ mod tests {
         let mut main = Buffer::new();
         unsafe {
             let p: *mut Buffer = &mut main;
-            run_raw_update(p, 1, 1, |t, _m, dh, id| {
+            run_raw_update(p, 1, 1, |t, _m, dh, id, _old| {
                 render_text(t, dh, id, "ORIGINAL");
                 true
             });
@@ -226,7 +229,7 @@ mod tests {
         // replaced.
         unsafe {
             let p: *mut Buffer = &mut main;
-            run_raw_update(p, 1, 1, |_t, _m, _dh, _id| false);
+            run_raw_update(p, 1, 1, |_t, _m, _dh, _id, _old| false);
         }
         let same_root = main
             .get_control_field_node_with_identifier(1, 1)
