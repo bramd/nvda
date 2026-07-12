@@ -1,0 +1,24 @@
+[package]
+name = "nvda_acrobat"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# `staticlib` so nvdaHelperRemote.dll can link the C-ABI shims (added when
+# the backend adapter lands in a later stage). `rlib` so the unit tests in
+# this crate can build a test binary.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies.windows-core]
+version = "0.58"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
+]
