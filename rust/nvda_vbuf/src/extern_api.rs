@@ -29,12 +29,12 @@
 //!
 //! ## What's NOT yet exposed
 //!
-//! * `force_update` and the full backend update orchestration. Those
-//!   require a polymorphic [`crate::backend::Renderer`] which is
-//!   awkward to thread through the FFI; gecko_ia2's migration in
-//!   Phase 6e will pick the right shape.
+//! * `force_update` and the backend update orchestration. Those are
+//!   backend-specific (they resolve accessibles and render) and live in
+//!   each backend's adapter over [`crate::backend::run_raw_update`]
+//!   rather than in this generic per-node API.
 //! * `replace_subtrees`. Same reason -- it consumes owned temp
-//!   `Buffer`s and is exercised through `update`.
+//!   `Buffer`s and is driven by `run_raw_update`.
 
 use core::ffi::c_void;
 

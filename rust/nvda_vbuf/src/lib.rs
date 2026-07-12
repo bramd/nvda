@@ -37,11 +37,11 @@ mod test_stubs;
 /// is still the live implementation reached through `c_shim.cpp`.
 pub mod storage;
 
-/// Phase 6c in-progress port of `nvdaHelper/vbufBase/backend.cpp`'s
-/// orchestration logic. Currently exposes the polymorphic
-/// [`backend::Renderer`] trait and the [`backend::update`]
-/// orchestration function. Win32 render-thread machinery (timer,
-/// hooks, `execInThread`) is still TODO and stays C++-side for now.
+/// Port of the storage side of `nvdaHelper/vbufBase/backend.cpp`'s
+/// `update()`. Exposes the backend-generic [`backend::run_raw_update`]
+/// orchestration shared by every Rust backend; only each backend's
+/// render closure differs. Win32 render-thread machinery (timer, hooks,
+/// `execInThread`) stays C++-side by design.
 pub mod backend;
 
 /// Phase 6d-a parallel `extern "C"` API over the Rust [`storage::Buffer`].

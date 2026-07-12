@@ -19,8 +19,9 @@ use crate::fill_vbuf::{fill_vbuf, FillVBufCtx};
 use crate::from_identifier::from_identifier;
 use crate::interfaces::IAccessible2;
 use crate::toolkit_name::get_toolkit_name_native;
+use nvda_vbuf::backend::run_raw_update;
 use nvda_vbuf::storage::Buffer;
-use nvda_vbuf::storage::{FieldNodeKind, NodeKey};
+use nvda_vbuf::storage::FieldNodeKind;
 use nvda_vbuf::VbufBackend;
 use nvda_vbuf::VbufBuffer;
 
@@ -234,24 +235,22 @@ pub unsafe extern "C" fn nvda_ia2_gecko_backend_version_specific_init(
 }
 
 /// Drain/render/merge orchestration over the embedded Rust
-/// `state.buffer`. Backs `GeckoVBufBackend_t::update()` once gecko
-/// overrides `update()` at the flip (Phase 6e, Decision 3). Mirrors
-/// `nvda_vbuf::backend::update` (and the C++ `VBufBackend_t::update`)
-/// but in raw-pointer form so the cross-buffer reuse lookups
-/// (`fill_vbuf` querying `state.buffer` while writing a temp buffer)
-/// don't require a competing `&mut state.buffer` borrow across the
-/// render call.
+/// `state.buffer`. Backs `GeckoVBufBackend_t::update()` (Phase 6e,
+/// Decision 3). The storage-side control flow lives in the shared,
+/// backend-generic [`run_raw_update`]; this function is the gecko
+/// adapter, supplying the per-backend render closure (resolve an
+/// `IAccessible2` for a `(docHandle, ID)` and run [`fill_vbuf`]).
+///
+/// The one gecko-specific pre-step is priming the cached toolkit name on
+/// the initial render, before the render reads it via `is_chrome`
+/// (mirrors `versionSpecificInit`'s timing). On a re-render the toolkit
+/// name is already known.
 ///
 /// The `nvdaControllerInternal_vbufChangeNotify` call is deliberately
-/// left to the C++ caller (it's Win32 integration, not storage), exactly
-/// as `nvda_vbuf::backend::update`'s doc-comment notes. The **return
-/// value** carries the base `VBufBackend_t::update`'s notify condition
-/// back to that caller: `VBufBackend_t::update` fires the change-notify
-/// only on the re-render (`hasContent`) branch, never on the initial
-/// render. This function therefore returns `true` when it took the
-/// re-render branch (the caller should notify) and `false` for the
-/// initial render (the caller must not notify), reproducing that
-/// contract exactly rather than notifying unconditionally.
+/// left to the C++ caller (it's Win32 integration, not storage). The
+/// bool returned by [`run_raw_update`] carries the base
+/// `VBufBackend_t::update`'s notify condition: `true` after a re-render
+/// (the caller should notify), `false` after the initial render.
 ///
 /// # Safety
 ///
@@ -273,97 +272,53 @@ pub unsafe extern "C" fn nvda_ia2_gecko_backend_update(
     let root_doc_handle = unsafe { backend_h.root_doc_handle() };
     let root_id = unsafe { backend_h.root_id() };
 
-    // Initial render: an empty buffer is rendered straight into
-    // `state.buffer` (it has no content to displace). Mirrors the base
-    // `update()`'s `else` branch, which does not fire vbufChangeNotify —
-    // so return `false`.
+    // Prime the cached toolkit name from the root accessible before the
+    // initial render -- `fill_vbuf`'s `is_chrome` check reads it. Must
+    // happen while we still hold `&mut state`, before `main_ptr` (into
+    // `state.buffer`) is taken. On a re-render the name is already set.
     if !state.buffer.has_content() {
-        let acc = match unsafe { from_identifier(root_doc_handle, root_id) } {
-            Some(a) => a,
-            None => return false,
-        };
-        state.init_toolkit_name(&acc);
-        let is_chrome = state.is_chrome();
-        // Take the raw pointer only now, right before the render, so no
-        // `&mut state` reborrow (init_toolkit_name above) invalidates it.
-        let main_ptr: *mut Buffer = &mut state.buffer as *mut Buffer;
-        let ctx = FillVBufCtx {
-            backend: backend_h,
-            main: VbufBuffer(main_ptr),
-            root_id,
-            is_chrome,
-        };
-        let _ = unsafe {
-            fill_vbuf(
-                &acc,
-                VbufBuffer(main_ptr),
-                None,
-                None,
-                None,
-                0,
-                None,
-                false,
-                &ctx,
-            )
-        };
-        return false;
+        if let Some(acc) = unsafe { from_identifier(root_doc_handle, root_id) } {
+            state.init_toolkit_name(&acc);
+        }
     }
-
-    // Re-render path: drain pending invalidations into the working
-    // list, re-render each into its own temp buffer (reuse queries
-    // `state.buffer` via `ctx.main`), then atomically merge.
     let is_chrome = state.is_chrome();
-    // From here on `state.buffer` is reached *only* through `main_ptr`
+
+    // From here on `state.buffer` is reached *only* through `main_ptr`,
     // so a single raw-pointer provenance covers every access and no
-    // stacked `&mut state.buffer` borrow crosses a `fill_vbuf` call.
+    // stacked `&mut state.buffer` borrow crosses a `fill_vbuf` call
+    // (which queries `ctx.main` == `state.buffer`).
     let main_ptr: *mut Buffer = &mut state.buffer as *mut Buffer;
-    let working_keys = unsafe { (*main_ptr).take_pending_into_working() };
-    let mut map: Vec<(NodeKey, Buffer)> = Vec::new();
-    for key in working_keys {
-        // Identifier of the invalidated subtree root, looked up from
-        // main. Skip stale keys (a prior cascade may have removed one).
-        let identifier =
-            match unsafe { (*main_ptr).identifier_of_control_field_node(key) } {
-                Some(i) => i,
-                None => continue,
-            };
-        let acc = match unsafe {
-            from_identifier(identifier.doc_handle, identifier.id)
-        } {
-            Some(a) => a,
-            None => continue,
-        };
-        let mut temp = Buffer::new();
-        let temp_ptr: *mut Buffer = &mut temp as *mut Buffer;
-        let ctx = FillVBufCtx {
-            backend: backend_h,
-            main: VbufBuffer(main_ptr),
+    unsafe {
+        run_raw_update(
+            main_ptr,
+            root_doc_handle,
             root_id,
-            is_chrome,
-        };
-        let _ = unsafe {
-            fill_vbuf(
-                &acc,
-                VbufBuffer(temp_ptr),
-                None,
-                None,
-                None,
-                0,
-                None,
-                false,
-                &ctx,
-            )
-        };
-        // `temp` is moved into `map` (its arena lives on the heap, so
-        // the move is address-stable for the stored nodes); `temp_ptr`
-        // is not used past this point.
-        map.push((key, temp));
+            |target, main, doc_handle, id| {
+                let acc = match from_identifier(doc_handle, id) {
+                    Some(a) => a,
+                    None => return false,
+                };
+                let ctx = FillVBufCtx {
+                    backend: backend_h,
+                    main: VbufBuffer(main),
+                    root_id,
+                    is_chrome,
+                };
+                let _ = fill_vbuf(
+                    &acc,
+                    VbufBuffer(target),
+                    None,
+                    None,
+                    None,
+                    0,
+                    None,
+                    false,
+                    &ctx,
+                );
+                true
+            },
+        )
     }
-    unsafe { (*main_ptr).clear_working() };
-    unsafe { (*main_ptr).replace_subtrees(map) };
-    // Re-render branch taken: mirror the base `update()`'s `hasContent`
-    // arm, which fires vbufChangeNotify. Tell the C++ caller to notify.
-    true
 }
 
 /// C-callable replacement for the body of
