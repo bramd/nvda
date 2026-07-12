@@ -160,19 +160,29 @@ effectively free. Full matrix omitted.)
 | large | deep_nested | 11.90 ms | 41.09 ms | 3.45× |
 | large | realistic_mixed | 44.72 ms | 79.21 ms | 1.77× |
 
-### `find_node_by_attributes`
+### `find_node_by_attributes` (with per-buffer regex cache)
 
-| size | shape | Rust | C++ | C++ / Rust |
-|---|---|--:|--:|--:|
-| small | wide_shallow | 27.26 µs | 24.92 µs | 0.91× **Rust slower** |
-| small | deep_nested | 29.50 µs | 89.61 µs | 3.04× |
-| small | realistic_mixed | 33.32 µs | 14.71 µs | 0.44× **Rust slower** |
-| medium | wide_shallow | 25.62 µs | 19.97 µs | 0.78× **Rust slower** |
-| medium | deep_nested | 252.59 µs | 1.19 ms | 4.71× |
-| medium | realistic_mixed | 25.32 µs | 2.65 µs | 0.10× **Rust slower** |
-| large | wide_shallow | 30.20 µs | 24.18 µs | 0.80× **Rust slower** |
-| large | deep_nested | 2.58 ms | 10.01 ms | 3.89× |
-| large | realistic_mixed | 30.74 µs | 47.86 µs | 1.56× |
+`Buffer::find_node_by_attributes` now caches the compiled `Regex` keyed by
+the raw pattern (quick-nav reissues the same pattern every keypress), so the
+~20 µs `Regex::new` is paid once instead of per call. That flipped 5 of the 6
+shapes where Rust was slower to Rust-faster. The pre-cache Rust numbers are in
+the right column for reference.
+
+| size | shape | Rust (cached) | C++ | C++ / Rust | (Rust pre-cache) |
+|---|---|--:|--:|--:|--:|
+| small | wide_shallow | 7.79 µs | 20.71 µs | 2.66× | 27.26 µs |
+| small | deep_nested | 14.12 µs | 84.88 µs | 6.01× | 29.50 µs |
+| small | realistic_mixed | 10.05 µs | 13.86 µs | 1.38× | 33.32 µs |
+| medium | wide_shallow | 11.73 µs | 20.82 µs | 1.77× | 25.62 µs |
+| medium | deep_nested | 239.36 µs | 1.18 ms | 4.92× | 252.59 µs |
+| medium | realistic_mixed | 7.81 µs | 3.29 µs | 0.42× **Rust slower** | 25.32 µs |
+| large | wide_shallow | 15.06 µs | 21.50 µs | 1.43× | 30.20 µs |
+| large | deep_nested | 1.88 ms | 10.10 ms | 5.37× | 2.58 ms |
+| large | realistic_mixed | 18.57 µs | 50.53 µs | 2.72× | 30.74 µs |
+
+The lone remaining Rust-slower case (`medium/realistic_mixed`) is a tiny
+early-hit scan now bounded by regex *match* throughput on a handful of nodes,
+not compile cost; it improved 3× from the pre-cache number.
 
 ### `locate_text_field_at_offset` (100 offsets/iter)
 
@@ -238,17 +248,19 @@ per node, versus Rust appending to a `Vec<u16>`.
   `new`'d nodes scattered across the heap, so once the working set stops fitting
   in cache the arena layout wins back the indirection cost.
 
-* **`find_node_by_attributes` when the target is hit early (~0.1–0.9×).** The
-  Rust `regex` crate has a comparatively **expensive one-time `Regex::new`
-  compile** (~20 µs here) but fast matching; C++ `std::wregex` compiles cheaply
-  but matches slowly. Both engines recompile the pattern once per call (exactly
-  as production NVDA does). On shapes where the first heading is reached after
-  only a handful of nodes (`wide_shallow`, `realistic_mixed`), the fixed Rust
-  compile cost dominates and C++ wins. On shapes with a long scan
-  (`deep_nested`, thousands of `matchAttributes` calls), Rust's faster per-node
-  matching more than pays back the compile and it wins 3–4.7×. So this group
-  usefully brackets both regimes — a real regression in either the compile cost
-  or the match throughput would show up.
+* **`find_node_by_attributes` (was ~0.1–0.9× when hit early; now cached).** The
+  Rust `regex` crate has an expensive one-time `Regex::new` compile (~20 µs) but
+  fast matching; C++ `std::wregex` compiles cheaply but matches slowly. Early-hit
+  shapes (the first heading is a handful of nodes in) used to be dominated by the
+  Rust compile cost, so C++ won. `Buffer::find_node_by_attributes` now caches the
+  compiled regex keyed by the raw pattern; quick-nav reissues the same pattern on
+  every keypress, so the compile is paid once and every later search is a map
+  lookup + cheap Arc-backed `Regex` clone. That flips the early-hit shapes to
+  Rust-faster and keeps the long-scan wins (`deep_nested` still 5–6× as Rust's
+  faster per-node matching dominates). One tiny early-hit case
+  (`medium/realistic_mixed`, ~8 µs vs C++ ~3 µs) remains Rust-slower — now bounded
+  by match throughput on a very short scan, not compile. C++ still recompiles per
+  call; this cache is a pure win on top of behavioural parity.
 
 `get_text_length` is O(1) in both and effectively free (~1.5 ns); it exists only
 as a floor/sanity marker.

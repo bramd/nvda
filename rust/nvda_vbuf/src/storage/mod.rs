@@ -19,7 +19,8 @@ mod node;
 
 pub use node::{ControlFieldData, FieldNodeKind, Node, NodeKey, TextFieldData};
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use regex::Regex;
 use slotmap::SlotMap;
@@ -127,7 +128,23 @@ pub struct Buffer {
     /// reuse query during render can detect "this node was invalid
     /// at the start of this tick".
     working_invalid: Vec<NodeKey>,
+    /// Cache of compiled regexes for `find_node_by_attributes`, keyed
+    /// by the raw `regexp` input. Quick-nav (H/K/…) reissues the same
+    /// pattern on every keypress, and `Regex::new` is comparatively
+    /// expensive (~20 µs), so caching turns a repeated search into a
+    /// map lookup + cheap `Regex` clone (Arc-backed). The C++ original
+    /// recompiles its `std::wregex` on every call; this is a pure win
+    /// on top of parity. Regex output depends only on the pattern, not
+    /// on buffer content, so no invalidation is needed on edits.
+    /// Bounded (cleared past `REGEX_CACHE_CAP`) so find-in-page text
+    /// patterns can't grow it without limit.
+    regex_cache: RefCell<HashMap<Vec<u16>, Regex>>,
 }
+
+/// Max distinct patterns retained in [`Buffer::regex_cache`] before it
+/// is cleared. Comfortably covers every quick-nav key plus a run of
+/// find-in-page searches; the clear is O(1)-amortised.
+const REGEX_CACHE_CAP: usize = 64;
 
 impl Buffer {
     /// Construct an empty buffer. The C++ default constructor.
@@ -140,6 +157,7 @@ impl Buffer {
             selection_length: 0,
             pending_invalid: Vec::new(),
             working_invalid: Vec::new(),
+            regex_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -1677,10 +1695,24 @@ impl Buffer {
         // `istream_iterator<wstring>` copy into a vector).
         let attribs_list = split_whitespace_utf16(attribs);
 
-        // Compile the regex once. `\A(?:...)\z` anchors the whole
-        // candidate string, reproducing `std::regex_match`.
-        let pattern = String::from_utf16(regexp).ok()?;
-        let regex = Regex::new(&format!(r"\A(?:{pattern})\z")).ok()?;
+        // Compile the regex (cached by pattern). `\A(?:...)\z` anchors
+        // the whole candidate string, reproducing `std::regex_match`.
+        // The cloned `Ref` is dropped before the miss branch takes a
+        // `borrow_mut`, so there is no RefCell double-borrow.
+        let cached = self.regex_cache.borrow().get(regexp).cloned();
+        let regex = match cached {
+            Some(r) => r,
+            None => {
+                let pattern = String::from_utf16(regexp).ok()?;
+                let r = Regex::new(&format!(r"\A(?:{pattern})\z")).ok()?;
+                let mut cache = self.regex_cache.borrow_mut();
+                if cache.len() >= REGEX_CACHE_CAP {
+                    cache.clear();
+                }
+                cache.insert(regexp.to_vec(), r.clone());
+                r
+            }
+        };
 
         match direction {
             FindDirection::Forward => {
