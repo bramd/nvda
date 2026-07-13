@@ -50,3 +50,5 @@ pub mod textbox_in_combobox;
 pub mod toolkit_name;
 pub mod types;
 pub mod utf16;
+pub mod webkit_backend_state;
+pub mod webkit_fill_vbuf;

@@ -12,195 +12,49 @@ This license can be found at:
 http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 */
 
-#include <sstream>
 #include <windows.h>
-#include <atlcomcli.h>
-#include <oleacc.h>
-#include <ia2.h>
 #include <remote/nvdaHelperRemote.h>
+#include <remote/nvdaControllerInternal.h>
 #include <common/log.h>
-#include <common/ia2utils.h>
 #include <vbufBase/backend.h>
 #include "webKit.h"
 
 using namespace std;
 
-CComPtr<IAccessible2> IAccessible2FromIdentifier(int docHandle, int id) {
-	CComPtr<IAccessible> acc = nullptr;
-	CComVariant varChild;
-	// WebKit returns a positive value for uniqueID,
-	// but we need to pass a negative value when retrieving objects.
-	id = -id;
-	if (AccessibleObjectFromEvent((HWND)UlongToHandle(docHandle), OBJID_CLIENT, id, &acc, &varChild) != S_OK) {
-		return nullptr;
-	}
-	if (varChild.lVal != CHILDID_SELF) {
-		// IAccessible2 can't be implemented on a simple child,
-		// so this object is invalid.
-		return nullptr;
-	}
-	CComQIPtr<IServiceProvider> serv{acc};
-	if (!serv) {
-		return nullptr;
-	}
-	CComPtr<IAccessible2> pacc2;
-	serv->QueryService(IID_IAccessible, IID_IAccessible2, (void**)&pacc2);
-	return pacc2;
-}
-
-VBufStorage_fieldNode_t* WebKitVBufBackend_t::fillVBuf(int docHandle, IAccessible2* pacc, VBufStorage_buffer_t* buffer,
-	VBufStorage_controlFieldNode_t* parentNode, VBufStorage_fieldNode_t* previousNode
-) {
-	nhAssert(buffer);
-
-	//all IAccessible methods take a variant for childID, get one ready
-	CComVariant varChild(CHILDID_SELF);
-
-	// Get role with accRole
-	CComVariant varRole;
-	pacc->get_accRole(varChild, &varRole);
-
-	if (varRole.vt == VT_I4 && varRole.lVal == ROLE_SYSTEM_COLUMN) {
-		// WebKit provides both row and column representations for tables,
-		// duplicating the table cells.
-		// We never want the column representation.
-		return NULL;
-	}
-
-	int id;
-	if(pacc->get_uniqueID((long*)&id) != S_OK)
-		return NULL;
-
-	//Make sure that we don't already know about this object -- protect from loops
-	if(buffer->getControlFieldNodeWithIdentifier(docHandle,id)!=NULL) {
-		return NULL;
-	}
-
-	//Add this node to the buffer
-	parentNode = buffer->addControlFieldNode(parentNode, previousNode,
-		docHandle, id, true);
-	nhAssert(parentNode); //new node must have been created
-	previousNode=NULL;
-	VBufStorage_fieldNode_t* tempNode;
-
-	wostringstream s;
-
-	long role = 0;
-	if(varRole.vt==VT_EMPTY) {
-		s<<0;
-	} else if(varRole.vt==VT_BSTR) {
-		s << varRole.bstrVal;
-	} else if(varRole.vt==VT_I4) {
-		s << varRole.lVal;
-		role = varRole.lVal;
-	}
-	parentNode->addAttribute(L"IAccessible::role",s.str());
-
-	// Get states with accState
-	CComVariant varState;
-	pacc->get_accState(varChild,&varState);
-	int states=varState.lVal;
-	//Add each state that is on, as an attrib
-	for(int i=0;i<32;i++) {
-		int state=1<<i;
-		if(state&states) {
-			s.str(L"");
-			s<<L"IAccessible::state_"<<state;
-			parentNode->addAttribute(s.str(),L"1");
-		}
-	}
-
-	//Get the child count
-	long childCount=0;
-	if (role == ROLE_SYSTEM_COMBOBOX
-		|| (role == ROLE_SYSTEM_LIST && !(states & STATE_SYSTEM_READONLY))
-		// Editable text fields sometimes have children with no content.
-		|| (role == ROLE_SYSTEM_TEXT && states & STATE_SYSTEM_FOCUSABLE)
-	) {
-		// We don't want this node's children.
-		childCount=0;
-	} else
-		pacc->get_accChildCount(&childCount);
-
-	// Iterate through the children.
-	if (childCount > 0) {
-		auto [varChildren, accChildrenRes] = getAccessibleChildren(pacc, 0, childCount);
-		if (S_OK == accChildrenRes) {
-			for (CComVariant& child : varChildren) {
-				if (VT_DISPATCH != child.vt) {
-					continue;
-				}
-				CComQIPtr<IAccessible2> childPacc(child.pdispVal);
-				if (!childPacc) {
-					continue;
-				}
-				if ((tempNode = this->fillVBuf(docHandle, childPacc, buffer, parentNode, previousNode)) != NULL) {
-					previousNode = tempNode;
-				}
-			}
-		}
-	} else {
-
-		// No children, so fetch content from this leaf node.
-		CComBSTR tempBstr;
-		wstring content;
-
-		if ((role != ROLE_SYSTEM_TEXT || !(states & STATE_SYSTEM_FOCUSABLE)) && role != ROLE_SYSTEM_COMBOBOX
-				&& pacc->get_accName(varChild, &tempBstr) == S_OK && tempBstr) {
-			content = tempBstr;
-		}
-		tempBstr.Empty();
-		if (content.empty()&&pacc->get_accValue(varChild, &tempBstr) == S_OK && tempBstr) {
-			content = tempBstr;
-		}
-		tempBstr.Empty();
-		if (content.empty()&&pacc->get_accDescription(varChild, &tempBstr) == S_OK && tempBstr) {
-			if(wcsncmp(tempBstr,L"Description: ",13)==0) {
-				content=&tempBstr[13];
-			}
-		}
-		if (content.empty() && states & STATE_SYSTEM_FOCUSABLE) {
-			// This node is focusable, but contains no text.
-			// Therefore, add it with a space so that the user can get to it.
-			content = L" ";
-		}
-
-		if (!content.empty()) {
-			if (tempNode = buffer->addTextFieldNode(parentNode, previousNode, content))
-				previousNode=tempNode;
-		}
-	}
-
-	return parentNode;
+extern "C" {
+	// Per-instance Rust state + C-ABI entry points (nvda_ia2 crate,
+	// webkit_backend_state.rs). The live tree lives in an embedded Rust
+	// storage::Buffer; the render logic is webkit_fill_vbuf.rs.
+	void* nvda_ia2_webkit_backend_create();
+	void nvda_ia2_webkit_backend_destroy(void* state);
+	void* nvda_ia2_webkit_backend_get_buffer(void* state);
+	void nvda_ia2_webkit_backend_clear_buffer(void* state);
+	// Drives the Rust drain/render/merge over the embedded Buffer;
+	// returns true when the caller should fire vbufChangeNotify.
+	bool nvda_ia2_webkit_backend_update(void* state, void* backend);
+	// WinEvent hook: outer event filter + per-backend dispatch (invalidate
+	// the affected subtree + arm the render timer).
+	bool nvda_ia2_webkit_backend_win_event_is_relevant(unsigned int event_id);
+	void nvda_ia2_webkit_backend_dispatch_win_event(void* state, void* backend, int doc_handle, int child_id);
 }
 
 void CALLBACK WebKitVBufBackend_t::renderThread_winEventProcHook(HWINEVENTHOOK hookID, DWORD eventID, HWND hwnd, long objectID, long childID, DWORD threadID, DWORD time) {
-	switch (eventID) {
-		case EVENT_OBJECT_VALUECHANGE:
-		case EVENT_OBJECT_STATECHANGE:
-		case EVENT_OBJECT_REORDER:
-			break;
-		default:
-			return;
-	}
-
-	WebKitVBufBackend_t* backend = NULL;
-	for (VBufBackendSet_t::iterator it = runningBackends.begin(); it != runningBackends.end(); ++it) {
-		HWND rootWindow = (HWND)UlongToHandle((*it)->rootDocHandle);
-		if (hwnd == rootWindow || IsChild(rootWindow, hwnd)) {
-			backend = static_cast<WebKitVBufBackend_t*>(*it);
-			break;
-		}
-	}
-	if (!backend)
+	if (!nvda_ia2_webkit_backend_win_event_is_relevant(eventID)) {
 		return;
-	int docHandle = HandleToUlong(hwnd);
-	// WebKit returns positive values for uniqueID, but fires events with negative ids.
-	// Therefore, flip the sign on childID.
-	VBufStorage_controlFieldNode_t* node = backend->getControlFieldNodeWithIdentifier(docHandle, -childID);
-	if (!node)
-		return;
-	backend->invalidateSubtree(node);
+	}
+	const int docHandle = HandleToUlong(hwnd);
+	for (auto* backend : runningBackends) {
+		HWND rootWindow = (HWND)UlongToHandle(backend->rootDocHandle);
+		if (rootWindow != hwnd && !IsChild(rootWindow, hwnd))
+			continue;
+		auto* webKitBackend = static_cast<WebKitVBufBackend_t*>(backend);
+		// The Rust dispatch flips the sign of childID for the buffer
+		// lookup (WebKit stores positive unique IDs but fires events with
+		// negative ones), invalidates the subtree, and arms the timer.
+		nvda_ia2_webkit_backend_dispatch_win_event(
+			webKitBackend->rustState, backend, docHandle, childID);
+		break;
+	}
 }
 
 void WebKitVBufBackend_t::renderThread_initialize() {
@@ -211,15 +65,46 @@ void WebKitVBufBackend_t::renderThread_initialize() {
 void WebKitVBufBackend_t::renderThread_terminate() {
 	unregisterWinEventHook(renderThread_winEventProcHook);
 	VBufBackend_t::renderThread_terminate();
+	// WebKit's live tree is the Rust storage::Buffer, not the (always-empty)
+	// C++ storage the base call just cleared; empty the Rust buffer too.
+	nvda_ia2_webkit_backend_clear_buffer(this->rustState);
+}
+
+void WebKitVBufBackend_t::update() {
+	// Drive the Rust drain/render/merge orchestration over the embedded
+	// storage::Buffer. The lock is held across the whole Rust update (so no
+	// vbufRemote reader thread materializes a &Buffer while the render
+	// thread holds a &mut Buffer); the change-notify fires OUTSIDE the lock,
+	// and only when the orchestration reports it took the re-render branch
+	// (the base update() skips vbufChangeNotify on the initial render, which
+	// nvda_ia2_webkit_backend_update preserves by returning false).
+	this->lock.acquire();
+	const bool shouldNotify = nvda_ia2_webkit_backend_update(this->rustState, this);
+	this->lock.release();
+	if (shouldNotify) {
+		nvdaControllerInternal_vbufChangeNotify(this->rootDocHandle, this->rootID);
+	}
+}
+
+void* WebKitVBufBackend_t::getRustStorageBuffer() {
+	return nvda_ia2_webkit_backend_get_buffer(this->rustState);
 }
 
 void WebKitVBufBackend_t::render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode) {
-	CComPtr<IAccessible2> pacc = IAccessible2FromIdentifier(docHandle,ID);
-	nhAssert(pacc); //must get a valid IAccessible object
-	this->fillVBuf(docHandle, pacc, buffer, NULL, NULL);
+	// Vestigial after the Rust flip: update() is overridden and performs all
+	// rendering against the Rust storage::Buffer (via the nvda_ia2 webkit
+	// fill_vbuf renderer), so render() is never reached. It stays a concrete
+	// (empty) definition only to satisfy the base's pure-virtual render() and
+	// keep the class instantiable.
 }
 
-WebKitVBufBackend_t::WebKitVBufBackend_t(int docHandle, int ID): VBufBackend_t(docHandle,ID) {
+WebKitVBufBackend_t::WebKitVBufBackend_t(int docHandle, int ID): VBufBackend_t(docHandle,ID), rustState(nvda_ia2_webkit_backend_create()) {
+}
+
+WebKitVBufBackend_t::~WebKitVBufBackend_t() {
+	// Frees the WebKitBackendState (its Drop releases the live Buffer).
+	nvda_ia2_webkit_backend_destroy(this->rustState);
+	this->rustState = nullptr;
 }
 
 VBufBackend_t* WebKitVBufBackend_t_createInstance(int docHandle, int ID) {
