@@ -43,8 +43,7 @@ class GeckoVBufBackend_t: public VBufBackend_t {
 	/* Phase 6e (Stage D): gecko homes its live tree in a Rust
 	 * storage::Buffer (embedded in GeckoBackendState), so it overrides
 	 * update() to run the Rust drain/render/merge orchestration against
-	 * that buffer instead of the inherited C++ VBufStorage_buffer_t. The
-	 * base render-thread machinery (timer, forceUpdate,
+	 * that buffer. The base render-thread machinery (timer, forceUpdate,
 	 * renderThread_initialize) reaches this through the now-virtual
 	 * update().
 	 */

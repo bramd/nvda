@@ -63,9 +63,8 @@ void CALLBACK AdobeAcrobatVBufBackend_t::renderThread_winEventProcHook(HWINEVENT
 	LOG_DEBUG(L"found active backend for this window at "<<backend);
 
 	// The live tree is in the Rust storage::Buffer, so route the node
-	// lookup + invalidation there (the inherited C++ VBufStorage_buffer_t
-	// is empty). This hook only matches Acrobat document windows, so the
-	// matched backend is always an AdobeAcrobatVBufBackend_t.
+	// lookup + invalidation there. This hook only matches Acrobat document
+	// windows, so the matched backend is always an AdobeAcrobatVBufBackend_t.
 	auto* acrobatBackend = static_cast<AdobeAcrobatVBufBackend_t*>(backend);
 	acrobat_backend_invalidate_node(acrobatBackend->rustState, backend, docHandle, ID);
 }

@@ -8,7 +8,6 @@ Import(
 vbufBaseObjs = [
 	env.Object(x)
 	for x in (
-		"storage.cpp",
 		"utils.cpp",
 		"backend.cpp",
 		"c_shim.cpp",

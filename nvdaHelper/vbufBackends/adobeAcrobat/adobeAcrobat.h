@@ -38,9 +38,8 @@ class AdobeAcrobatVBufBackend_t: public VBufBackend_t {
 
 	/* This backend homes its live tree in a Rust storage::Buffer (in
 	 * AcrobatBackendState), so it overrides update() to run the shared
-	 * Rust drain/render/merge orchestration against that buffer instead of
-	 * the inherited C++ VBufStorage_buffer_t. The base render-thread
-	 * machinery reaches this through the now-virtual update().
+	 * Rust drain/render/merge orchestration against that buffer. The base
+	 * render-thread machinery reaches this through the now-virtual update().
 	 */
 	virtual void update();
 

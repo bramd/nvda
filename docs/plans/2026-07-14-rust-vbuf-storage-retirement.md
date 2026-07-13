@@ -1,7 +1,13 @@
 # Retiring the C++ vbuf storage (`vbufBase/storage.cpp`)
 
-**Status:** assessment + plan (2026-07-14). Feasibility confirmed by a full
-call-site survey. Not started — awaiting go-ahead on scope.
+**Status:** DONE (2026-07-14), pending a confirming smoke test. All three
+phases implemented and committed (phase 1 `6233e898d`, phase 2 `23f227a36`,
+phase 3 below). `vbufBase/storage.cpp` + `storage.h` are deleted; the C++
+`VBufStorage_*` classes no longer exist and the DLL links no storage
+symbols. ~2,150 C++ lines removed. The one behavioural change (severing the
+`VBufBackend_t : VBufStorage_buffer_t` inheritance) is behaviour-preserving
+because that C++ buffer was always empty for a flipped backend — but it
+warrants a browse-mode smoke test of gecko / acrobat / mshtml / webKit.
 
 ## The headline
 
