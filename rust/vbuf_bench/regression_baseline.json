@@ -1,0 +1,386 @@
+{
+ "construct/large_deep_nested": {
+  "cpp": 22494900.0,
+  "rust": 11547516.315789472
+ },
+ "construct/large_mshtml": {
+  "cpp": 18306240.0,
+  "rust": 10350033.333333332
+ },
+ "construct/large_realistic_mixed": {
+  "cpp": 8490560.227272727,
+  "rust": 3590541.9642857146
+ },
+ "construct/large_wide_shallow": {
+  "cpp": 7340804.772727273,
+  "rust": 3551560.0
+ },
+ "construct/medium_deep_nested": {
+  "cpp": 2377746.5476190476,
+  "rust": 1842914.049145299
+ },
+ "construct/medium_mshtml": {
+  "cpp": 2506948.1481481483,
+  "rust": 1226226.862745098
+ },
+ "construct/medium_realistic_mixed": {
+  "cpp": 1236337.9166666665,
+  "rust": 466683.07692307694
+ },
+ "construct/medium_wide_shallow": {
+  "cpp": 1116252.9942279942,
+  "rust": 489052.547008547
+ },
+ "construct/small_deep_nested": {
+  "cpp": 106540.85497835497,
+  "rust": 54208.770851624235
+ },
+ "construct/small_mshtml": {
+  "cpp": 224549.70843301434,
+  "rust": 98109.39285714286
+ },
+ "construct/small_realistic_mixed": {
+  "cpp": 125534.75988700565,
+  "rust": 39652.083333333336
+ },
+ "construct/small_wide_shallow": {
+  "cpp": 103695.6934079602,
+  "rust": 27346.754385964912
+ },
+ "find_node_by_attributes/large_deep_nested": {
+  "cpp": 8987370.0,
+  "rust": 1763762.9545454546
+ },
+ "find_node_by_attributes/large_mshtml": {
+  "cpp": 13024.313329187396,
+  "rust": 9360.13666504933
+ },
+ "find_node_by_attributes/large_realistic_mixed": {
+  "cpp": 45778.63669590643,
+  "rust": 16356.548492257538
+ },
+ "find_node_by_attributes/large_wide_shallow": {
+  "cpp": 19757.92957746479,
+  "rust": 11152.80230069556
+ },
+ "find_node_by_attributes/medium_deep_nested": {
+  "cpp": 1082578.1944444445,
+  "rust": 207202.57352941175
+ },
+ "find_node_by_attributes/medium_mshtml": {
+  "cpp": 28335.74144486692,
+  "rust": 11702.760555402467
+ },
+ "find_node_by_attributes/medium_realistic_mixed": {
+  "cpp": 2669.003066451004,
+  "rust": 7194.869181107713
+ },
+ "find_node_by_attributes/medium_wide_shallow": {
+  "cpp": 20046.987034458754,
+  "rust": 11070.649077170816
+ },
+ "find_node_by_attributes/small_deep_nested": {
+  "cpp": 80086.54086238355,
+  "rust": 13489.50959488273
+ },
+ "find_node_by_attributes/small_mshtml": {
+  "cpp": 127395.34226190476,
+  "rust": 29628.74293785311
+ },
+ "find_node_by_attributes/small_realistic_mixed": {
+  "cpp": 13450.48462103288,
+  "rust": 9800.574512534818
+ },
+ "find_node_by_attributes/small_wide_shallow": {
+  "cpp": 19873.55427473583,
+  "rust": 11264.289201327865
+ },
+ "get_line_offsets/large_deep_nested": {
+  "cpp": 314833.768115942,
+  "rust": 170040.73295985063
+ },
+ "get_line_offsets/large_mshtml": {
+  "cpp": 385781.5789473684,
+  "rust": 303192.88194444444
+ },
+ "get_line_offsets/large_realistic_mixed": {
+  "cpp": 584606.7307692308,
+  "rust": 483721.4074074074
+ },
+ "get_line_offsets/large_wide_shallow": {
+  "cpp": 910392.2916666667,
+  "rust": 1207032.9545454546
+ },
+ "get_line_offsets/medium_deep_nested": {
+  "cpp": 204683.82352941175,
+  "rust": 149985.33442982455
+ },
+ "get_line_offsets/medium_mshtml": {
+  "cpp": 198259.49074074073,
+  "rust": 112005.62625826863
+ },
+ "get_line_offsets/medium_realistic_mixed": {
+  "cpp": 253929.90580847726,
+  "rust": 170081.67862266858
+ },
+ "get_line_offsets/medium_wide_shallow": {
+  "cpp": 315437.17391304346,
+  "rust": 272478.7037037037
+ },
+ "get_line_offsets/small_deep_nested": {
+  "cpp": 82613.72093023255,
+  "rust": 35927.46153846154
+ },
+ "get_line_offsets/small_mshtml": {
+  "cpp": 196891.30952380953,
+  "rust": 63645.22696929239
+ },
+ "get_line_offsets/small_realistic_mixed": {
+  "cpp": 152073.17460317462,
+  "rust": 63856.388206388205
+ },
+ "get_line_offsets/small_wide_shallow": {
+  "cpp": 81089.2775974026,
+  "rust": 41444.24364123159
+ },
+ "get_text_in_range_markup/large_deep_nested": {
+  "cpp": 40630650.0,
+  "rust": 11009026.12781955
+ },
+ "get_text_in_range_markup/large_mshtml": {
+  "cpp": 62981275.0,
+  "rust": 26322916.666666664
+ },
+ "get_text_in_range_markup/large_realistic_mixed": {
+  "cpp": 76580250.0,
+  "rust": 45552925.0
+ },
+ "get_text_in_range_markup/large_wide_shallow": {
+  "cpp": 162369900.0,
+  "rust": 117836750.0
+ },
+ "get_text_in_range_markup/medium_deep_nested": {
+  "cpp": 7427375.0,
+  "rust": 1811545.4411764706
+ },
+ "get_text_in_range_markup/medium_mshtml": {
+  "cpp": 9727517.857142858,
+  "rust": 2832509.621212121
+ },
+ "get_text_in_range_markup/medium_realistic_mixed": {
+  "cpp": 9156077.272727273,
+  "rust": 3481092.121212121
+ },
+ "get_text_in_range_markup/medium_wide_shallow": {
+  "cpp": 12725060.0,
+  "rust": 6334900.0
+ },
+ "get_text_in_range_markup/small_deep_nested": {
+  "cpp": 688201.3725490196,
+  "rust": 149757.11805555556
+ },
+ "get_text_in_range_markup/small_mshtml": {
+  "cpp": 781835.3703703703,
+  "rust": 172309.9593495935
+ },
+ "get_text_in_range_markup/small_realistic_mixed": {
+  "cpp": 745798.4722222222,
+  "rust": 177451.67361111112
+ },
+ "get_text_in_range_markup/small_wide_shallow": {
+  "cpp": 719930.4678362573,
+  "rust": 181304.98903508772
+ },
+ "get_text_in_range_plain/large_deep_nested": {
+  "cpp": 151375.72695035458,
+  "rust": 91970.92919507998
+ },
+ "get_text_in_range_plain/large_mshtml": {
+  "cpp": 163965.52365762892,
+  "rust": 90356.85654008438
+ },
+ "get_text_in_range_plain/large_realistic_mixed": {
+  "cpp": 196505.93646277857,
+  "rust": 117478.50806451614
+ },
+ "get_text_in_range_plain/large_wide_shallow": {
+  "cpp": 172354.0650406504,
+  "rust": 113329.19844164455
+ },
+ "get_text_in_range_plain/medium_deep_nested": {
+  "cpp": 13603.244047619048,
+  "rust": 11476.473287112562
+ },
+ "get_text_in_range_plain/medium_mshtml": {
+  "cpp": 19842.133956386293,
+  "rust": 10444.488552437224
+ },
+ "get_text_in_range_plain/medium_realistic_mixed": {
+  "cpp": 17925.990506329115,
+  "rust": 12342.417677642981
+ },
+ "get_text_in_range_plain/medium_wide_shallow": {
+  "cpp": 18864.48849902534,
+  "rust": 15384.502923976608
+ },
+ "get_text_in_range_plain/small_deep_nested": {
+  "cpp": 1510.8610103596234,
+  "rust": 1314.1565013933434
+ },
+ "get_text_in_range_plain/small_mshtml": {
+  "cpp": 1466.7081165452655,
+  "rust": 1003.3156618561964
+ },
+ "get_text_in_range_plain/small_realistic_mixed": {
+  "cpp": 1653.9438368113802,
+  "rust": 1252.7532018194722
+ },
+ "get_text_in_range_plain/small_wide_shallow": {
+  "cpp": 1878.836432963588,
+  "rust": 1649.0790538977562
+ },
+ "get_text_length/large_deep_nested": {
+  "cpp": 1.1023890210834526,
+  "rust": 0.9308577515575496
+ },
+ "get_text_length/large_mshtml": {
+  "cpp": 1.0983754520056843,
+  "rust": 0.9072383981204797
+ },
+ "get_text_length/large_realistic_mixed": {
+  "cpp": 1.099311755737631,
+  "rust": 0.9164283070020816
+ },
+ "get_text_length/large_wide_shallow": {
+  "cpp": 1.0981387527101956,
+  "rust": 1.29672060364406
+ },
+ "get_text_length/medium_deep_nested": {
+  "cpp": 1.5999571690708618,
+  "rust": 1.3136020591197701
+ },
+ "get_text_length/medium_mshtml": {
+  "cpp": 1.6158779513857087,
+  "rust": 1.2672536143376565
+ },
+ "get_text_length/medium_realistic_mixed": {
+  "cpp": 1.6799095775018758,
+  "rust": 1.2692698725281044
+ },
+ "get_text_length/medium_wide_shallow": {
+  "cpp": 1.6145014689413109,
+  "rust": 1.264753952501283
+ },
+ "get_text_length/small_deep_nested": {
+  "cpp": 1.6200381830967765,
+  "rust": 1.2695493428829097
+ },
+ "get_text_length/small_mshtml": {
+  "cpp": 1.626202372473651,
+  "rust": 1.2742827153691718
+ },
+ "get_text_length/small_realistic_mixed": {
+  "cpp": 1.592392140264883,
+  "rust": 1.279819885001095
+ },
+ "get_text_length/small_wide_shallow": {
+  "cpp": 1.6052072250120677,
+  "rust": 1.2704644287801075
+ },
+ "locate_text_field_at_offset/large_deep_nested": {
+  "cpp": 280820.8791208791,
+  "rust": 217095.37878787878
+ },
+ "locate_text_field_at_offset/large_mshtml": {
+  "cpp": 383256.79824561405,
+  "rust": 373841.24401913874
+ },
+ "locate_text_field_at_offset/large_realistic_mixed": {
+  "cpp": 651342.5324675324,
+  "rust": 641406.6666666667
+ },
+ "locate_text_field_at_offset/large_wide_shallow": {
+  "cpp": 1224120.119047619,
+  "rust": 1104135.714285714
+ },
+ "locate_text_field_at_offset/medium_deep_nested": {
+  "cpp": 102214.54911433172,
+  "rust": 155654.56282847587
+ },
+ "locate_text_field_at_offset/medium_mshtml": {
+  "cpp": 37263.26190476191,
+  "rust": 51679.039343009936
+ },
+ "locate_text_field_at_offset/medium_realistic_mixed": {
+  "cpp": 54212.467191601056,
+  "rust": 103296.79390138408
+ },
+ "locate_text_field_at_offset/medium_wide_shallow": {
+  "cpp": 191562.8317588844,
+  "rust": 196201.54320987655
+ },
+ "locate_text_field_at_offset/small_deep_nested": {
+  "cpp": 7878.402595856156,
+  "rust": 15907.022728570613
+ },
+ "locate_text_field_at_offset/small_mshtml": {
+  "cpp": 1557.5494880351712,
+  "rust": 3840.447031624143
+ },
+ "locate_text_field_at_offset/small_realistic_mixed": {
+  "cpp": 3162.5183707258993,
+  "rust": 8867.34501061571
+ },
+ "locate_text_field_at_offset/small_wide_shallow": {
+  "cpp": 7111.617001419633,
+  "rust": 16533.787487907124
+ },
+ "replace_subtrees/large_deep_nested": {
+  "cpp": 2175716.666666667,
+  "rust": 1268140.0
+ },
+ "replace_subtrees/large_mshtml": {
+  "cpp": 12862.5,
+  "rust": 10792.857142857143
+ },
+ "replace_subtrees/large_realistic_mixed": {
+  "cpp": 10360.0,
+  "rust": 7291.071428571428
+ },
+ "replace_subtrees/large_wide_shallow": {
+  "cpp": 12307.236842105263,
+  "rust": 7235.353535353535
+ },
+ "replace_subtrees/medium_deep_nested": {
+  "cpp": 228780.93434343435,
+  "rust": 132822.22222222222
+ },
+ "replace_subtrees/medium_mshtml": {
+  "cpp": 7680.357142857143,
+  "rust": 4871.09375
+ },
+ "replace_subtrees/medium_realistic_mixed": {
+  "cpp": 8124.090909090909,
+  "rust": 3024.4444444444443
+ },
+ "replace_subtrees/medium_wide_shallow": {
+  "cpp": 7064.965034965035,
+  "rust": 3068.3014354066986
+ },
+ "replace_subtrees/small_deep_nested": {
+  "cpp": 21402.556818181816,
+  "rust": 10322.372567191844
+ },
+ "replace_subtrees/small_mshtml": {
+  "cpp": 2798.629531388152,
+  "rust": 1707.090851535296
+ },
+ "replace_subtrees/small_realistic_mixed": {
+  "cpp": 2320.728840125392,
+  "rust": 1406.6188921141752
+ },
+ "replace_subtrees/small_wide_shallow": {
+  "cpp": 2103.0096887239743,
+  "rust": 1044.518513401492
+ }
+}

@@ -32,6 +32,40 @@ pass `--target-dir build/rust`, as the rest of the repo does).
 `build.rs` compiles the C++ with MSVC `cl.exe` (located automatically by the
 `cc` crate).
 
+## Regression guard
+
+`regression_check.py` turns this benchmark into a go/no-go regression check
+you can run before/after a storage change (or in CI). It runs the full
+benchmark, then compares the **Rust-vs-C++ ratio** (`rust_ns / cpp_ns`) of
+every `(op, size, shape)` against a committed baseline
+(`regression_baseline.json`).
+
+Why the ratio rather than absolute times: both engines are measured in the
+*same* run, so the ratio cancels out machine speed and run-to-run noise that
+hits both equally. A regression therefore means the **Rust** engine got
+slower *relative to the unchanged C++ reference* — the actual "did our
+rewrite regress?" signal — and the baseline stays meaningful across machines.
+
+```sh
+# from the repo's rust/ dir (needs `cargo` on PATH; no uv/venv needed)
+python vbuf_bench/regression_check.py            # run + compare; exit 1 on regression
+python vbuf_bench/regression_check.py --update   # (re)capture the committed baseline
+python vbuf_bench/regression_check.py --no-run   # compare using the last criterion run
+python vbuf_bench/regression_check.py --threshold 15   # tighten from the default 20%
+```
+
+It prints a table sorted worst-first (`base r/c`, `now r/c`, `delta%`, flag)
+and exits non-zero if any gated op's ratio worsened past the threshold
+(default 20%, chosen to absorb the sampling noise the caveats below describe).
+`get_text_length` (a ~1 ns O(1) floor marker) is reported but excluded from
+the gate. Re-run `--update` intentionally when a change legitimately shifts
+the numbers.
+
+This guards the storage engine (the part the port rewrote). The render
+(`fillVBuf`) walks a live COM tree from a running app, so it can't be
+benchmarked headlessly here; its storage-write cost *is* covered by the
+`construct` op with realistic shapes (including `mshtml`).
+
 ## How it is wired
 
 * `build.rs` compiles three C++ files into a static lib with the same flags
