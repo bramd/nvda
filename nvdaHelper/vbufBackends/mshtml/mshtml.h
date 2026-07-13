@@ -47,6 +47,8 @@ void decBackendLibRefCount();
 // gets the window message registered by MSHTML which is used to fetch the MSHTML object model from its window.
 UINT getHTMLWindowMessage();
 
+class MshtmlDocumentChangeSink;
+
 class MshtmlVBufBackend_t: public VBufBackend_t {
 	private:
 
@@ -54,9 +56,19 @@ class MshtmlVBufBackend_t: public VBufBackend_t {
 	 * mshtml_backend_create() in the constructor and freed by
 	 * mshtml_backend_destroy() in the destructor. Homes the live tree in
 	 * a Rust storage::Buffer; the render logic lives in the nvda_mshtml
-	 * crate (Phase A: static render; the change sink is deferred).
+	 * crate.
 	 */
 	void* rustState = nullptr;
+
+	/* Phase B: the single document-level dirty-range change sink,
+	 * registered on the first render and torn down on
+	 * renderThread_terminate / destruction. Drives DOM-mutation re-renders
+	 * against the Rust buffer.
+	 */
+	MshtmlDocumentChangeSink* docChangeSink = nullptr;
+
+	void registerDocumentSink();
+	void unregisterDocumentSink();
 
 	protected:
 
@@ -74,6 +86,10 @@ class MshtmlVBufBackend_t: public VBufBackend_t {
 	 * of the inherited C++ VBufStorage_buffer_t.
 	 */
 	virtual void update();
+
+	/* Phase B: tear down the change sink + empty the Rust buffer when the
+	 * render thread terminates (document going away). */
+	virtual void renderThread_terminate();
 
 	VBufStorage_fieldNode_t* fillVBuf(VBufStorage_buffer_t* buffer, VBufStorage_controlFieldNode_t* parentNode, VBufStorage_fieldNode_t* previousNode, VBufStorage_controlFieldNode_t* oldNode, IHTMLDOMNode* pHTMLDOMNode, int docHandle, fillVBuf_tableInfo* tableInfoPtr, int* LIIndexPtr, bool ignoreInteractiveUnlabelledGraphics, bool allowPreformattedText, bool shouldSkipText, bool inNewSubtree, std::set<VBufStorage_controlFieldNode_t*>& atomicNodes);
 

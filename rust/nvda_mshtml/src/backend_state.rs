@@ -20,7 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use nvda_vbuf::backend::run_raw_update;
-use nvda_vbuf::storage::Buffer;
+use nvda_vbuf::storage::{Buffer, NodeKey};
 use nvda_vbuf::{VbufBackend, VbufBuffer};
 
 use crate::fill_vbuf::{fill_vbuf, get_frame_body, query_service, FillVBufCtx};
@@ -211,6 +211,113 @@ pub unsafe extern "C" fn mshtml_backend_clear_buffer(state: *mut c_void) {
     }
     let state = unsafe { &mut *(state as *mut MshtmlBackendState) };
     state.buffer.clear();
+}
+
+/// Whether a control node `(doc_handle, id)` exists in this backend's
+/// `Buffer`. Backs the C++ change sink's `getDeepestControlFieldNodeFor
+/// HTMLElement` walk (it walks a changed element up its ancestors calling
+/// this until it finds the deepest element that has a rendered node).
+///
+/// # Safety
+///
+/// `state` must be a valid `MshtmlBackendState*`.
+#[no_mangle]
+pub unsafe extern "C" fn mshtml_backend_has_node(
+    state: *mut c_void,
+    doc_handle: i32,
+    id: i32,
+) -> bool {
+    if state.is_null() {
+        return false;
+    }
+    let state = unsafe { &*(state as *mut MshtmlBackendState) };
+    state
+        .buffer
+        .get_control_field_node_with_identifier(doc_handle, id)
+        .is_some()
+}
+
+/// Ancestors of `key` from the root down to `key` inclusive.
+fn ancestors_root_first(buffer: &Buffer, key: NodeKey) -> Vec<NodeKey> {
+    let mut v = vec![key];
+    let mut cur = key;
+    while let Some(p) = buffer.parent_of(cur) {
+        v.push(p);
+        cur = p;
+    }
+    v.reverse();
+    v
+}
+
+/// Deepest common ancestor of two nodes (the last shared entry walking
+/// from the root). Mirrors the ancestor-list intersection in the C++
+/// `CHTMLChangeSink::Notify`.
+fn deepest_common_ancestor(
+    buffer: &Buffer,
+    a: NodeKey,
+    b: NodeKey,
+) -> Option<NodeKey> {
+    let aa = ancestors_root_first(buffer, a);
+    let bb = ancestors_root_first(buffer, b);
+    let mut common = None;
+    for (x, y) in aa.iter().zip(bb.iter()) {
+        if x == y {
+            common = Some(*x);
+        } else {
+            break;
+        }
+    }
+    common
+}
+
+/// Invalidate the subtree covering a dirty range `[begin_id, end_id]`
+/// (either may be `0` meaning "no rendered node found"), then arm the
+/// update timer. Port of `CHTMLChangeSink::Notify`'s node-selection +
+/// `invalidateSubtree`/`requestUpdate` tail, operating on the Rust buffer:
+/// if the two ends resolve to the same node (or only one resolves) that
+/// node is invalidated; if both resolve to different nodes their deepest
+/// common ancestor is.
+///
+/// # Safety
+///
+/// `state` must be a valid `MshtmlBackendState*`; `backend` a valid
+/// `VBufBackend_t*`.
+#[no_mangle]
+pub unsafe extern "C" fn mshtml_backend_invalidate_range(
+    state: *mut c_void,
+    backend: *mut c_void,
+    doc_handle: i32,
+    begin_id: i32,
+    end_id: i32,
+) {
+    if state.is_null() || backend.is_null() {
+        return;
+    }
+    let state = unsafe { &mut *(state as *mut MshtmlBackendState) };
+    let backend_h = VbufBackend(backend);
+    let lookup = |id: i32| -> Option<NodeKey> {
+        if id == 0 {
+            None
+        } else {
+            state
+                .buffer
+                .get_control_field_node_with_identifier(doc_handle, id)
+        }
+    };
+    let begin = lookup(begin_id);
+    let end = lookup(end_id);
+    let invalid = match (begin, end) {
+        (Some(b), Some(e)) if b == e => Some(b),
+        (Some(b), None) => Some(b),
+        (None, Some(e)) => Some(e),
+        (Some(b), Some(e)) => deepest_common_ancestor(&state.buffer, b, e),
+        (None, None) => None,
+    };
+    if let Some(k) = invalid {
+        if state.buffer.invalidate_subtree(k) {
+            unsafe { backend_h.request_update() };
+        }
+    }
 }
 
 /// Drain/render/merge orchestration over the embedded `Buffer`. Backs
