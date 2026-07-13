@@ -18,29 +18,6 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 #include <vbufBase/storage.h>
 #include <vbufBase/backend.h>
 
-typedef struct {
-	int uniqueId;
-	int type;
-} TableHeaderInfo;
-
-typedef struct {
-	long tableID;
-	int curRowNumber;
-	int curColumnNumber;
-	// Maps column numbers to remaining row spans.
-	std::map<int, int> columnRowSpans;
-	// Maps column numbers to table-columnheadercells attribute values.
-	std::map<int, std::wstring> columnHeaders;
-	// Maps row numbers to table-rowheadercells attribute values.
-	std::map<int, std::wstring> rowHeaders;
-	// Maps node id strings to TableHeaderInfo.
-	std::map<std::wstring, TableHeaderInfo> headersInfo;
-	// Lists nodes with explicit headers along with their Headers attribute string.
-	std::list<std::pair<VBufStorage_controlFieldNode_t*, std::wstring>> nodesWithExplicitHeaders;
-	bool definitData;
-	VBufStorage_controlFieldNode_t* tableNode;
-} fillVBuf_tableInfo;
-
 void incBackendLibRefCount();
 void decBackendLibRefCount();
 
@@ -73,10 +50,10 @@ class MshtmlVBufBackend_t: public VBufBackend_t {
 	protected:
 
 	/* Vestigial after the Rust flip: update() is overridden and does all
-	 * the rendering against the Rust buffer (via the nvda_mshtml
-	 * fill_vbuf renderer), so this C++ render() (and the fillVBuf it
-	 * drives) is no longer on the live path. Kept only to satisfy the
-	 * base's pure-virtual render().
+	 * the rendering against the Rust buffer (via the nvda_mshtml fill_vbuf
+	 * renderer + the document change sink), so this C++ render() is never
+	 * on the live path. Kept as an empty stub only to satisfy the base's
+	 * pure-virtual render().
 	 */
 	virtual void render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode=NULL);
 
@@ -91,8 +68,6 @@ class MshtmlVBufBackend_t: public VBufBackend_t {
 	 * render thread terminates (document going away). */
 	virtual void renderThread_terminate();
 
-	VBufStorage_fieldNode_t* fillVBuf(VBufStorage_buffer_t* buffer, VBufStorage_controlFieldNode_t* parentNode, VBufStorage_fieldNode_t* previousNode, VBufStorage_controlFieldNode_t* oldNode, IHTMLDOMNode* pHTMLDOMNode, int docHandle, fillVBuf_tableInfo* tableInfoPtr, int* LIIndexPtr, bool ignoreInteractiveUnlabelledGraphics, bool allowPreformattedText, bool shouldSkipText, bool inNewSubtree, std::set<VBufStorage_controlFieldNode_t*>& atomicNodes);
-
 	virtual ~MshtmlVBufBackend_t();
 
 	public:
@@ -104,8 +79,6 @@ class MshtmlVBufBackend_t: public VBufBackend_t {
 	 * instead of the legacy C++ storage virtuals.
 	 */
 	virtual void* getRustStorageBuffer();
-
-	VBufStorage_controlFieldNode_t* getDeepestControlFieldNodeForHTMLElement(IHTMLElement* pHTMLElement);
 
 };
 

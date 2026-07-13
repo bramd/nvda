@@ -21,7 +21,6 @@ Import(
 
 mshtmlBackendLib = [
 	env.Object("mshtml.cpp"),
-	env.Object("node.cpp"),
 ]
 
 Return("mshtmlBackendLib")
