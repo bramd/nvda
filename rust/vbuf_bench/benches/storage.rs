@@ -481,6 +481,302 @@ fn gen_realistic_mixed(target: usize, rng: &mut XorShift) -> Workload {
 }
 
 // ---------------------------------------------------------------------
+// MSHTML-representative workload.
+// ---------------------------------------------------------------------
+//
+// Same web-page structure as realistic_mixed, but with the per-control-node
+// ATTRIBUTE DENSITY a real MSHTML (Trident) render emits: IHTMLDOMNode::
+// nodeName, a numeric IAccessible::role, one or more IAccessible::state_N
+// bits, language, and formatState (~6-9 attributes vs realistic_mixed's
+// 2-3). All the vbuf backends -- gecko, acrobat, mshtml -- render into the
+// SAME nvda_vbuf::storage::Buffer, so the only storage cost that is
+// MSHTML-specific is this attribute count, which stresses the per-node
+// attribute map. Headings also carry a "role"="heading" marker so the
+// quick-nav find op stays comparable across shapes. (Text-node attributes
+// -- MSHTML emits language/formatState there too -- are omitted:
+// BuildOp::Text carries no attributes and control nodes dominate the cost.)
+
+// MSAA states (oleacc.h) MSHTML commonly emits as IAccessible::state_N.
+const ST_FOCUSABLE: i32 = 0x0010_0000;
+const ST_LINKED: i32 = 0x0040_0000;
+const ST_READONLY: i32 = 0x40;
+// MSAA roles (oleacc.h).
+const ROLE_TEXT: i32 = 42;
+const ROLE_LINK: i32 = 30;
+const ROLE_LIST: i32 = 33;
+const ROLE_LISTITEM: i32 = 34;
+const ROLE_TABLE: i32 = 24;
+const ROLE_ROW: i32 = 28;
+const ROLE_CELL: i32 = 29;
+// A representative formatState bit (STRONG).
+const FS_STRONG: u32 = 8;
+
+fn mshtml_attrs(
+	node_name: &str,
+	role: i32,
+	states: &[i32],
+	lang: &str,
+	format_state: u32,
+	extra: &[(&str, &str)],
+) -> Vec<(Vec<u16>, Vec<u16>)> {
+	let mut a = vec![
+		(w("IHTMLDOMNode::nodeName"), w(node_name)),
+		(w("IAccessible::role"), w(&format!("{role}"))),
+		(w("language"), w(lang)),
+		(w("formatState"), w(&format!("{format_state}"))),
+	];
+	for &st in states {
+		a.push((w(&format!("IAccessible::state_{st}")), w("1")));
+	}
+	for &(k, v) in extra {
+		a.push((w(k), w(v)));
+	}
+	a
+}
+
+fn gen_mshtml_document(target: usize, rng: &mut XorShift) -> Workload {
+	let mut ops = Vec::new();
+	let mut next_id = 1;
+	let root = push_control(
+		&mut ops,
+		None,
+		None,
+		DOC,
+		next_id,
+		true,
+		mshtml_attrs("BODY", ROLE_TEXT, &[ST_READONLY], "en", 0, &[]),
+	);
+	next_id += 1;
+
+	let mut prev_top: Option<usize> = None;
+	let mut replace_target = root;
+	let mut recorded = false;
+
+	while ops.len() < target {
+		let roll = rng.below(100);
+		if roll < 12 {
+			// Heading.
+			let level = (rng.below(6) + 1) as i32;
+			let hd = push_control(
+				&mut ops,
+				Some(root),
+				prev_top,
+				DOC,
+				next_id,
+				true,
+				mshtml_attrs(
+					&format!("H{level}"),
+					ROLE_TEXT,
+					&[ST_READONLY],
+					"en",
+					0,
+					&[("role", "heading"), ("level", "2")],
+				),
+			);
+			next_id += 1;
+			let n = 3 + rng.below(6) as usize;
+			push_text(&mut ops, Some(hd), None, make_words(rng, n));
+			prev_top = Some(hd);
+		} else if roll < 62 {
+			// Paragraph with optional inline strong + link runs.
+			let para = push_control(
+				&mut ops,
+				Some(root),
+				prev_top,
+				DOC,
+				next_id,
+				true,
+				mshtml_attrs("P", ROLE_TEXT, &[ST_READONLY], "en", 0, &[]),
+			);
+			next_id += 1;
+			let n = 8 + rng.below(20) as usize;
+			let t = push_text(&mut ops, Some(para), None, make_words(rng, n));
+			let mut prev_inline = Some(t);
+			if rng.below(100) < 35 {
+				let strong = push_control(
+					&mut ops,
+					Some(para),
+					prev_inline,
+					DOC,
+					next_id,
+					false,
+					mshtml_attrs(
+						"STRONG",
+						ROLE_TEXT,
+						&[ST_READONLY],
+						"en",
+						FS_STRONG,
+						&[],
+					),
+				);
+				next_id += 1;
+				push_text(&mut ops, Some(strong), None, make_words(rng, 2));
+				prev_inline = Some(strong);
+			}
+			if rng.below(100) < 40 {
+				let link = push_control(
+					&mut ops,
+					Some(para),
+					prev_inline,
+					DOC,
+					next_id,
+					false,
+					mshtml_attrs(
+						"A",
+						ROLE_LINK,
+						&[ST_FOCUSABLE, ST_LINKED],
+						"en",
+						0,
+						&[("role", "link")],
+					),
+				);
+				next_id += 1;
+				let n = 1 + rng.below(4) as usize;
+				push_text(&mut ops, Some(link), None, make_words(rng, n));
+			}
+			prev_top = Some(para);
+			if !recorded && ops.len() >= target / 2 {
+				replace_target = para;
+				recorded = true;
+			}
+		} else if roll < 78 {
+			// Unordered list.
+			let list = push_control(
+				&mut ops,
+				Some(root),
+				prev_top,
+				DOC,
+				next_id,
+				true,
+				mshtml_attrs("UL", ROLE_LIST, &[ST_READONLY], "en", 0, &[]),
+			);
+			next_id += 1;
+			let items = 2 + rng.below(5) as usize;
+			let mut prev_item: Option<usize> = None;
+			for _ in 0..items {
+				let item = push_control(
+					&mut ops,
+					Some(list),
+					prev_item,
+					DOC,
+					next_id,
+					true,
+					mshtml_attrs(
+						"LI",
+						ROLE_LISTITEM,
+						&[ST_READONLY],
+						"en",
+						0,
+						&[],
+					),
+				);
+				next_id += 1;
+				let n = 2 + rng.below(6) as usize;
+				push_text(&mut ops, Some(item), None, make_words(rng, n));
+				prev_item = Some(item);
+			}
+			prev_top = Some(list);
+		} else if roll < 90 {
+			// Small table: header row + data rows, cells carrying the
+			// table-* attributes MSHTML emits.
+			let table = push_control(
+				&mut ops,
+				Some(root),
+				prev_top,
+				DOC,
+				next_id,
+				true,
+				mshtml_attrs(
+					"TABLE",
+					ROLE_TABLE,
+					&[ST_READONLY],
+					"en",
+					0,
+					&[("table-id", "1")],
+				),
+			);
+			next_id += 1;
+			let cols = 2 + rng.below(3) as usize;
+			let table_rows = 2 + rng.below(3) as usize;
+			let mut prev_row: Option<usize> = None;
+			for r in 0..table_rows {
+				let row = push_control(
+					&mut ops,
+					Some(table),
+					prev_row,
+					DOC,
+					next_id,
+					true,
+					mshtml_attrs("TR", ROLE_ROW, &[ST_READONLY], "en", 0, &[]),
+				);
+				next_id += 1;
+				let mut prev_cell: Option<usize> = None;
+				for c in 0..cols {
+					let tag = if r == 0 { "TH" } else { "TD" };
+					let cell = push_control(
+						&mut ops,
+						Some(row),
+						prev_cell,
+						DOC,
+						next_id,
+						true,
+						mshtml_attrs(
+							tag,
+							ROLE_CELL,
+							&[ST_READONLY],
+							"en",
+							0,
+							&[
+								("table-id", "1"),
+								(
+									"table-rownumber",
+									&format!("{}", r + 1),
+								),
+								(
+									"table-columnnumber",
+									&format!("{}", c + 1),
+								),
+							],
+						),
+					);
+					next_id += 1;
+					push_text(&mut ops, Some(cell), None, make_words(rng, 2));
+					prev_cell = Some(cell);
+				}
+				prev_row = Some(row);
+			}
+			prev_top = Some(table);
+		} else {
+			// Standalone link.
+			let link = push_control(
+				&mut ops,
+				Some(root),
+				prev_top,
+				DOC,
+				next_id,
+				false,
+				mshtml_attrs(
+					"A",
+					ROLE_LINK,
+					&[ST_FOCUSABLE, ST_LINKED],
+					"en",
+					0,
+					&[("role", "link")],
+				),
+			);
+			next_id += 1;
+			let n = 1 + rng.below(4) as usize;
+			push_text(&mut ops, Some(link), None, make_words(rng, n));
+			prev_top = Some(link);
+		}
+	}
+	Workload {
+		ops,
+		replace_target,
+	}
+}
+
+// ---------------------------------------------------------------------
 // Replay: build a tree from the op list against each engine.
 // ---------------------------------------------------------------------
 
@@ -689,7 +985,12 @@ fn deep_cap(target: usize) -> usize {
 fn build_cases() -> Vec<Case> {
 	let mut cases = Vec::new();
 	for &(size_name, target) in SIZES {
-		for shape in ["wide_shallow", "deep_nested", "realistic_mixed"] {
+		// NB the per-(size,shape) seed below mixes in shape.len(); keep new
+		// shape names a distinct length from the others ("mshtml" = 6) so
+		// they don't collide and the existing baselines stay unchanged.
+		for shape in
+			["wide_shallow", "deep_nested", "realistic_mixed", "mshtml"]
+		{
 			// Fixed seed per (size, shape) -> deterministic across runs.
 			let mut rng = XorShift::new(
 				0x9E3779B97F4A7C15u64
@@ -701,6 +1002,7 @@ fn build_cases() -> Vec<Case> {
 				"deep_nested" => {
 					gen_deep_nested(target, &mut rng, deep_cap(target))
 				}
+				"mshtml" => gen_mshtml_document(target, &mut rng),
 				_ => gen_realistic_mixed(target, &mut rng),
 			};
 

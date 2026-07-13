@@ -58,7 +58,7 @@ nvda_input_hooks` (see `nvdaHelper/remote/sconscript`). Keeping the C++-compilin
 
 ## Workloads
 
-Three **shapes**, each generated at three **sizes** (`small` ≈ 200 nodes,
+Four **shapes**, each generated at three **sizes** (`small` ≈ 200 nodes,
 `medium` ≈ 2 000, `large` ≈ 10 000) from a fixed-seed xorshift RNG:
 
 * **`wide_shallow`** — a root with many block control children, each holding one
@@ -73,6 +73,16 @@ Three **shapes**, each generated at three **sizes** (`small` ≈ 200 nodes,
   levels, with a realistic distribution (~12 % headings, ~50 % paragraphs, ~20 %
   lists, ~18 % links), a couple of attributes per control node, and realistic
   word-length text runs.
+* **`mshtml`** — the same web-page structure as `realistic_mixed` (plus small
+  tables and inline strong runs), but with the per-control-node **attribute
+  density a real MSHTML (Trident) render emits**: `IHTMLDOMNode::nodeName`, a
+  numeric `IAccessible::role`, one or more `IAccessible::state_N`, `language`,
+  and `formatState` (~6–9 attributes vs `realistic_mixed`'s 2–3). All vbuf
+  backends — gecko, acrobat, mshtml — render into the *same*
+  `nvda_vbuf::storage::Buffer`, so the only storage cost specific to the MSHTML
+  backend is this attribute count, which stresses the per-node attribute map.
+  (Text-node attributes are omitted — `BuildOp::Text` carries none and control
+  nodes dominate the cost.)
 
 ## Benchmark groups
 
@@ -264,6 +274,47 @@ per node, versus Rust appending to a `Vec<u16>`.
 
 `get_text_length` is O(1) in both and effectively free (~1.5 ns); it exists only
 as a floor/sanity marker.
+
+### `mshtml` shape — all ops (attribute-dense, added 2026-07-13)
+
+The MSHTML backend renders into the same `storage::Buffer` as gecko/acrobat, so
+this shape is a *workload*, not a separate engine. Its point is the per-node
+attribute density MSHTML emits (~6–9 attrs/node), which stresses the attribute
+map. Median of a `--sample-size 10` run:
+
+| op | size | Rust | C++ | C++ / Rust |
+| --- | --- | --- | --- | --- |
+| construct | small | 60.3 µs | 203.8 µs | 3.38× |
+| construct | medium | 1.19 ms | 2.25 ms | 1.90× |
+| construct | large | 10.94 ms | 17.34 ms | 1.59× |
+| get_text_in_range_plain | small | 1.56 µs | 1.96 µs | 1.26× |
+| get_text_in_range_plain | medium | 16.18 µs | 20.21 µs | 1.25× |
+| get_text_in_range_plain | large | 93.59 µs | 166.43 µs | 1.78× |
+| get_text_in_range_markup | small | 184.8 µs | 806.1 µs | 4.36× |
+| get_text_in_range_markup | medium | 2.93 ms | 9.79 ms | 3.34× |
+| get_text_in_range_markup | large | 31.14 ms | 74.58 ms | 2.39× |
+| find_node_by_attributes | small | 33.0 µs | 143.5 µs | 4.35× |
+| find_node_by_attributes | medium | 12.35 µs | 29.29 µs | 2.37× |
+| find_node_by_attributes | large | 9.97 µs | 13.83 µs | 1.39× |
+| locate_text_field_at_offset | small | 3.85 µs | 1.54 µs | **0.40×** |
+| locate_text_field_at_offset | medium | 51.32 µs | 37.51 µs | **0.73×** |
+| locate_text_field_at_offset | large | 385.0 µs | 384.4 µs | 1.00× |
+| get_line_offsets | small | 85.3 µs | 193.6 µs | 2.27× |
+| get_line_offsets | medium | 118.3 µs | 211.7 µs | 1.79× |
+| get_line_offsets | large | 454.8 µs | 569.2 µs | 1.25× |
+| replace_subtrees | small | 4.24 µs | 8.03 µs | 1.89× |
+| replace_subtrees | medium | 5.37 µs | 10.73 µs | 2.00× |
+| replace_subtrees | large | 9.52 µs | 12.05 µs | 1.27× |
+| get_text_length | all | ~1.3 ns | ~2.0 ns | ~1.5× |
+
+Takeaway: the attribute density **amplifies** Rust's two biggest structural wins
+— markup serialization (`get_text_in_range_markup`, up to 4.4×, since every
+attribute is emitted into the `<control>` tag) and `find_node_by_attributes`
+(up to 4.3×) — and makes `construct` cheaper relative to C++ (more attribute-map
+inserts, where Rust wins). The one Rust-slower op is
+`locate_text_field_at_offset` on small/medium trees (the slotmap generational-key
+lookup vs a raw C++ pointer-follow), matching the existing baseline finding — it
+reaches parity at `large` where the contiguous arena wins back the indirection.
 
 ### Caveats
 
