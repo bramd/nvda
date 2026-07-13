@@ -54,17 +54,6 @@ static LRESULT CALLBACK destroy_callWndProcHook(int code, WPARAM wParam, LPARAM 
 	protected:
 
 /**
- * the list of control field nodes that should be re-rendered the next time the backend is updated.
- * the list is in an order such that any parent is before any child.
- */
-	VBufStorage_controlFieldNodeList_t pendingInvalidSubtreesList;
-
-/**
- * The list of invalid subtrees currently being re-rendered by update.
-  */
-	VBufStorage_controlFieldNodeList_t workingInvalidSubtreesList;
-
-/**
  * The set of currently running backends
  */
 	static VBufBackendSet_t runningBackends;
@@ -100,13 +89,13 @@ static LRESULT CALLBACK destroy_callWndProcHook(int code, WPARAM wParam, LPARAM 
 	virtual void render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode=NULL)=0;
 
 /**
- * Updates the content of the buffer.
- * If no content yet exists it renders the entire document. If content exists it only re-renders nodes marked as invalid.
- * Virtual so a backend that stores its tree outside the C++ VBufStorage_buffer_t (e.g. the gecko_ia2 backend, which
- * homes its live tree in a Rust storage::Buffer under Phase 6e) can override the drain/render/merge orchestration
- * while still being driven through the base render-thread machinery (timer proc, renderThread_initialize, forceUpdate).
+ * Updates the content of the buffer. Pure virtual: every backend homes its
+ * live tree in a Rust storage::Buffer and provides its own drain/render/merge
+ * orchestration, driven through the base render-thread machinery (timer proc,
+ * renderThread_initialize, forceUpdate). The base no longer has a C++-storage
+ * fallback implementation.
  */
-	virtual void update();
+	virtual void update()=0;
 
 /**
  * Destructor, (protected as you must use the destroy method).
@@ -139,12 +128,6 @@ static LRESULT CALLBACK destroy_callWndProcHook(int code, WPARAM wParam, LPARAM 
 	const int rootID;
 
 /**
- * marks a particular node as invalid, so that its content is re-rendered on next update.
- * @param node the node that should be invalidated.
- */
-	virtual bool invalidateSubtree(VBufStorage_controlFieldNode_t*);
-
-/**
  * Forces any invalidated nodes to be updated right now.
  */
 	virtual void forceUpdate();
@@ -171,25 +154,6 @@ static LRESULT CALLBACK destroy_callWndProcHook(int code, WPARAM wParam, LPARAM 
  * Useful for cerializing access to the buffer
  */
 	LockableObject lock;
-
-/**
- * Fetches an existing node from this backend, so that it can be added to a temporary buffer as a reference node during a partial render.
- * This method should only be called from within a backend's render method.
- * If the node exists but it is currently marked for re-rendering,
- * The node is unmarked for re-rendering, but not returned.
- * this allows the current render in progress (that called this method) to go ahead and re-render that node itself like it had never existed.
-  */
-	VBufStorage_controlFieldNode_t* reuseExistingNodeInRender(VBufStorage_controlFieldNode_t* parent, VBufStorage_fieldNode_t* previous, int docHandle, int ID) ;
-
-/**
- * @return whether the pending-invalid-subtrees queue is empty (i.e. no
- * subtree is awaiting re-render on the next update tick). Provided as a
- * public accessor so the C-shim can read this state without breaking the
- * encapsulation of pendingInvalidSubtreesList.
- */
-	bool pendingInvalidSubtreesEmpty() const {
-		return pendingInvalidSubtreesList.empty();
-	}
 
 /**
  * @return the backend's Rust storage::Buffer when this backend homes its live tree in Rust rather than in the C++

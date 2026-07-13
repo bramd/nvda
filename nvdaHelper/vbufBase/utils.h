@@ -18,7 +18,6 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 #include <string>
 #include <wchar.h>
 #include <map>
-#include "storage.h"
 
 /**
  * Obtain a user friendly name for a URL if possible.
@@ -52,19 +51,6 @@ typedef std::multimap<std::wstring, std::wstring> multiValueAttribsMap;
  * @param attribsMap: The multiValueAttribsMap into which the attributes should be placed, with keys and values as strings.
  */
 void multiValueAttribsStringToMap(const std::wstring &attribsString, multiValueAttribsMap &attribsMap);
-
-/**
- * Determine whether a buffer node has useful content.
- * Useful content means the text isn't empty
- * and isn't just a small amount of whitespace.
- */
-bool nodeHasUsefulContent(VBufStorage_fieldNode_t* node);
-
-/**
- * Determine whether a buffer node's description is the same as it's content.
- * This can happen with links that have a title attribute matching the content.
- */
-bool nodeContentMatchesString(VBufStorage_fieldNode_t* node, const std::wstring& testStr);
 
 inline bool isPrivateCharacter(wchar_t ch) {
 	return (ch>=L'\xe000'&&ch<=L'\xf8ff')||(ch==L'\x200b');

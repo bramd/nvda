@@ -12,6 +12,7 @@ This license can be found at:
 http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 */
 
+#include <algorithm>
 #include <cwctype>
 #include <string>
 #include <map>
@@ -143,33 +144,4 @@ void multiValueAttribsStringToMap(const wstring &attribsString, multiValueAttrib
 			str.push_back(*it);
 		}
 	}
-}
-
-bool nodeHasUsefulContent(VBufStorage_fieldNode_t* node) {
-	int length = node->getLength();
-	if (length == 0)
-		return false;
-	if (length > 3)
-		return true;
-	wstring content;
-	node->getTextInRange(0, length, content, false);
-	for(wstring::iterator i=content.begin();i!=content.end();++i) {
-		if(!iswspace(*i)&&!isPrivateCharacter(*i)) {
-			return true;
-		}
-	}
-	return false;
-}
-
-/*
-Used to prevent duplicate content.
-*/
-bool nodeContentMatchesString(VBufStorage_fieldNode_t* node, const wstring& testStr) {
-	const int length = node->getLength();
-	if (length != testStr.length()) {
-		return false;
-	}
-	wstring content;
-	node->getTextInRange(0, length, content, false);
-	return content == testStr;
 }

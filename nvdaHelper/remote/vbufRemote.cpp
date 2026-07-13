@@ -21,14 +21,16 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 
 using namespace std;
 
-// Phase 6e: read externs over the Rust nvda_vbuf storage.
+// Read externs over the Rust nvda_vbuf storage.
 //
-// For a gecko_ia2 backend, backend->getRustStorageBuffer() returns the address of the backend's embedded Rust
-// storage::Buffer; the RPC node handle (VBufRemote_nodeHandle_t, an unsigned hyper == u64) then carries a Rust slotmap
-// key verbatim rather than a narrowed VBufStorage_fieldNode_t*. Each read RPC below branches on that accessor: non-null
-// routes through these nvda_vbuf_* functions (u64 keys, 0 == none), null takes the unchanged legacy C++ virtual call.
-// The buffer is passed as an opaque void*; the direction wire value (0 forward, 1 back, 2 up) is identical between
-// VBufStorage_findDirection_t and the Rust FindDirection encoding. OUT params are only written on success.
+// Every backend homes its live tree in a Rust storage::Buffer, so
+// backend->getRustStorageBuffer() always returns the address of that buffer
+// and the read RPCs below route unconditionally through these nvda_vbuf_*
+// functions. The RPC node handle (VBufRemote_nodeHandle_t, an unsigned hyper
+// == u64) carries a Rust slotmap key verbatim (0 == none). The buffer is
+// passed as an opaque void*; the direction wire value (0 forward, 1 back,
+// 2 up) matches the Rust FindDirection encoding. OUT params are only written
+// on success.
 extern "C" {
 	// OUT-string delivery for get-text-in-range: invoked once, with a UTF-16 (ptr,len) range valid only for the call.
 	typedef void(*NvdaVbufStringCallback)(void* ctx, const wchar_t* ptr, size_t len);
@@ -103,13 +105,7 @@ void VBufRemote_destroyBuffer(VBufRemote_bufferHandle_t* buffer) {
 int VBufRemote_getFieldNodeOffsets(VBufRemote_bufferHandle_t buffer, VBufRemote_nodeHandle_t node, int *startOffset, int *endOffset) {
 	VBufBackend_t* backend=(VBufBackend_t*)buffer;
 	backend->lock.acquire();
-	int res;
-	if(void* rustBuffer=backend->getRustStorageBuffer()) {
-		res=nvda_vbuf_buffer_field_node_offsets(rustBuffer,node,startOffset,endOffset);
-	} else {
-		VBufStorage_fieldNode_t* realNode=(VBufStorage_fieldNode_t*)node;
-		res=backend->getFieldNodeOffsets(realNode,startOffset,endOffset);
-	}
+	int res=nvda_vbuf_buffer_field_node_offsets(backend->getRustStorageBuffer(),node,startOffset,endOffset);
 	backend->lock.release();
 	return res;
 }
@@ -117,13 +113,7 @@ int VBufRemote_getFieldNodeOffsets(VBufRemote_bufferHandle_t buffer, VBufRemote_
 int VBufRemote_isFieldNodeAtOffset(VBufRemote_bufferHandle_t buffer, VBufRemote_nodeHandle_t node, int offset) {
 	VBufBackend_t* backend=(VBufBackend_t*)buffer;
 	backend->lock.acquire();
-	int res;
-	if(void* rustBuffer=backend->getRustStorageBuffer()) {
-		res=nvda_vbuf_buffer_is_field_node_at_offset(rustBuffer,node,offset);
-	} else {
-		VBufStorage_fieldNode_t* realNode=(VBufStorage_fieldNode_t*)node;
-		res=backend->isFieldNodeAtOffset(realNode,offset);
-	}
+	int res=nvda_vbuf_buffer_is_field_node_at_offset(backend->getRustStorageBuffer(),node,offset);
 	backend->lock.release();
 	return res;
 }
@@ -131,10 +121,7 @@ int VBufRemote_isFieldNodeAtOffset(VBufRemote_bufferHandle_t buffer, VBufRemote_
 int VBufRemote_locateTextFieldNodeAtOffset(VBufRemote_bufferHandle_t buffer, int offset, int *nodeStartOffset, int *nodeEndOffset, VBufRemote_nodeHandle_t* foundNode) {
 	VBufBackend_t* backend=(VBufBackend_t*)buffer;
 	backend->lock.acquire();
-	if(void* rustBuffer=backend->getRustStorageBuffer())
-		*foundNode=nvda_vbuf_buffer_locate_text_field_node_at_offset(rustBuffer,offset,nodeStartOffset,nodeEndOffset);
-	else
-		*foundNode=(VBufRemote_nodeHandle_t)(backend->locateTextFieldNodeAtOffset(offset,nodeStartOffset,nodeEndOffset));
+	*foundNode=nvda_vbuf_buffer_locate_text_field_node_at_offset(backend->getRustStorageBuffer(),offset,nodeStartOffset,nodeEndOffset);
 	backend->lock.release();
 	return (*foundNode)!=NULL;
 }
@@ -142,10 +129,7 @@ int VBufRemote_locateTextFieldNodeAtOffset(VBufRemote_bufferHandle_t buffer, int
 int VBufRemote_locateControlFieldNodeAtOffset(VBufRemote_bufferHandle_t buffer, int offset, int *nodeStartOffset, int *nodeEndOffset, int *docHandle, int *ID, VBufRemote_nodeHandle_t* foundNode) {
 	VBufBackend_t* backend=(VBufBackend_t*)buffer;
 	backend->lock.acquire();
-	if(void* rustBuffer=backend->getRustStorageBuffer())
-		*foundNode=nvda_vbuf_buffer_locate_control_field_node_at_offset(rustBuffer,offset,nodeStartOffset,nodeEndOffset,docHandle,ID);
-	else
-		*foundNode=(VBufRemote_nodeHandle_t)(backend->locateControlFieldNodeAtOffset(offset,nodeStartOffset,nodeEndOffset,docHandle,ID));
+	*foundNode=nvda_vbuf_buffer_locate_control_field_node_at_offset(backend->getRustStorageBuffer(),offset,nodeStartOffset,nodeEndOffset,docHandle,ID);
 	backend->lock.release();
 	return (*foundNode)!=0;
 }
@@ -153,10 +137,7 @@ int VBufRemote_locateControlFieldNodeAtOffset(VBufRemote_bufferHandle_t buffer, 
 int VBufRemote_getControlFieldNodeWithIdentifier(VBufRemote_bufferHandle_t buffer, int docHandle, int ID, VBufRemote_nodeHandle_t* foundNode) {
 	VBufBackend_t* backend=(VBufBackend_t*)buffer;
 	backend->lock.acquire();
-	if(void* rustBuffer=backend->getRustStorageBuffer())
-		*foundNode=nvda_vbuf_buffer_get_control_field_node_with_identifier(rustBuffer,docHandle,ID);
-	else
-		*foundNode=(VBufRemote_nodeHandle_t)(backend->getControlFieldNodeWithIdentifier(docHandle,ID));
+	*foundNode=nvda_vbuf_buffer_get_control_field_node_with_identifier(backend->getRustStorageBuffer(),docHandle,ID);
 	backend->lock.release();
 	return (*foundNode)!=0;
 }
@@ -164,11 +145,7 @@ int VBufRemote_getControlFieldNodeWithIdentifier(VBufRemote_bufferHandle_t buffe
 int VBufRemote_getIdentifierFromControlFieldNode(VBufRemote_bufferHandle_t buffer, VBufRemote_nodeHandle_t node, int* docHandle, int* ID) {
 	VBufBackend_t* backend=(VBufBackend_t*)buffer;
 	backend->lock.acquire();
-	int res;
-	if(void* rustBuffer=backend->getRustStorageBuffer())
-		res=nvda_vbuf_node_identifier(rustBuffer,node,docHandle,ID);
-	else
-		res=backend->getIdentifierFromControlFieldNode((VBufStorage_controlFieldNode_t*)node,docHandle,ID);
+	int res=nvda_vbuf_node_identifier(backend->getRustStorageBuffer(),node,docHandle,ID);
 	backend->lock.release();
 	return res;
 }
@@ -176,10 +153,7 @@ int VBufRemote_getIdentifierFromControlFieldNode(VBufRemote_bufferHandle_t buffe
 int VBufRemote_findNodeByAttributes(VBufRemote_bufferHandle_t buffer, int offset, int direction, const wchar_t* attribs, const wchar_t* regexp, int *startOffset, int *endOffset, VBufRemote_nodeHandle_t* foundNode) {
 	VBufBackend_t* backend=(VBufBackend_t*)buffer;
 	backend->lock.acquire();
-	if(void* rustBuffer=backend->getRustStorageBuffer())
-		*foundNode=nvda_vbuf_buffer_find_node_by_attributes(rustBuffer,offset,direction,attribs,wcslen(attribs),regexp,wcslen(regexp),startOffset,endOffset);
-	else
-		*foundNode=(VBufRemote_nodeHandle_t)(backend->findNodeByAttributes(offset,(VBufStorage_findDirection_t)direction,attribs,regexp,startOffset,endOffset));
+	*foundNode=nvda_vbuf_buffer_find_node_by_attributes(backend->getRustStorageBuffer(),offset,direction,attribs,wcslen(attribs),regexp,wcslen(regexp),startOffset,endOffset);
 	backend->lock.release();
 	return (*foundNode)!=0;
 }
@@ -187,11 +161,7 @@ int VBufRemote_findNodeByAttributes(VBufRemote_bufferHandle_t buffer, int offset
 int VBufRemote_getSelectionOffsets(VBufRemote_bufferHandle_t buffer, int *startOffset, int *endOffset) {
 	VBufBackend_t* backend=(VBufBackend_t*)buffer;
 	backend->lock.acquire();
-	int res;
-	if(void* rustBuffer=backend->getRustStorageBuffer())
-		res=nvda_vbuf_buffer_get_selection_offsets(rustBuffer,startOffset,endOffset);
-	else
-		res=backend->getSelectionOffsets(startOffset,endOffset);
+	int res=nvda_vbuf_buffer_get_selection_offsets(backend->getRustStorageBuffer(),startOffset,endOffset);
 	backend->lock.release();
 	return res;
 }
@@ -199,11 +169,7 @@ int VBufRemote_getSelectionOffsets(VBufRemote_bufferHandle_t buffer, int *startO
 int VBufRemote_setSelectionOffsets(VBufRemote_bufferHandle_t buffer, int startOffset, int endOffset) {
 	VBufBackend_t* backend=(VBufBackend_t*)buffer;
 	backend->lock.acquire();
-	int res;
-	if(void* rustBuffer=backend->getRustStorageBuffer())
-		res=nvda_vbuf_buffer_set_selection_offsets(rustBuffer,startOffset,endOffset);
-	else
-		res=backend->setSelectionOffsets(startOffset,endOffset);
+	int res=nvda_vbuf_buffer_set_selection_offsets(backend->getRustStorageBuffer(),startOffset,endOffset);
 	backend->lock.release();
 	return res;
 }
@@ -211,11 +177,7 @@ int VBufRemote_setSelectionOffsets(VBufRemote_bufferHandle_t buffer, int startOf
 int VBufRemote_getTextLength(VBufRemote_bufferHandle_t buffer) {
 	VBufBackend_t* backend=(VBufBackend_t*)buffer;
 	backend->lock.acquire();
-	int res;
-	if(void* rustBuffer=backend->getRustStorageBuffer())
-		res=nvda_vbuf_buffer_text_length(rustBuffer);
-	else
-		res=backend->getTextLength();
+	int res=nvda_vbuf_buffer_text_length(backend->getRustStorageBuffer());
 	backend->lock.release();
 	return res;
 }
@@ -223,35 +185,21 @@ int VBufRemote_getTextLength(VBufRemote_bufferHandle_t buffer) {
 int VBufRemote_getTextInRange(VBufRemote_bufferHandle_t buffer, int startOffset, int endOffset, wchar_t** text, boolean useMarkup) {
 	VBufBackend_t* backend=(VBufBackend_t*)buffer;
 	backend->lock.acquire();
-	if(void* rustBuffer=backend->getRustStorageBuffer()) {
-		BSTR result=nullptr;
-		nvda_vbuf_buffer_get_text_in_range(rustBuffer,startOffset,endOffset,useMarkup!=false,&result,vbufRemote_getTextInRange_stringCallback);
-		backend->lock.release();
-		// An empty (or failed) range leaves result null: preserve the C++ empty-string-returns-false contract.
-		if(result==nullptr) {
-			return false;
-		}
-		*text=result;
-		return true;
-	}
-	 wstring textString;
-	 backend->getTextInRange(startOffset,endOffset,textString,useMarkup!=false);
+	BSTR result=nullptr;
+	nvda_vbuf_buffer_get_text_in_range(backend->getRustStorageBuffer(),startOffset,endOffset,useMarkup!=false,&result,vbufRemote_getTextInRange_stringCallback);
 	backend->lock.release();
-	if(textString.empty()) {
+	// An empty (or failed) range leaves result null: preserve the C++ empty-string-returns-false contract.
+	if(result==nullptr) {
 		return false;
 	}
-	*text=SysAllocString(textString.c_str());
+	*text=result;
 	return true;
 }
 
 int VBufRemote_getLineOffsets(VBufRemote_bufferHandle_t buffer, int offset, int maxLineLength, boolean useScreenLayout, int *startOffset, int *endOffset) {
 	VBufBackend_t* backend=(VBufBackend_t*)buffer;
 	backend->lock.acquire();
-	int res;
-	if(void* rustBuffer=backend->getRustStorageBuffer())
-		res=nvda_vbuf_buffer_line_offsets(rustBuffer,offset,maxLineLength,useScreenLayout!=false,startOffset,endOffset);
-	else
-		res=backend->getLineOffsets(offset,maxLineLength,useScreenLayout!=false,startOffset,endOffset);
+	int res=nvda_vbuf_buffer_line_offsets(backend->getRustStorageBuffer(),offset,maxLineLength,useScreenLayout!=false,startOffset,endOffset);
 	backend->lock.release();
 	return res;
 }

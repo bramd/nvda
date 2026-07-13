@@ -60,11 +60,7 @@ pub mod extern_api;
 unsafe extern "C" {
     pub fn vbuf_backend_get_root_doc_handle(backend: *mut c_void) -> i32;
     pub fn vbuf_backend_get_root_id(backend: *mut c_void) -> i32;
-    pub fn vbuf_backend_clear_buffer(backend: *mut c_void);
     pub fn vbuf_backend_force_update(backend: *mut c_void);
-    pub fn vbuf_backend_pending_invalid_subtrees_empty(
-        backend: *mut c_void,
-    ) -> i32;
 
     // Phase 6e (Stage A c_shim helpers): they arm / query the
     // render-thread machinery, which is Win32-side C++ regardless of
@@ -552,27 +548,8 @@ impl VbufBackend {
     ///
     /// `self` must be a live backend; must be called on the render
     /// thread.
-    pub unsafe fn clear_buffer(self) {
-        unsafe { vbuf_backend_clear_buffer(self.0) }
-    }
-
-    /// # Safety
-    ///
-    /// `self` must be a live backend; must be called on the render
-    /// thread.
     pub unsafe fn force_update(self) {
         unsafe { vbuf_backend_force_update(self.0) }
-    }
-
-    /// `true` when the backend has no pending invalid subtrees waiting
-    /// to be re-rendered. Used to short-circuit `isRootDocAlive`'s COM
-    /// check when an update is already pending.
-    ///
-    /// # Safety
-    ///
-    /// `self` must be a live backend.
-    pub unsafe fn pending_invalid_subtrees_empty(self) -> bool {
-        unsafe { vbuf_backend_pending_invalid_subtrees_empty(self.0) != 0 }
     }
 
     /// Ask the backend to re-render any invalid subtrees on the next
