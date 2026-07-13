@@ -30,6 +30,9 @@ path = "../nvda_vbuf"
 [dependencies.nvda_acrobat]
 path = "../nvda_acrobat"
 
+[dependencies.nvda_mshtml]
+path = "../nvda_mshtml"
+
 # Same path-dep, but with the `test_stubs` feature so `cargo test
 # --lib` here can link without the C++ vbuf shim being present.
 # Resolver = "2" keeps the feature scoped to test/bench builds, so the

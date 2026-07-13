@@ -22,6 +22,7 @@
 // aggregate Rust vbuf-backend archive the DLL links, so every backend
 // must ride in it rather than as a separate staticlib.
 extern crate nvda_acrobat as _;
+extern crate nvda_mshtml as _;
 
 pub mod acc_description;
 pub mod aria_details;

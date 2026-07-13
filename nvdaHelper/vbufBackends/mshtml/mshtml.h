@@ -48,9 +48,32 @@ void decBackendLibRefCount();
 UINT getHTMLWindowMessage();
 
 class MshtmlVBufBackend_t: public VBufBackend_t {
+	private:
+
+	/* Per-instance Rust state (MshtmlBackendState). Allocated by
+	 * mshtml_backend_create() in the constructor and freed by
+	 * mshtml_backend_destroy() in the destructor. Homes the live tree in
+	 * a Rust storage::Buffer; the render logic lives in the nvda_mshtml
+	 * crate (Phase A: static render; the change sink is deferred).
+	 */
+	void* rustState = nullptr;
+
 	protected:
 
+	/* Vestigial after the Rust flip: update() is overridden and does all
+	 * the rendering against the Rust buffer (via the nvda_mshtml
+	 * fill_vbuf renderer), so this C++ render() (and the fillVBuf it
+	 * drives) is no longer on the live path. Kept only to satisfy the
+	 * base's pure-virtual render().
+	 */
 	virtual void render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode=NULL);
+
+	/* This backend homes its live tree in a Rust storage::Buffer (in
+	 * MshtmlBackendState), so it overrides update() to run the shared
+	 * Rust drain/render/merge orchestration against that buffer instead
+	 * of the inherited C++ VBufStorage_buffer_t.
+	 */
+	virtual void update();
 
 	VBufStorage_fieldNode_t* fillVBuf(VBufStorage_buffer_t* buffer, VBufStorage_controlFieldNode_t* parentNode, VBufStorage_fieldNode_t* previousNode, VBufStorage_controlFieldNode_t* oldNode, IHTMLDOMNode* pHTMLDOMNode, int docHandle, fillVBuf_tableInfo* tableInfoPtr, int* LIIndexPtr, bool ignoreInteractiveUnlabelledGraphics, bool allowPreformattedText, bool shouldSkipText, bool inNewSubtree, std::set<VBufStorage_controlFieldNode_t*>& atomicNodes);
 
@@ -59,6 +82,12 @@ class MshtmlVBufBackend_t: public VBufBackend_t {
 	public:
 
 	MshtmlVBufBackend_t(int docHandle, int ID);
+
+	/* Advertises this backend's embedded Rust storage::Buffer so
+	 * vbufRemote's read RPCs route through the nvda_vbuf_* u64-key ABI
+	 * instead of the legacy C++ storage virtuals.
+	 */
+	virtual void* getRustStorageBuffer();
 
 	VBufStorage_controlFieldNode_t* getDeepestControlFieldNodeForHTMLElement(IHTMLElement* pHTMLElement);
 

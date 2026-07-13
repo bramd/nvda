@@ -25,9 +25,21 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 #include <vbufBase/backend.h>
 #include <vbufBase/utils.h>
 #include <remote/dllmain.h>
+#include <remote/nvdaControllerInternal.h>
 #include <common/log.h>
 #include "node.h"
 #include "mshtml.h"
+
+extern "C" {
+	// Per-instance Rust state + C-ABI entry points (nvda_mshtml crate).
+	void* mshtml_backend_create();
+	void mshtml_backend_destroy(void* state);
+	void* mshtml_backend_get_buffer(void* state);
+	void mshtml_backend_clear_buffer(void* state);
+	// Drives the Rust drain/render/merge over the embedded Buffer;
+	// returns true when the caller should fire vbufChangeNotify.
+	bool mshtml_backend_update(void* state, void* backend);
+}
 
 using namespace std;
 
@@ -1409,12 +1421,36 @@ void MshtmlVBufBackend_t::render(VBufStorage_buffer_t* buffer, int docHandle, in
 	pHTMLDOMNode->Release();
 }
 
-MshtmlVBufBackend_t::MshtmlVBufBackend_t(int docHandle, int ID): VBufBackend_t(docHandle,ID) {
+void MshtmlVBufBackend_t::update() {
+	// Drive the Rust drain/render/merge orchestration over the embedded
+	// storage::Buffer (Phase A). The lock is held across the whole Rust
+	// update (so no vbufRemote reader thread materializes a &Buffer while
+	// the render thread holds a &mut Buffer); the change-notify fires
+	// OUTSIDE the lock, and only when the orchestration reports it took
+	// the re-render branch (the base update() skips vbufChangeNotify on
+	// the initial render, which mshtml_backend_update preserves by
+	// returning false).
+	this->lock.acquire();
+	const bool shouldNotify = mshtml_backend_update(this->rustState, this);
+	this->lock.release();
+	if (shouldNotify) {
+		nvdaControllerInternal_vbufChangeNotify(this->rootDocHandle, this->rootID);
+	}
+}
+
+void* MshtmlVBufBackend_t::getRustStorageBuffer() {
+	return mshtml_backend_get_buffer(this->rustState);
+}
+
+MshtmlVBufBackend_t::MshtmlVBufBackend_t(int docHandle, int ID): VBufBackend_t(docHandle,ID), rustState(mshtml_backend_create()) {
 	LOG_DEBUG(L"Mshtml backend constructor");
 }
 
 MshtmlVBufBackend_t::~MshtmlVBufBackend_t() {
 	LOG_DEBUG(L"Mshtml backend destructor");
+	// Frees the MshtmlBackendState (its Drop releases the live Buffer).
+	mshtml_backend_destroy(this->rustState);
+	this->rustState = nullptr;
 }
 
 VBufBackend_t* MshtmlVBufBackend_t_createInstance(int docHandle, int ID) {

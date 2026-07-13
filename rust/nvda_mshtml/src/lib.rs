@@ -11,5 +11,6 @@
 //! no MSHTML module, so the ~15 DOM interfaces are hand-rolled with
 //! offsets taken from the SDK `MsHTML.h` `*Vtbl` structs.
 
+pub mod backend_state;
 pub mod fill_vbuf;
 pub mod interfaces;

@@ -185,7 +185,7 @@ fn acc_str(r: windows::core::Result<BSTR>) -> Vec<u16> {
 
 /// Port of C++ template `queryService`: QI `from` to `IServiceProvider`,
 /// then `QueryService(service, riid=T::IID)`.
-unsafe fn query_service<T: Interface>(
+pub(crate) unsafe fn query_service<T: Interface>(
     from: &impl Interface,
     service: &GUID,
 ) -> Option<T> {
@@ -1745,7 +1745,7 @@ unsafe fn get_id_from_html_dom_node(dom_node: &IHTMLDOMNode) -> i32 {
 /// Port of C++ `getHTMLSubdocumentBodyFromIAccessibleFrame`: the frame's
 /// child document body, reached via `IAccessible::get_accChild(1)` then
 /// `queryService(IID_IHTMLElement)` returning an `IHTMLDOMNode`.
-unsafe fn get_frame_body(pacc: &IAccessible) -> Option<IHTMLDOMNode> {
+pub(crate) unsafe fn get_frame_body(pacc: &IAccessible) -> Option<IHTMLDOMNode> {
     let vc = VARIANT::from(1i32);
     let pdisp = unsafe { pacc.get_accChild(&vc) }.ok()?;
     unsafe { query_service::<IHTMLDOMNode>(&pdisp, &IHTMLElement::IID) }
