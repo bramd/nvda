@@ -90,14 +90,6 @@ void* WebKitVBufBackend_t::getRustStorageBuffer() {
 	return nvda_ia2_webkit_backend_get_buffer(this->rustState);
 }
 
-void WebKitVBufBackend_t::render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode) {
-	// Vestigial after the Rust flip: update() is overridden and performs all
-	// rendering against the Rust storage::Buffer (via the nvda_ia2 webkit
-	// fill_vbuf renderer), so render() is never reached. It stays a concrete
-	// (empty) definition only to satisfy the base's pure-virtual render() and
-	// keep the class instantiable.
-}
-
 WebKitVBufBackend_t::WebKitVBufBackend_t(int docHandle, int ID): VBufBackend_t(docHandle,ID), rustState(nvda_ia2_webkit_backend_create()) {
 }
 

@@ -50,14 +50,6 @@ class GeckoVBufBackend_t: public VBufBackend_t {
 	 */
 	virtual void update();
 
-	/* Vestigial after Stage D: update() is overridden and does all the
-	 * rendering, so render() is never on the live path. It stays a
-	 * concrete stub only because the base declares it pure-virtual and
-	 * the class must remain instantiable. Its former body lives in the
-	 * Rust renderer (fill_vbuf) driven by update().
-	 */
-	virtual void render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode=NULL);
-
 	virtual ~GeckoVBufBackend_t();
 
 	public:

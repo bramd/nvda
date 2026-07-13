@@ -87,14 +87,6 @@ void* lotusNotesRichTextVBufBackend_t::getRustStorageBuffer() {
 	return nvda_lotus_notes_backend_get_buffer(this->rustState);
 }
 
-void lotusNotesRichTextVBufBackend_t::render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode) {
-	// Vestigial after the Rust flip: update() is overridden and performs all
-	// rendering against the Rust storage::Buffer (via the nvda_lotus_notes
-	// renderer), so render() is never reached. It stays a concrete (empty)
-	// definition only to satisfy the base's pure-virtual render() and keep
-	// the class instantiable.
-}
-
 lotusNotesRichTextVBufBackend_t::lotusNotesRichTextVBufBackend_t(int docHandle, int ID): VBufBackend_t(docHandle,ID), rustState(nvda_lotus_notes_backend_create()) {
 }
 

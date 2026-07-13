@@ -187,14 +187,6 @@ UINT getHTMLWindowMessage() {
 	return wm;
 }
 
-void MshtmlVBufBackend_t::render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode) {
-	// Vestigial after the Rust flip: update() is overridden and performs all
-	// rendering against the Rust storage::Buffer (via the nvda_mshtml
-	// fill_vbuf renderer + the document change sink), so render() is never
-	// reached. It stays a concrete (empty) definition only to satisfy the
-	// base's pure-virtual render() and keep the class instantiable.
-}
-
 void MshtmlVBufBackend_t::update() {
 	// Drive the Rust drain/render/merge orchestration over the embedded
 	// storage::Buffer (Phase A). The lock is held across the whole Rust

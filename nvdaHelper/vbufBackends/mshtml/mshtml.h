@@ -15,7 +15,6 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 #ifndef VIRTUALBUFFER_BACKENDS_MSHTML_H
 #define VIRTUALBUFFER_BACKENDS_MSHTML_H
 
-#include <vbufBase/storage.h>
 #include <vbufBase/backend.h>
 
 void incBackendLibRefCount();
@@ -48,14 +47,6 @@ class MshtmlVBufBackend_t: public VBufBackend_t {
 	void unregisterDocumentSink();
 
 	protected:
-
-	/* Vestigial after the Rust flip: update() is overridden and does all
-	 * the rendering against the Rust buffer (via the nvda_mshtml fill_vbuf
-	 * renderer + the document change sink), so this C++ render() is never
-	 * on the live path. Kept as an empty stub only to satisfy the base's
-	 * pure-virtual render().
-	 */
-	virtual void render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode=NULL);
 
 	/* This backend homes its live tree in a Rust storage::Buffer (in
 	 * MshtmlBackendState), so it overrides update() to run the shared

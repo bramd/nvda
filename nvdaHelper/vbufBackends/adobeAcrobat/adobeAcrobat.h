@@ -44,14 +44,6 @@ class AdobeAcrobatVBufBackend_t: public VBufBackend_t {
 	 */
 	virtual void update();
 
-	/* Vestigial after the Rust flip: update() is overridden and does all
-	 * the rendering against the Rust buffer (via the nvda_acrobat
-	 * fill_vbuf renderer), so this C++ render() is never on the live path.
-	 * Kept as an empty stub only to satisfy the base's pure-virtual
-	 * render().
-	 */
-	virtual void render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode);
-
 	virtual ~AdobeAcrobatVBufBackend_t();
 
 	public:

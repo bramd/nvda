@@ -28,7 +28,6 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 #include <remote/nvdaHelperRemote.h>
 #include <remote/nvdaControllerInternal.h>
 #include <vbufBase/backend.h>
-#include <vbufBase/storage.h>
 #include <common/log.h>
 #include <vbufBase/utils.h>
 #include <remote/textFromIAccessible.h>
@@ -163,17 +162,6 @@ void GeckoVBufBackend_t::update() {
 
 void* GeckoVBufBackend_t::getRustStorageBuffer() {
 	return nvda_ia2_gecko_backend_get_buffer(this->rustState);
-}
-
-void GeckoVBufBackend_t::render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode) {
-	// Vestigial after Stage D. update() is overridden and performs all
-	// rendering against the Rust storage::Buffer, so render() is never
-	// reached for a gecko backend: forceUpdate(), the render-thread timer
-	// proc, and the initial renderThread_initialize all dispatch through
-	// the now-virtual update(). This stays a concrete (empty) definition
-	// only to satisfy the base's pure-virtual render() and keep the class
-	// instantiable; its former body moved into the Rust renderer
-	// (fill_vbuf), driven by nvda_ia2_gecko_backend_update.
 }
 
 GeckoVBufBackend_t::GeckoVBufBackend_t(int docHandle, int ID):

@@ -17,7 +17,6 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 #include <remote/nvdaHelperRemote.h>
 #include <common/log.h>
 #include <remote/inProcess.h>
-#include "storage.h"
 #include "backend.h"
 
 using namespace std;
@@ -130,8 +129,9 @@ void VBufBackend_t::renderThread_terminate() {
 	cancelPendingUpdate();
 	unregisterWinEventHook(renderThread_winEventProcHook);
 	LOG_DEBUG(L"Unregistered winEvent hook for window destructions");
-	LOG_DEBUG(L"Calling clearBuffer on backend at "<<this);
-	this->clearBuffer();
+	// The live tree is the Rust storage::Buffer; each backend's own
+	// renderThread_terminate override empties it (via its *_clear_buffer
+	// extern). The base no longer owns a C++ buffer to clear.
 	runningBackends.erase(this);
 }
 

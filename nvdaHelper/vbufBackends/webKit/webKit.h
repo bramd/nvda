@@ -36,14 +36,6 @@ class WebKitVBufBackend_t: public VBufBackend_t {
 
 	virtual void renderThread_terminate();
 
-	/* Vestigial after the Rust flip: update() is overridden and does all
-	 * the rendering against the Rust buffer (via the nvda_ia2 webkit
-	 * fill_vbuf renderer), so this C++ render() is never on the live path.
-	 * Kept as an empty stub only to satisfy the base's pure-virtual
-	 * render().
-	 */
-	virtual void render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode=NULL);
-
 	/* This backend homes its live tree in a Rust storage::Buffer (in
 	 * WebKitBackendState), so it overrides update() to run the shared Rust
 	 * drain/render/merge orchestration against that buffer instead of the

@@ -86,15 +86,6 @@ void AdobeAcrobatVBufBackend_t::renderThread_terminate() {
 	VBufBackend_t::renderThread_terminate();
 }
 
-void AdobeAcrobatVBufBackend_t::render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode) {
-	// Vestigial after the Rust flip: update() is overridden and performs
-	// all rendering against the Rust storage::Buffer (via the nvda_acrobat
-	// fill_vbuf renderer driven by acrobat_backend_update), so render() is
-	// never reached for an Acrobat backend. It stays a concrete (empty)
-	// definition only to satisfy the base's pure-virtual render() and keep
-	// the class instantiable.
-}
-
 void AdobeAcrobatVBufBackend_t::update() {
 	// Drive the Rust drain/render/merge orchestration over the embedded
 	// storage::Buffer. The lock is held across the whole Rust update (so

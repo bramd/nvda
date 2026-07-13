@@ -18,7 +18,6 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 #include <set>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include "storage.h"
 #include <common/lock.h>
 
 class VBufBackend_t;
@@ -26,9 +25,12 @@ class VBufBackend_t;
 typedef std::set<VBufBackend_t*> VBufBackendSet_t;
 
 /**
- * Renders content in to a storage buffer for linea access.
+ * Drives the render-thread machinery for a virtual buffer. Each backend homes
+ * its live tree in a Rust storage::Buffer (reachable via getRustStorageBuffer);
+ * this base owns the Win32 scheduling (update timer, destroy hooks,
+ * runningBackends, the lock) and thread affinity.
  */
-class VBufBackend_t  : public VBufStorage_buffer_t {
+class VBufBackend_t {
 	private:
 
 /**
@@ -77,16 +79,6 @@ static LRESULT CALLBACK destroy_callWndProcHook(int code, WPARAM wParam, LPARAM 
  * Terminates any code in the render thread
  */
 	virtual void renderThread_terminate();
-
-/**
- * Renders content starting from the given doc handle and ID, in to the given buffer.
- * The buffer will always start off empty as even for subtree re-rendering, a temp buffer is provided.
- * @param buffer the buffer to render content in.
- * @param docHandle the doc handle to start from
- * @param ID the ID to start from.
- * @param oldNode an optional node that will be replaced by the rendered content (useful for retreaving cached data)
- */
-	virtual void render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode=NULL)=0;
 
 /**
  * Updates the content of the buffer. Pure virtual: every backend homes its
@@ -156,17 +148,16 @@ static LRESULT CALLBACK destroy_callWndProcHook(int code, WPARAM wParam, LPARAM 
 	LockableObject lock;
 
 /**
- * @return the backend's Rust storage::Buffer when this backend homes its live tree in Rust rather than in the C++
- * VBufStorage_buffer_t, or NULL when the backend uses C++ storage.
+ * @return the address of the backend's embedded Rust storage::Buffer.
  *
- * Phase 6e contract: the gecko_ia2 backend renders into, and reads out of, a Rust storage::Buffer (embedded in its
- * GeckoBackendState) instead of the inherited C++ storage. vbufRemote's read RPCs branch on this accessor: a non-null
- * result means node handles for this buffer are Rust slotmap keys (u64) to be routed through the nvda_vbuf_* C ABI,
- * while NULL means the legacy path (a narrowed VBufStorage_fieldNode_t* through the C++ storage virtuals). The base
- * implementation returns NULL so every existing backend keeps the C++ storage with no change; only gecko_ia2 overrides
- * this. Returned as void* to keep backend.h free of Rust/FFI types; callers cast to the Rust Buffer pointer.
+ * Every backend homes its live tree in a Rust storage::Buffer (embedded in its
+ * per-backend state struct); vbufRemote's read RPCs route through it, treating
+ * the RPC node handles as Rust slotmap keys (u64) passed to the nvda_vbuf_* C
+ * ABI. Pure virtual so every backend must supply its buffer. Returned as void*
+ * to keep backend.h free of Rust/FFI types; callers cast to the Rust Buffer
+ * pointer.
  */
-	virtual void* getRustStorageBuffer() { return nullptr; }
+	virtual void* getRustStorageBuffer()=0;
 
 };
 
