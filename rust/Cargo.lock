@@ -349,6 +349,7 @@ dependencies = [
 name = "nvda_mshtml"
 version = "0.1.0"
 dependencies = [
+ "nvda_vbuf",
  "windows",
  "windows-core",
 ]

@@ -492,6 +492,15 @@ impl VbufControlFieldNode {
         unsafe { self.with_control(|d| d.requires_parent_update = value) }
     }
 
+    /// # Safety
+    ///
+    /// `self` must be a live control field node.
+    pub unsafe fn set_allow_reuse_in_ancestor_update(self, value: bool) {
+        unsafe {
+            self.with_control(|d| d.allow_reuse_in_ancestor_update = value)
+        }
+    }
+
     /// The parent control field node, or `None` for the tree root or a
     /// stale key. Mirrors `VBufStorage_fieldNode_t::getParent` (the
     /// parent of any node is always a control field node).
