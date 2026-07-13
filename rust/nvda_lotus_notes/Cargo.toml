@@ -1,0 +1,37 @@
+[package]
+name = "nvda_lotus_notes"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# `staticlib` so nvdaHelperRemote.dll can link the C-ABI shims. `rlib` so
+# the unit tests in this crate can build a test binary. Like nvda_acrobat /
+# nvda_mshtml, the shipped symbols actually ride inside nvda_ia2.lib (the
+# single aggregate archive the DLL links) via nvda_ia2's `extern crate`
+# force-link; a standalone staticlib link would duplicate nvda_vbuf's
+# `#[no_mangle]` extern_api symbols.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies.nvda_vbuf]
+path = "../nvda_vbuf"
+
+# Same path-dep with the `test_stubs` feature so `cargo test --lib` here
+# can link without the C++ vbuf shim present. Resolver = "2" keeps it
+# scoped to test/bench builds; the shipped staticlib never sees the stubs.
+[dev-dependencies.nvda_vbuf]
+path = "../nvda_vbuf"
+features = ["test_stubs"]
+
+[dependencies.windows-core]
+version = "0.58"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
+]

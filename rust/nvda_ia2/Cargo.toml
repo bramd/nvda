@@ -33,6 +33,14 @@ path = "../nvda_acrobat"
 [dependencies.nvda_mshtml]
 path = "../nvda_mshtml"
 
+# Same aggregate-staticlib rationale: nvda_lotus_notes' C-ABI symbols
+# (nvda_lotus_notes_backend_*) ride inside nvda_ia2.lib via the
+# `extern crate` force-link in lib.rs. lotusNotesRichText uses only plain
+# MSAA IAccessible, so unlike webKit it does NOT need nvda_ia2's
+# IAccessible2 binding — hence its own crate (no dependency cycle).
+[dependencies.nvda_lotus_notes]
+path = "../nvda_lotus_notes"
+
 # Same path-dep, but with the `test_stubs` feature so `cargo test
 # --lib` here can link without the C++ vbuf shim being present.
 # Resolver = "2" keeps the feature scoped to test/bench builds, so the

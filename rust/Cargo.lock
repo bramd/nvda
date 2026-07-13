@@ -333,6 +333,7 @@ name = "nvda_ia2"
 version = "0.1.0"
 dependencies = [
  "nvda_acrobat",
+ "nvda_lotus_notes",
  "nvda_mshtml",
  "nvda_vbuf",
  "windows",
@@ -344,6 +345,15 @@ name = "nvda_input_hooks"
 version = "0.1.0"
 dependencies = [
  "windows",
+]
+
+[[package]]
+name = "nvda_lotus_notes"
+version = "0.1.0"
+dependencies = [
+ "nvda_vbuf",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

@@ -12,17 +12,47 @@ This license can be found at:
 http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 */
 
-#include <sstream>
-#include <map>
 #include <windows.h>
-#include <oleacc.h>
-#include <common/log.h>
-#include <common/ia2utils.h>
 #include <remote/nvdaHelperRemote.h>
+#include <remote/nvdaControllerInternal.h>
+#include <common/log.h>
 #include <vbufBase/backend.h>
 #include "lotusNotesRichText.h"
 
 using namespace std;
+
+extern "C" {
+	// Per-instance Rust state + C-ABI entry points (nvda_lotus_notes crate).
+	// The live tree lives in an embedded Rust storage::Buffer; the render
+	// logic is fill_vbuf.rs.
+	void* nvda_lotus_notes_backend_create();
+	void nvda_lotus_notes_backend_destroy(void* state);
+	void* nvda_lotus_notes_backend_get_buffer(void* state);
+	void nvda_lotus_notes_backend_clear_buffer(void* state);
+	// Drives the Rust drain/render/merge over the embedded Buffer;
+	// returns true when the caller should fire vbufChangeNotify.
+	bool nvda_lotus_notes_backend_update(void* state, void* backend);
+	// WinEvent hook: outer event filter + per-backend dispatch (invalidate
+	// the affected subtree + arm the render timer).
+	bool nvda_lotus_notes_backend_win_event_is_relevant(unsigned int event_id);
+	void nvda_lotus_notes_backend_dispatch_win_event(void* state, void* backend, int doc_handle, int child_id);
+}
+
+void CALLBACK lotusNotesRichTextVBufBackend_t::renderThread_winEventProcHook(HWINEVENTHOOK hookID, DWORD eventID, HWND hwnd, long objectID, long childID, DWORD threadID, DWORD time) {
+	if (!nvda_lotus_notes_backend_win_event_is_relevant(eventID)) {
+		return;
+	}
+	const int docHandle = HandleToUlong(hwnd);
+	for (auto* backend : runningBackends) {
+		HWND rootWindow = (HWND)UlongToHandle(backend->rootDocHandle);
+		if (rootWindow != hwnd)
+			continue;
+		auto* lotusBackend = static_cast<lotusNotesRichTextVBufBackend_t*>(backend);
+		nvda_lotus_notes_backend_dispatch_win_event(
+			lotusBackend->rustState, backend, docHandle, childID);
+		break;
+	}
+}
 
 void lotusNotesRichTextVBufBackend_t::renderThread_initialize() {
 	registerWinEventHook(renderThread_winEventProcHook);
@@ -32,166 +62,46 @@ void lotusNotesRichTextVBufBackend_t::renderThread_initialize() {
 void lotusNotesRichTextVBufBackend_t::renderThread_terminate() {
 	unregisterWinEventHook(renderThread_winEventProcHook);
 	VBufBackend_t::renderThread_terminate();
+	// The live tree is the Rust storage::Buffer, not the (always-empty) C++
+	// storage the base call just cleared; empty the Rust buffer too.
+	nvda_lotus_notes_backend_clear_buffer(this->rustState);
 }
 
-void CALLBACK lotusNotesRichTextVBufBackend_t::renderThread_winEventProcHook(HWINEVENTHOOK hookID, DWORD eventID, HWND hwnd, long objectID, long childID, DWORD threadID, DWORD time) {
-	switch(eventID) {
-		case EVENT_OBJECT_REORDER:
-		case EVENT_OBJECT_NAMECHANGE:
-		case EVENT_OBJECT_VALUECHANGE:
-		case EVENT_OBJECT_STATECHANGE:
-		break;
-		default:
-		return;
+void lotusNotesRichTextVBufBackend_t::update() {
+	// Drive the Rust drain/render/merge orchestration over the embedded
+	// storage::Buffer. The lock is held across the whole Rust update (so no
+	// vbufRemote reader thread materializes a &Buffer while the render
+	// thread holds a &mut Buffer); the change-notify fires OUTSIDE the lock,
+	// and only when the orchestration reports it took the re-render branch
+	// (the base update() skips vbufChangeNotify on the initial render, which
+	// nvda_lotus_notes_backend_update preserves by returning false).
+	this->lock.acquire();
+	const bool shouldNotify = nvda_lotus_notes_backend_update(this->rustState, this);
+	this->lock.release();
+	if (shouldNotify) {
+		nvdaControllerInternal_vbufChangeNotify(this->rootDocHandle, this->rootID);
 	}
-
-	int docHandle=HandleToUlong(hwnd);
-	int ID=childID;
-	VBufBackend_t* backend=NULL;
-	for(VBufBackendSet_t::iterator i=runningBackends.begin();i!=runningBackends.end();++i) {
-		HWND rootWindow=(HWND)UlongToHandle(((*i)->rootDocHandle));
-		if(rootWindow==hwnd) {
-			backend=(*i);
-		}
-	}
-	if(!backend) {
-		return;
-	}
-	VBufStorage_controlFieldNode_t* node=backend->getControlFieldNodeWithIdentifier(docHandle,ID);
-	if(!node) {
-		return;
-	}
-	backend->invalidateSubtree(node);
 }
 
-VBufStorage_fieldNode_t* lotusNotesRichTextVBufBackend_t::renderControlContent(VBufStorage_buffer_t* buffer, VBufStorage_controlFieldNode_t* parentNode, VBufStorage_fieldNode_t* previousNode, int docHandle, IAccessible* pacc, long accChildID) {
-	nhAssert(buffer);
-
-	int res;
-	//all IAccessible methods take a variant for childID, get one ready
-	VARIANT varChild;
-	varChild.vt=VT_I4;
-	varChild.lVal=accChildID;
-
-VBufStorage_fieldNode_t* tempNode=NULL;
-
-int id=accChildID;
-
-	//Make sure that we don't already know about this object -- protect from loops
-	if(buffer->getControlFieldNodeWithIdentifier(docHandle,id)!=NULL) {
-		return NULL;
-	}
-
-	//Add this node to the buffer
-	parentNode=buffer->addControlFieldNode(parentNode,previousNode,docHandle,id,TRUE);
-	nhAssert(parentNode); //new node must have been created
-	previousNode=NULL;
-
-	wostringstream s;
-
-	// Get role with accRole
-	long role = 0;
-	VARIANT varRole;
-	VariantInit(&varRole);
-	if((res=pacc->get_accRole(varChild,&varRole))!=S_OK) {
-		s<<0;
-	} else if(varRole.vt==VT_BSTR) {
-		s << varRole.bstrVal;
-	} else if(varRole.vt==VT_I4) {
-		s << varRole.lVal;
-		role = varRole.lVal;
-	}
-	parentNode->addAttribute(L"IAccessible::role",s.str());
-	VariantClear(&varRole);
-
-	// Get states with accState
-	VARIANT varState;
-	VariantInit(&varState);
-	if((res=pacc->get_accState(varChild,&varState))!=S_OK) {
-		varState.vt=VT_I4;
-		varState.lVal=0;
-	}
-	int states=varState.lVal;
-	VariantClear(&varState);
-	//Add each state that is on, as an attrib
-	for(int i=0;i<32;++i) {
-		int state=1<<i;
-		if(state&states) {
-			s.str(L"");
-			s<<L"IAccessible::state_"<<state;
-			parentNode->addAttribute(s.str(),L"1");
-		}
-	}
-
-	BSTR tempBstr=NULL;
-	wstring name;
-	wstring value;
-	wstring content;
-
-	if ((res = pacc->get_accName(varChild, &tempBstr)) == S_OK) {
-		name = tempBstr;
-		SysFreeString(tempBstr);
-	}
-	if ((res = pacc->get_accValue(varChild, &tempBstr)) == S_OK) {
-		value = tempBstr;
-		SysFreeString(tempBstr);
-	}
-	if(!value.empty()) {
-		content=value;
-	} else if(role!=ROLE_SYSTEM_TEXT&&!name.empty()) {
-		content=name;
-	} else {
-		content = L" ";
-	}
-	if (!content.empty()) {
-		if (tempNode = buffer->addTextFieldNode(parentNode, previousNode, content)) {
-			previousNode=tempNode;
-		}
-	}
-
-	return parentNode;
+void* lotusNotesRichTextVBufBackend_t::getRustStorageBuffer() {
+	return nvda_lotus_notes_backend_get_buffer(this->rustState);
 }
 
 void lotusNotesRichTextVBufBackend_t::render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode) {
-	DWORD_PTR res=0;
-	//Get an IAccessible by sending WM_GETOBJECT directly to bypass any proxying, to speed things up.
-	if(SendMessageTimeout((HWND)UlongToHandle(docHandle),WM_GETOBJECT,0,OBJID_CLIENT,SMTO_ABORTIFHUNG,2000,&res)==0||res==0) {
-		//Failed to send message or window does not support IAccessible
-		return;
-	}
-	IAccessible* pacc=NULL;
-	if(ObjectFromLresult(res,IID_IAccessible,0,(void**)&pacc)!=S_OK) {
-		//Could not get the IAccessible pointer from the WM_GETOBJECT result
-		return;
-	}
-	nhAssert(pacc); //must get a valid IAccessible object
-	if(ID==0) {
-		VBufStorage_controlFieldNode_t* parentNode=buffer->addControlFieldNode(NULL,NULL,docHandle,ID,TRUE);
-		parentNode->addAttribute(L"IAccessible::role",L"10");
-		VBufStorage_fieldNode_t* previousNode=NULL;
-		long childCount=0;
-		pacc->get_accChildCount(&childCount);
-
-		auto [varChildren, hres] = getAccessibleChildren(pacc, 0, childCount);
-		for(CComVariant& child : varChildren) {
-			if(VT_I4 == child.vt) {
-				previousNode = this->renderControlContent(
-					buffer,
-					parentNode,
-					previousNode,
-					docHandle,
-					pacc,
-					child.lVal
-				);
-			}
-		}
-	} else {
-		this->renderControlContent(buffer,NULL,NULL,docHandle,pacc,ID);
-	}
-	pacc->Release();
+	// Vestigial after the Rust flip: update() is overridden and performs all
+	// rendering against the Rust storage::Buffer (via the nvda_lotus_notes
+	// renderer), so render() is never reached. It stays a concrete (empty)
+	// definition only to satisfy the base's pure-virtual render() and keep
+	// the class instantiable.
 }
 
-lotusNotesRichTextVBufBackend_t::lotusNotesRichTextVBufBackend_t(int docHandle, int ID): VBufBackend_t(docHandle,ID) {
+lotusNotesRichTextVBufBackend_t::lotusNotesRichTextVBufBackend_t(int docHandle, int ID): VBufBackend_t(docHandle,ID), rustState(nvda_lotus_notes_backend_create()) {
+}
+
+lotusNotesRichTextVBufBackend_t::~lotusNotesRichTextVBufBackend_t() {
+	// Frees the LotusNotesBackendState (its Drop releases the live Buffer).
+	nvda_lotus_notes_backend_destroy(this->rustState);
+	this->rustState = nullptr;
 }
 
 VBufBackend_t* lotusNotesRichTextVBufBackend_t_createInstance(int docHandle, int ID) {

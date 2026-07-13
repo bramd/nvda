@@ -15,13 +15,18 @@ http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 #ifndef VIRTUALBUFFER_BACKENDS_LOTUSNOTESRICHTEXT_H
 #define VIRTUALBUFFER_BACKENDS_LOTUSNOTESRICHTEXT_H
 
-#include <set>
 #include <vbufBase/backend.h>
 
 class lotusNotesRichTextVBufBackend_t: public VBufBackend_t {
 	private:
 
-	VBufStorage_fieldNode_t* renderControlContent(VBufStorage_buffer_t* buffer, VBufStorage_controlFieldNode_t* parentNode, VBufStorage_fieldNode_t* previousNode, int docHandle, IAccessible* pacc, long accChildID);
+	/* Per-instance Rust state (LotusNotesBackendState). Allocated by
+	 * nvda_lotus_notes_backend_create() in the constructor and freed by
+	 * nvda_lotus_notes_backend_destroy() in the destructor. Homes the live
+	 * tree in a Rust storage::Buffer; the render logic (renderControlContent
+	 * + root enumeration) lives in the nvda_lotus_notes crate.
+	 */
+	void* rustState = nullptr;
 
 	protected:
 
@@ -31,11 +36,31 @@ class lotusNotesRichTextVBufBackend_t: public VBufBackend_t {
 
 	virtual void renderThread_terminate();
 
-	virtual void render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode);
+	/* Vestigial after the Rust flip: update() is overridden and does all
+	 * the rendering against the Rust buffer (via the nvda_lotus_notes
+	 * renderer), so this C++ render() is never on the live path. Kept as an
+	 * empty stub only to satisfy the base's pure-virtual render().
+	 */
+	virtual void render(VBufStorage_buffer_t* buffer, int docHandle, int ID, VBufStorage_controlFieldNode_t* oldNode=NULL);
+
+	/* This backend homes its live tree in a Rust storage::Buffer (in
+	 * LotusNotesBackendState), so it overrides update() to run the shared
+	 * Rust drain/render/merge orchestration against that buffer instead of
+	 * the inherited C++ VBufStorage_buffer_t.
+	 */
+	virtual void update();
+
+	virtual ~lotusNotesRichTextVBufBackend_t();
 
 	public:
 
 	lotusNotesRichTextVBufBackend_t(int docHandle, int ID);
+
+	/* Advertises this backend's embedded Rust storage::Buffer so
+	 * vbufRemote's read RPCs route through the nvda_vbuf_* u64-key ABI
+	 * instead of the legacy C++ storage virtuals.
+	 */
+	virtual void* getRustStorageBuffer();
 
 };
 

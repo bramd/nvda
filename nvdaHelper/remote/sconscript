@@ -160,6 +160,7 @@ if isRustArch:
 	# backends; glob it too so storage/orchestration edits re-run cargo.
 	acrobatCrate = Dir("#rust/nvda_acrobat")
 	mshtmlCrate = Dir("#rust/nvda_mshtml")
+	lotusNotesCrate = Dir("#rust/nvda_lotus_notes")
 	vbufCrate = Dir("#rust/nvda_vbuf")
 
 	# Glob source files so SCons re-runs cargo when any .rs or Cargo.toml changes.
@@ -168,6 +169,7 @@ if isRustArch:
 		+ env.Glob(ia2Crate.path + "/src/*.rs")
 		+ env.Glob(acrobatCrate.path + "/src/*.rs")
 		+ env.Glob(mshtmlCrate.path + "/src/*.rs")
+		+ env.Glob(lotusNotesCrate.path + "/src/*.rs")
 		+ env.Glob(vbufCrate.path + "/src/*.rs")
 		+ env.Glob(vbufCrate.path + "/src/**/*.rs")
 		+ [
@@ -175,6 +177,7 @@ if isRustArch:
 			ia2Crate.File("Cargo.toml"),
 			acrobatCrate.File("Cargo.toml"),
 			mshtmlCrate.File("Cargo.toml"),
+			lotusNotesCrate.File("Cargo.toml"),
 			vbufCrate.File("Cargo.toml"),
 			rustWorkspaceDir.File("Cargo.toml"),
 		]
