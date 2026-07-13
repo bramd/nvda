@@ -11,6 +11,15 @@ edition = "2021"
 # nvda_vbuf's `#[no_mangle]` symbols aren't duplicated across archives.
 crate-type = ["staticlib", "rlib"]
 
+[features]
+# `test_stubs` provides a Rust definition of the
+# `nvdaControllerInternal_reportLiveRegion` extern (see
+# `src/test_stubs.rs`) so downstream crates' test binaries can link
+# without `nvdaControllerInternal_C.obj`. Downstream crates enable this
+# only in `[dev-dependencies]`; the shipped staticlib never sees it. This
+# crate's own tests pick the stub up via `cfg(test)`.
+test_stubs = []
+
 [dependencies.nvda_vbuf]
 path = "../nvda_vbuf"
 

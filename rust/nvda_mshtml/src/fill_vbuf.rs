@@ -9,12 +9,17 @@
 //!
 //! Deliberately NOT ported (left for Phase B): the custom node's COM
 //! state and change sinks (`pHTMLDOMNode`, `propChangeSink`, `loadSink`,
-//! `pMarkupContainer2`, `pHTMLChangeSink`), the ARIA live-region logic
+//! `pMarkupContainer2`, `pHTMLChangeSink`), and the cross-render reuse
+//! lookup (`oldNode` / `getControlFieldNodeWithIdentifier` *for reuse* /
+//! reference nodes). The `oldNode` param for reuse is dropped from this
+//! signature accordingly.
+//!
+//! Phase B part 2 (this change) adds the ARIA live-region auto-announce
 //! (`preProcessLiveRegion` / `postProcessLiveRegion` / `reportLive*`),
-//! and the cross-render reuse lookup (`oldNode`,
-//! `getControlFieldNodeWithIdentifier` for reuse, `inNewSubtree`,
-//! `atomicNodes`). The `oldNode`/`inNewSubtree`/`atomicNodes` params are
-//! dropped from this signature accordingly.
+//! threaded through the recursion as a [`live_region::LiveState`] plus an
+//! `in_new_subtree` flag and reported from the backend adapter. See
+//! [`crate::live_region`] for the ported logic and its deliberate
+//! simplifications.
 //!
 //! Two faithful substitutions for machinery that lives elsewhere in the
 //! C++:
@@ -46,6 +51,10 @@ use crate::interfaces::{
     IHTMLAttributeCollection2, IHTMLCurrentStyle, IHTMLDOMChildrenCollection,
     IHTMLDOMNode, IHTMLDOMTextNode, IHTMLElement, IHTMLElement2, IHTMLElement3,
     IHTMLUniqueName,
+};
+use crate::live_region::{
+    post_process_live_region, pre_process_live_region,
+    walk_up_parent_live_state, AtomicNodes, LiveState,
 };
 
 // --- Constants ------------------------------------------------------------
@@ -97,6 +106,23 @@ pub struct FillVBufCtx {
     /// The backend's `rootID` — used for the `ID == this->rootID`
     /// `isRoot` check.
     pub root_id: i32,
+    /// `true` only on a re-render (the closure's `old_node` was `Some`).
+    /// Live-region processing runs only in this case: on the initial
+    /// render `main` aliases the render target and old-node lookups are
+    /// meaningless. Mirrors the C++ `render()` only ever wiring
+    /// `preProcessLiveRegion` / `postProcessLiveRegion` where `oldNode`
+    /// resolution is valid.
+    pub is_rerender: bool,
+    /// The live ("main") buffer that holds the previously committed tree,
+    /// consulted for a node's old counterpart (`getControlFieldNode
+    /// WithIdentifier`) during a re-render. On the initial render this
+    /// aliases the render target and is unused.
+    pub main: VbufBuffer,
+    /// `aria-atomic` ancestors flagged for reporting during this render,
+    /// each paired with that atomic node's own politeness (the level
+    /// `reportLiveAddition` would use). Reported once, after `fill_vbuf`
+    /// returns (mirrors the `atomicNodes` set drained in C++ `render()`).
+    pub atomic_nodes: AtomicNodes,
 }
 
 // --- Small helpers --------------------------------------------------------
@@ -115,7 +141,7 @@ fn ui(n: i32) -> Vec<u16> {
 
 /// `true` when `a` equals the ASCII string `b` (exact, case-sensitive).
 #[inline]
-fn weq(a: &[u16], b: &str) -> bool {
+pub(crate) fn weq(a: &[u16], b: &str) -> bool {
     a.iter().copied().eq(b.encode_utf16())
 }
 
@@ -140,7 +166,7 @@ fn eq_ic(a: &[u16], b: &str) -> bool {
 /// Port of C++ `iswspace` (as used per-`wchar_t`): treat lone surrogates
 /// as non-space, otherwise defer to Unicode `char::is_whitespace`.
 #[inline]
-fn is_wspace(c: u16) -> bool {
+pub(crate) fn is_wspace(c: u16) -> bool {
     match char::from_u32(c as u32) {
         Some(ch) => ch.is_whitespace(),
         None => false,
@@ -162,7 +188,7 @@ fn variant_i4(v: &VARIANT) -> Option<i32> {
 /// Read a VARIANT's `VT_BSTR` value as UTF-16, or `None` for any other
 /// type / a null pointer. Borrows the BSTR without taking ownership (the
 /// VARIANT still owns and clears it).
-fn variant_bstr(v: &VARIANT) -> Option<Vec<u16>> {
+pub(crate) fn variant_bstr(v: &VARIANT) -> Option<Vec<u16>> {
     let raw = v.as_raw();
     let vt = unsafe { raw.Anonymous.Anonymous.vt };
     if vt != VT_BSTR {
@@ -194,7 +220,7 @@ pub(crate) unsafe fn query_service<T: Interface>(
 }
 
 /// Find the first occurrence of `needle` in `hay`.
-fn find_subslice(hay: &[u16], needle: &[u16]) -> Option<usize> {
+pub(crate) fn find_subslice(hay: &[u16], needle: &[u16]) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
     }
@@ -245,7 +271,7 @@ fn parse_leading_int(s: &[u16]) -> Option<i32> {
 /// The C++ `attribsMap` — a name→value store whose entries are flushed
 /// onto the control node at the end of `fillVBuf`. Ordered like
 /// `std::map<wstring,wstring>` for stable serialisation.
-type Attribs = BTreeMap<Vec<u16>, Vec<u16>>;
+pub(crate) type Attribs = BTreeMap<Vec<u16>, Vec<u16>>;
 
 /// The `"HTMLAttrib::<name>"` key used for raw HTML attributes.
 fn html_key(name: &str) -> Vec<u16> {
@@ -253,7 +279,7 @@ fn html_key(name: &str) -> Vec<u16> {
 }
 
 /// Look up a `"HTMLAttrib::<name>"` value.
-fn attr_html<'a>(attribs: &'a Attribs, name: &str) -> Option<&'a Vec<u16>> {
+pub(crate) fn attr_html<'a>(attribs: &'a Attribs, name: &str) -> Option<&'a Vec<u16>> {
     attribs.get(&html_key(name))
 }
 
@@ -1004,7 +1030,7 @@ pub(crate) unsafe fn fill_vbuf(
     unsafe {
         fill_vbuf_rec(
             buffer, parent_node, previous, dom_node, None, None, false, false,
-            false, &[], 0, ctx,
+            false, &[], 0, &LiveState::default(), false, ctx,
         )
     }
 }
@@ -1027,6 +1053,8 @@ pub(crate) unsafe fn fill_vbuf_rec(
     mut should_skip_text: bool,
     inherited_language: &[u16],
     format_state: u32,
+    parent_live_state: &LiveState,
+    in_new_subtree: bool,
     ctx: &FillVBufCtx,
 ) -> Option<VbufFieldNode> {
     let doc_handle = ctx.doc_handle;
@@ -1200,6 +1228,46 @@ pub(crate) unsafe fn fill_vbuf_rec(
         )
     }?;
     let mut previous_node: Option<VbufFieldNode> = None;
+
+    // --- ARIA live region (re-render only) ------------------------------
+    // Mirror mshtml.cpp 919-925: compute this node's live-region state,
+    // resolve its old counterpart in `main`, and decide whether this
+    // node's children begin a "new subtree" (a subtree with no old
+    // counterpart, whose descendants skip live-region reporting).
+    // `old_node` doubles as the C++ `oldNode` used by `postProcess`.
+    let mut live_state = LiveState::default();
+    let mut old_node: Option<VbufControlFieldNode> = None;
+    let mut child_in_new_subtree = in_new_subtree;
+    if ctx.is_rerender {
+        // preProcessLiveRegion(oldNode ? oldNode->getParent() : parentNode).
+        // For the re-render root (no vbuf parent) the inherited state comes
+        // from a DOM walk-up (the old parent node isn't re-rendered and its
+        // stored LiveState isn't available in the Rust storage); otherwise
+        // it is the parent's threaded state.
+        let parent_state = if parent_node.is_none() {
+            unsafe { walk_up_parent_live_state(dom_node, node) }
+        } else {
+            parent_live_state.clone()
+        };
+        live_state = pre_process_live_region(node, &attribs, &parent_state);
+        if !in_new_subtree {
+            // getControlFieldNodeWithIdentifier against the live buffer; a
+            // hidden counterpart is treated as absent (mshtml.cpp:923),
+            // except for the re-render root which the C++ passes verbatim.
+            old_node = unsafe {
+                ctx.main
+                    .get_control_field_node_with_identifier(doc_handle, id)
+            };
+            if let Some(o) = old_node {
+                if parent_node.is_some()
+                    && unsafe { o.as_field_node().is_hidden() }
+                {
+                    old_node = None;
+                }
+            }
+            child_in_new_subtree = old_node.is_none();
+        }
+    }
 
     // All inner parts of a table (rows, cells etc), if changed, must
     // re-render the entire table. Done even for display:none nodes.
@@ -1579,6 +1647,8 @@ pub(crate) unsafe fn fill_vbuf_rec(
                             should_skip_text,
                             &language,
                             node_format_state,
+                            &live_state,
+                            child_in_new_subtree,
                             ctx,
                         )
                     };
@@ -1609,6 +1679,8 @@ pub(crate) unsafe fn fill_vbuf_rec(
                             should_skip_text,
                             &language,
                             node_format_state,
+                            &live_state,
+                            child_in_new_subtree,
                             ctx,
                         )
                     } {
@@ -1727,6 +1799,15 @@ pub(crate) unsafe fn fill_vbuf_rec(
                 )
             };
         }
+    }
+
+    // Report any live-region update for this node (mshtml.cpp:1350). Runs
+    // only on a re-render, for nodes that were not already inside a new
+    // subtree, and never for hidden nodes. The atomic-node reporting that
+    // C++ interleaves here (1352-1356) is deferred to the single drain in
+    // the backend adapter after `fill_vbuf` returns.
+    if ctx.is_rerender && !in_new_subtree && !hidden {
+        unsafe { post_process_live_region(node, old_node, &live_state, ctx) };
     }
 
     Some(node.as_field_node())

@@ -8,7 +8,9 @@
 //! the vbufRemote reads. There is no change sink yet (Phase B), so only
 //! the initial render runs; the buffer is not re-rendered on DOM changes.
 
+use core::cell::RefCell;
 use core::ffi::c_void;
+use std::rc::Rc;
 
 use windows::core::{w, Interface, BSTR, VARIANT};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -24,6 +26,7 @@ use nvda_vbuf::storage::{Buffer, NodeKey};
 use nvda_vbuf::{VbufBackend, VbufBuffer};
 
 use crate::fill_vbuf::{fill_vbuf, get_frame_body, query_service, FillVBufCtx};
+use crate::live_region::{full_text, report_live_text};
 use crate::interfaces::{
     IHTMLDocument2, IHTMLDocument3, IHTMLDOMNode, IHTMLElement, IHTMLElement2,
 };
@@ -349,16 +352,32 @@ pub unsafe extern "C" fn mshtml_backend_update(
             main_ptr,
             root_doc_handle,
             root_id,
-            |target, _main, doc_handle, id, _old_node| {
+            |target, main, doc_handle, id, old_node| {
                 let dom_node = match resolve_root_dom_node(doc_handle, id) {
                     Some(n) => n,
                     None => return false,
                 };
+                // Live-region processing runs only on a re-render (the
+                // shared orchestration hands a `Some(old_node)` only then;
+                // on the initial render `target == main` and old-node
+                // lookups are meaningless). Mirrors C++ `render()` wiring
+                // `preProcessLiveRegion` / `postProcessLiveRegion` /
+                // `atomicNodes` for a re-render's `oldNode`.
                 let ctx = FillVBufCtx {
                     doc_handle,
                     root_id,
+                    is_rerender: old_node.is_some(),
+                    main: VbufBuffer(main),
+                    atomic_nodes: Rc::new(RefCell::new(Vec::new())),
                 };
                 fill_vbuf(VbufBuffer(target), None, None, &dom_node, &ctx);
+                // Drain the collected `aria-atomic` ancestors, reporting
+                // each once (mshtml.cpp:1406). Their nodes live in `target`
+                // (the freshly rendered subtree), read before the merge.
+                for (node, politeness) in ctx.atomic_nodes.borrow().iter() {
+                    let text = full_text(*node);
+                    report_live_text(&text, politeness);
+                }
                 true
             },
         )

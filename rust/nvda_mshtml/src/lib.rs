@@ -14,3 +14,11 @@
 pub mod backend_state;
 pub mod fill_vbuf;
 pub mod interfaces;
+pub mod live_region;
+
+/// Stub for the `nvdaControllerInternal_reportLiveRegion` extern, linked
+/// only into test binaries (this crate's own tests, or downstream crates
+/// enabling `test_stubs`). Excluded from the shipped staticlib, which
+/// resolves the real symbol in `nvdaHelperRemote.dll`.
+#[cfg(any(test, feature = "test_stubs"))]
+mod test_stubs;

@@ -41,6 +41,13 @@ path = "../nvda_mshtml"
 path = "../nvda_vbuf"
 features = ["test_stubs"]
 
+# Same path-dep with `test_stubs` so the nvda_ia2 test binary can resolve
+# the `nvdaControllerInternal_reportLiveRegion` extern nvda_mshtml's
+# live-region reporting references, without the C++ obj present.
+[dev-dependencies.nvda_mshtml]
+path = "../nvda_mshtml"
+features = ["test_stubs"]
+
 [dependencies.windows-core]
 version = "0.58"
 
