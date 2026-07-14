@@ -375,6 +375,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvda_onecore_speech"
+version = "0.1.0"
+dependencies = [
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "nvda_python"
 version = "0.1.0"
 dependencies = [

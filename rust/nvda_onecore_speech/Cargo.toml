@@ -1,0 +1,25 @@
+[package]
+name = "nvda_onecore_speech"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# `staticlib` so nvdaHelperLocalWin10.dll can link the C-ABI exports
+# (ocSpeech_*). `rlib` so unit tests can build a test binary. Reuses the
+# WinRT-engine pattern proven by nvda_uwp_ocr.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies.windows-core]
+version = "0.58"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Foundation_Metadata",     # ApiInformation (feature gates)
+    "Media_SpeechSynthesis",   # also pulls in Media::IMediaMarker
+    "Storage_Streams",         # Buffer / IBuffer / InputStreamOptions
+    "Win32_System_WinRT",      # IBufferByteAccess
+    "Win32_Foundation",
+]

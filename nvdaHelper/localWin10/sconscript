@@ -18,35 +18,63 @@ Import(
 	"sourceDir",
 	"localLib",
 	"uwpOcrStaticLib",
+	"oneCoreSpeechStaticLib",
 )
 
 
 # Ignoring Flake8 F821: 'undefined name' due to nonstandard SCons import
 env = env.Clone()  # noqa: F821
 
+# Both engines (uwpOcr + oneCoreSpeech) are now Rust; localWin10.cpp is a tiny
+# stub that anchors the CRT + machine + DllMain for the link (the Rust
+# staticlibs don't). The C ABI (from the linked Rust staticlibs) is exported
+# via /EXPORT — the Rust symbols aren't __declspec(dllexport).
 source = [
 	env["projectResFile"],
-	"oneCoreSpeech.cpp",
+	"localWin10.cpp",
 ]
 libs = [
 	"WindowsApp",
 	# Ignoring Flake8 F821: 'undefined name' due to nonstandard SCons import
 	localLib[2],  # noqa: F821
 ]
-# uwpOcr.cpp was ported to the nvda_uwp_ocr Rust crate; link its staticlib +
-# the system libs the Rust std / windows-core runtime pulls in, and export
-# the C ABI via /EXPORT (the Rust symbols aren't __declspec(dllexport), and
-# oneCoreSpeech's declspec exports still apply alongside these).
+ocSpeechExports = [
+	"ocSpeech_supportsProsodyOptions",
+	"ocSpeech_supportsPunctuationSilence",
+	"ocSpeech_initialize",
+	"ocSpeech_terminate",
+	"ocSpeech_speak",
+	"ocSpeech_getVoices",
+	"ocSpeech_getCurrentVoiceId",
+	"ocSpeech_setVoice",
+	"ocSpeech_getCurrentVoiceLanguage",
+	"ocSpeech_getPitch",
+	"ocSpeech_setPitch",
+	"ocSpeech_getVolume",
+	"ocSpeech_setVolume",
+	"ocSpeech_getRate",
+	"ocSpeech_setRate",
+	"ocSpeech_getPunctuationSilence",
+	"ocSpeech_setPunctuationSilence",
+]
+uwpOcrExports = [
+	"uwpOcr_initialize",
+	"uwpOcr_terminate",
+	"uwpOcr_recognize",
+	"uwpOcr_getLanguages",
+]
 if uwpOcrStaticLib is not None:
-	libs += [uwpOcrStaticLib, "ntdll", "userenv", "propsys", "bcrypt"]
-	env.Append(
-		LINKFLAGS=[
-			"/EXPORT:uwpOcr_initialize",
-			"/EXPORT:uwpOcr_terminate",
-			"/EXPORT:uwpOcr_recognize",
-			"/EXPORT:uwpOcr_getLanguages",
-		],
-	)
+	# The Rust staticlibs + the system libs the Rust std / windows-core runtime
+	# pulls in.
+	libs += [
+		uwpOcrStaticLib,
+		oneCoreSpeechStaticLib,
+		"ntdll",
+		"userenv",
+		"propsys",
+		"bcrypt",
+	]
+	env.Append(LINKFLAGS=[f"/EXPORT:{name}" for name in uwpOcrExports + ocSpeechExports])
 
 localWin10Lib = env.SharedLibrary(
 	target="nvdaHelperLocalWin10",
