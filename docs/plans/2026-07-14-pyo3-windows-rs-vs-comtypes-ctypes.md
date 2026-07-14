@@ -46,6 +46,59 @@ The comtypes "hot path could win 2–100×" estimate below is only right for the
 in-process / read-many-locally case; for typical UIA it's ~1×. Everything
 after this section is the pre-measurement reasoning, kept for context.
 
+## Would porting the base objects (NVDAObject) to Rust be worth it?
+
+Short answer: **no — and a Rust-base / Python-subclass split is actively
+counterproductive.** Grounded in the code:
+
+- `NVDAObject` is an `AutoPropertyObject` (baseObject.py): a metaclass
+  synthesizes properties from **`_get_<name>` / `_set_<name>` / `_cache_<name>`
+  methods** with cascading base lookup. There are **~976 `_get_`/`_set_`/
+  `script_` overrides across `NVDAObjects/` + `appModules/`** (plus every
+  add-on) — that is the extension surface.
+- Each object's *actual class* is **composed at runtime** by
+  `DynamicNVDAObjectType`: `findOverlayClasses` + app modules'
+  `chooseNVDAObjectOverlayClasses` + global-plugin overlays build a `clsList`,
+  a new `Dynamic_*` class is synthesized, and `__class__` is reassigned.
+
+Why Rust-ifying the base fails:
+
+1. **It inverts the safety argument.** The base (property caching, dispatch,
+   presentation) is *safe, stable* Python. The *unsafe* code (COM/ctypes) is
+   in the leaf subclasses (IAccessible/UIA) — which stay Python here. You'd
+   port the part that doesn't need Rust and leave the part that does.
+2. **It's the losing boundary case, per the benchmark above.** A Rust base's
+   `get_role()` must call the Python subclass's `_get_role` override — a
+   Rust→Python crossing on *every* property access, across ~976 override
+   points, with **no marshaling relief** (the real cost is the underlying COM
+   read, still in Python). Exactly the granular per-call regime that measured
+   ~1×-or-worse.
+3. **Runtime class composition can't cross into a Rust base.** Rust has no
+   runtime MRO/class synthesis; a Rust class can't be one of N dynamically
+   mixed-in Python bases. `DynamicNVDAObjectType` — the very thing that lets
+   NVDA adapt to quirky apps and lets add-ons inject behavior — is
+   irreducibly Pythonic.
+4. **Max blast radius, min payoff.** Everything is an NVDAObject; the base is
+   the widest, churniest interface and the whole add-on/app-module ecosystem
+   depends on subclassing it. Rust-ifying it fractures extensibility and
+   debuggability for no safety win (safe code) and negative perf (boundary
+   tax).
+
+The pattern where "Rust core + thin Python wrapper" *works* (WasapiPlayer,
+the vbuf storage) is when **Rust owns a self-contained engine** and Python
+just drives it. `NVDAObject` is the opposite: a dispatch/composition **hub**
+whose job is to be dynamically extended. You don't put the glue in Rust.
+
+**The right long-run shape, even in a "port much of NVDA" future:** keep the
+object model + event/speech/braille **orchestration** in Python (its dynamic
+dispatch, class composition, and extensibility are the strengths that make a
+screen reader adaptable to thousands of apps + a large add-on community), and
+push the **leaf engines objects delegate to** into Rust — in-process COM/text
+extraction (vbuf, done), audio (done), tones (done), and candidates like
+braille translation glue, text diffing, symbol processing. **Port bottom-up
+(engines), never top-down (base objects).** The object model is the *last*
+thing you'd touch, if ever.
+
 ## The footprint (measured)
 
 - **comtypes: ~100 source files.** Concentrated in the generated COM
