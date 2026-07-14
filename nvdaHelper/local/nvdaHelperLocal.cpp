@@ -140,18 +140,7 @@ BOOL WINAPI fake_OpenClipboard(HWND hwndOwner) {
 	return false;
 }
 
-#ifdef NVDA_HAS_RUST_HELPERS
-// Phase 0 link probe: reference the nvda_uia_events staticlib so it (and its
-// windows-rs COM #[implement] runtime) is pulled into nvdaHelperLocal.dll,
-// verifying the local-DLL Rust link path. Removed in Phase 2 when the real
-// rateLimitedUIAEventHandler_create/_terminate Rust exports arrive.
-extern "C" int nvda_uia_events_probe();
-#endif
-
 void nvdaHelperLocal_initialize(bool secureMode) {
-#ifdef NVDA_HAS_RUST_HELPERS
-	nvda_uia_events_probe();
-#endif
 	startServer();
 	mainThreadId = GetCurrentThreadId();
 	cancelCallEvent = CreateEvent(NULL, TRUE, FALSE, NULL);

@@ -92,9 +92,9 @@ localLib = env.SharedLibrary(
 		"nvdaHelperLocal.def",
 		"textUtils.cpp",
 		"UIAUtils.cpp",
-		"UIAEventLimiter/api.cpp",
-		"UIAEventLimiter/rateLimitedEventHandler.cpp",
-		"UIAEventLimiter/utils.cpp",
+		# UIAEventLimiter/ was ported to the nvda_uia_events Rust crate; the
+		# rateLimitedUIAEventHandler_create/_terminate exports now come from
+		# that staticlib (linked below).
 		"remoteAccess.cpp",
 	],
 	LIBS=[
