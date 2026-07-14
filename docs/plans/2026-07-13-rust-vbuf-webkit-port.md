@@ -28,31 +28,31 @@ no `extern crate ... as _` force-link needed.
 
 ## What's reused (proven on gecko)
 
-- `nvda_ia2::interfaces::IAccessible2`, `nvda_ia2::from_identifier`
+* `nvda_ia2::interfaces::IAccessible2`, `nvda_ia2::from_identifier`
   (WebKit's `IAccessible2FromIdentifier` is gecko's with the id sign
   flipped — WebKit stores positive unique IDs but queries/fires events
   with negative ones).
-- `nvda_vbuf::storage::Buffer`, `run_raw_update`, and the vbufRemote read
+* `nvda_vbuf::storage::Buffer`, `run_raw_update`, and the vbufRemote read
   routing via `getRustStorageBuffer()`.
-- The thin-C++-adapter + flip shape: override `update()` /
+* The thin-C++-adapter + flip shape: override `update()` /
   `getRustStorageBuffer()`, gut `render()` to an empty pure-virtual
   satisfier, keep the WinEvent-hook machinery in C++ but route its
   event filter + per-backend dispatch to Rust.
 
 ## Simpler than gecko in every axis
 
-- No toolkit-name / `is_chrome` handling.
-- No cached root accessible, no `IA2_STATE_DEFUNCT` liveness check.
-- **No cross-render node reuse.** The C++ backend's `render()` ignored
+* No toolkit-name / `is_chrome` handling.
+* No cached root accessible, no `IA2_STATE_DEFUNCT` liveness check.
+* **No cross-render node reuse.** The C++ backend's `render()` ignored
   `oldNode` and re-rendered each invalidated subtree fresh; the Rust
   render closure does the same (ignores `main` and `old_node`), and
   `run_raw_update`'s re-render path renders fresh into a temp buffer +
   swaps it in — reuse-in-render is an optional optimization WebKit never
   had.
-- A single constant `docHandle` (the root document window) threaded
+* A single constant `docHandle` (the root document window) threaded
   unchanged through the whole recursion — WebKit never derives a per-node
   docHandle the way gecko does.
-- The WinEvent hook reacts to only three events
+* The WinEvent hook reacts to only three events
   (VALUECHANGE / STATECHANGE / REORDER) and has no force-update or
   root-state-change special cases.
 
@@ -60,22 +60,22 @@ no `extern crate ... as _` force-link needed.
 
 Rust (in `rust/nvda_ia2/src/`):
 
-- `webkit_fill_vbuf.rs` — the `fillVBuf` port (MSAA role/state/name walk).
-- `webkit_backend_state.rs` — `WebKitBackendState { buffer }` +
+* `webkit_fill_vbuf.rs` — the `fillVBuf` port (MSAA role/state/name walk).
+* `webkit_backend_state.rs` — `WebKitBackendState { buffer }` +
   C-ABI entry points: `create` / `destroy` / `get_buffer` /
   `clear_buffer` / `update`, and the hook's `win_event_is_relevant` +
   `dispatch_win_event`. Homes the WebKit-specific id-negating
   `from_identifier` wrapper.
-- `lib.rs` — registers the two modules.
+* `lib.rs` — registers the two modules.
 
 C++ (`nvdaHelper/vbufBackends/webKit/`):
 
-- `webKit.cpp` (228 → ~115) — flipped: `extern "C"` block for the Rust
+* `webKit.cpp` (228 → ~115) — flipped: `extern "C"` block for the Rust
   entry points, WinEvent hook routes to Rust, `update()` /
   `getRustStorageBuffer()` overrides, ctor/dtor manage `rustState`,
   `render()` gutted to a stub. Dead C++ `fillVBuf` +
   `IAccessible2FromIdentifier` removed.
-- `webKit.h` (44 → ~70) — adds `rustState`, `update()`,
+* `webKit.h` (44 → ~70) — adds `rustState`, `update()`,
   `getRustStorageBuffer()`, destructor; removes the `fillVBuf` decl.
 
 ## Testing on Windows 11
