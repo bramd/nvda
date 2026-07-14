@@ -12,6 +12,17 @@ edition = "2021"
 # (the in-process local DLL); every prior Rust vbuf work linked into the
 # injected nvdaHelperRemote.dll instead.
 crate-type = ["staticlib", "rlib"]
+# The dedup microbenchmark (benches/dedup.rs) uses criterion's own harness;
+# disable the lib target's default libtest bench harness so `cargo bench`
+# doesn't route criterion's CLI args (--sample-size, etc.) to libtest.
+bench = false
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "dedup"
+harness = false
 
 [dependencies.windows-core]
 version = "0.58"

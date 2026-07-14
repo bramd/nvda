@@ -9,6 +9,9 @@
 
 #![allow(non_snake_case)]
 
+pub mod dedup;
+pub mod event;
+
 use windows::core::{implement, Result, BSTR, VARIANT};
 use windows::Win32::UI::Accessibility::{
     IUIAutomationActiveTextPositionChangedEventHandler,

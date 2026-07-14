@@ -408,6 +408,7 @@ dependencies = [
 name = "nvda_uia_events"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "windows",
  "windows-core",
 ]
