@@ -414,6 +414,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvda_uwp_ocr"
+version = "0.1.0"
+dependencies = [
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "nvda_vbuf"
 version = "0.1.0"
 dependencies = [

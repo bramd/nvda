@@ -1,0 +1,29 @@
+[package]
+name = "nvda_uwp_ocr"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# `staticlib` so nvdaHelperLocalWin10.dll can link the C-ABI exports
+# (uwpOcr_*). `rlib` so unit tests can build a test binary. Warm-up for the
+# WinRT-engine-in-Rust pattern before oneCoreSpeech.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies.windows-core]
+version = "0.58"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    # WinRT namespaces used by the OCR engine.
+    "Foundation",
+    "Foundation_Collections",
+    "Globalization",
+    "Media_Ocr",
+    "Graphics_Imaging",
+    "Storage_Streams",
+    "Data_Json",
+    # IBufferByteAccess (raw access to a WinRT IBuffer) + BSTR support.
+    "Win32_System_WinRT",
+    "Win32_Foundation",
+]

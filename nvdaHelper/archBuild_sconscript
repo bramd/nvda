@@ -210,11 +210,12 @@ Export("thirdPartyEnv")
 Export("env")
 Export("isNVDACoreArch")
 
-# Rust static lib for the UIA event rate-limiter (nvda_uia_events), linked
-# into nvdaHelperLocal.dll. This is the first Rust staticlib in the *local*
-# helper DLL; the injected nvdaHelperRemote.dll builds its own Rust libs in
-# remote/sconscript. NOTE: RUST_TARGET_TRIPLE is duplicated there — keep the
-# two maps in sync.
+# Rust static libs linked into the *local* helper DLLs (the injected
+# nvdaHelperRemote.dll builds its own Rust libs in remote/sconscript):
+#   nvda_uia_events -> nvdaHelperLocal.dll (UIA event rate-limiter)
+#   nvda_uwp_ocr    -> nvdaHelperLocalWin10.dll (WinRT OCR)
+# NOTE: RUST_TARGET_TRIPLE is duplicated in remote/sconscript — keep the two
+# maps in sync.
 _RUST_TARGET_TRIPLE = {
 	("x86", False): "i686-pc-windows-msvc",
 	("x86_64", False): "x86_64-pc-windows-msvc",
@@ -223,44 +224,38 @@ _RUST_TARGET_TRIPLE = {
 }
 rustTriple = _RUST_TARGET_TRIPLE.get((TARGET_ARCH, isArm64EC))
 isRustArch = rustTriple is not None
-uiaEventsStaticLib = None
+# Package name -> the SCons File node for its built staticlib (None on a
+# non-Rust arch). Order is preserved for the env.Command target list.
+_localRustLibs = {"nvda_uia_events": None, "nvda_uwp_ocr": None}
 if isRustArch:
 	rustWorkspaceDir = Dir("#rust")
 	rustTargetDir = Dir("#build/rust")
-	uiaEventsLibFile = rustTargetDir.File(f"{rustTriple}/release/nvda_uia_events.lib")
-	uiaEventsCrate = Dir("#rust/nvda_uia_events")
-	# Glob so SCons re-runs cargo when any .rs or the manifest changes.
-	uiaEventsSources = env.Glob(uiaEventsCrate.path + "/src/*.rs") + [
-		uiaEventsCrate.File("Cargo.toml"),
-		rustWorkspaceDir.File("Cargo.toml"),
-	]
+	libFiles = [rustTargetDir.File(f"{rustTriple}/release/{pkg}.lib") for pkg in _localRustLibs]
+	# Glob so SCons re-runs cargo when any .rs or manifest changes.
+	rustSources = [rustWorkspaceDir.File("Cargo.toml")]
+	for pkg in _localRustLibs:
+		crate = Dir(f"#rust/{pkg}")
+		rustSources += env.Glob(crate.path + "/src/*.rs") + [crate.File("Cargo.toml")]
 
-	def buildUiaEventsStaticLib(
+	def buildLocalRustStaticLibs(
 		target,
 		source,
 		env,
 		rustTriple=rustTriple,
 		rustWorkspaceDir=rustWorkspaceDir,
 		rustTargetDir=rustTargetDir,
+		packages=list(_localRustLibs),
 	):
-		result = subprocess.run(
-			[
-				"cargo",
-				"build",
-				"--release",
-				"--target",
-				rustTriple,
-				"--package",
-				"nvda_uia_events",
-				"--target-dir",
-				rustTargetDir.abspath,
-				"--manifest-path",
-				rustWorkspaceDir.File("Cargo.toml").abspath,
-			],
-			capture_output=True,
-			encoding="utf-8",
-			errors="replace",
-		)
+		cmd = ["cargo", "build", "--release", "--target", rustTriple]
+		for pkg in packages:
+			cmd += ["--package", pkg]
+		cmd += [
+			"--target-dir",
+			rustTargetDir.abspath,
+			"--manifest-path",
+			rustWorkspaceDir.File("Cargo.toml").abspath,
+		]
+		result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace")
 		if result.returncode != 0:
 			print(f"cargo build failed:\n{result.stderr}")
 			return result.returncode
@@ -270,8 +265,13 @@ if isRustArch:
 				return 1
 		return 0
 
-	(uiaEventsStaticLib,) = env.Command(uiaEventsLibFile, uiaEventsSources, buildUiaEventsStaticLib)
+	builtLibs = env.Command(libFiles, rustSources, buildLocalRustStaticLibs)
+	_localRustLibs = dict(zip(_localRustLibs, builtLibs))
+
+uiaEventsStaticLib = _localRustLibs["nvda_uia_events"]
+uwpOcrStaticLib = _localRustLibs["nvda_uwp_ocr"]
 Export("uiaEventsStaticLib")
+Export("uwpOcrStaticLib")
 Export("isRustArch")
 
 acrobatAccessRPCStubs = env.SConscript("acrobatAccess_sconscript")
