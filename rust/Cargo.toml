@@ -1,3 +1,6 @@
 [workspace]
 members = ["nvda_acrobat", "nvda_core", "nvda_crashdump", "nvda_ia2", "nvda_input_hooks", "nvda_lotus_notes", "nvda_mshtml", "nvda_ole", "nvda_screen_curtain", "nvda_tones", "nvda_uia_events", "nvda_vbuf", "nvda_wasapi", "nvda_python", "vbuf_bench"]
+# uia_bench is a benchmark-only pyo3 extension module built independently via
+# maturin (its own [workspace]); keep it out of the shared workspace build.
+exclude = ["uia_bench"]
 resolver = "2"

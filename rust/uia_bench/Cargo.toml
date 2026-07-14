@@ -1,0 +1,36 @@
+# Own (empty) workspace so this bench crate is independent of the rust/
+# workspace — it must not be pulled into `cargo build --workspace` (its
+# pyo3 extension-module cdylib won't link libpython outside maturin). The
+# parent rust/Cargo.toml also lists it under `exclude`.
+[workspace]
+
+[package]
+name = "uia_bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A benchmark-only PyO3 extension module: measures a representative UIA hot
+# path (walk a subtree, batch-read properties) done in windows-rs vs. the
+# same work in comtypes-in-Python. NOT shipped; built with maturin into the
+# dev venv alongside nvdaRust. See docs/plans/2026-07-14-pyo3-windows-rs-vs-
+# comtypes-ctypes.md.
+[lib]
+name = "uia_bench"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module"] }
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
+]

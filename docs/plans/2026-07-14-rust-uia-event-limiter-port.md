@@ -1,8 +1,10 @@
 # Porting the UIA event rate-limiter to Rust
 
-**Status:** assessment + plan (2026-07-14). Feasibility confirmed by a full
-survey (C++ core read directly + an agent map of the Python integration +
-windows-rs capability checks). Not started — awaiting go-ahead.
+**Status:** COMPLETE + smoke-tested OK (2026-07-14). All phases done and
+committed: Phase 0 spike `8b501454c`, Phase 1 pure core `5388cd068`,
+Phases 2-3 implement+flip `a03ef400b`. Verified working in modern Notepad;
+the C++ `RateLimitedEventHandler` (6 files, ~600 lines) is deleted and the
+`nvda_uia_events` Rust crate backs the two DLL exports.
 
 ## What it is
 
