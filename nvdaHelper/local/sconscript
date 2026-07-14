@@ -18,6 +18,7 @@ Import(
 		"env",
 		"detoursLib",
 		"apiHookObj",
+		"uiaEventsStaticLib",
 	],
 )
 
@@ -108,7 +109,17 @@ localLib = env.SharedLibrary(
 		"Iphlpapi",
 		"Ws2_32",
 		"runtimeobject",
-	],
+	]
+	# The nvda_uia_events Rust staticlib (UIA event rate-limiter), plus the
+	# system libs the Rust std / windows-core runtime pulls in (ntdll for NT
+	# file APIs, userenv for home_dir, propsys for VARIANT<->BSTR, bcrypt for
+	# std's HashMap RandomState). None on non-Rust arches. These mirror the
+	# Rust link libs already on nvdaHelperRemote.dll.
+	+ (
+		[uiaEventsStaticLib, "ntdll", "userenv", "propsys", "bcrypt"]
+		if uiaEventsStaticLib is not None
+		else []
+	),
 )
 
 Return("localLib")

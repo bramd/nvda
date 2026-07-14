@@ -1,0 +1,30 @@
+[package]
+name = "nvda_uia_events"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# `staticlib` so nvdaHelperLocal.dll can link the C-ABI shim
+# (rateLimitedUIAEventHandler_create / _terminate). `rlib` so this crate's
+# own unit tests (the pure dedup core) can build a test binary.
+#
+# NOTE: this is the FIRST Rust staticlib linked into nvdaHelperLocal.dll
+# (the in-process local DLL); every prior Rust vbuf work linked into the
+# injected nvdaHelperRemote.dll instead.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies.windows-core]
+version = "0.58"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    # `implement` generates the *_Impl traits so we can implement the five
+    # IUIAutomation*EventHandler COM interfaces in Rust (the whole point).
+    "implement",
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+]

@@ -1,8 +1,8 @@
 # Retiring the C++ vbuf storage (`vbufBase/storage.cpp`)
 
-**Status:** DONE (2026-07-14), pending a confirming smoke test. All three
-phases implemented and committed (phase 1 `6233e898d`, phase 2 `23f227a36`,
-phase 3 below). `vbufBase/storage.cpp` + `storage.h` are deleted; the C++
+**Status:** DONE + SMOKE-TESTED OK (2026-07-14). All three phases
+implemented and committed (phase 1 `6233e898d`, phase 2 `23f227a36`,
+phase 3 `6ce934ed2`); browse-mode reads confirmed working after the sever. `vbufBase/storage.cpp` + `storage.h` are deleted; the C++
 `VBufStorage_*` classes no longer exist and the DLL links no storage
 symbols. ~2,150 C++ lines removed. The one behavioural change (severing the
 `VBufBackend_t : VBufStorage_buffer_t` inheritance) is behaviour-preserving

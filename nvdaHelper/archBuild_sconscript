@@ -4,6 +4,8 @@
 # This file may be used under the terms of the GNU General Public License, version 2 or later.
 # For more details see: https://www.gnu.org/licenses/gpl-2.0.html
 
+import os
+import subprocess
 import sysconfig
 
 Import(
@@ -207,6 +209,70 @@ else:
 Export("thirdPartyEnv")
 Export("env")
 Export("isNVDACoreArch")
+
+# Rust static lib for the UIA event rate-limiter (nvda_uia_events), linked
+# into nvdaHelperLocal.dll. This is the first Rust staticlib in the *local*
+# helper DLL; the injected nvdaHelperRemote.dll builds its own Rust libs in
+# remote/sconscript. NOTE: RUST_TARGET_TRIPLE is duplicated there — keep the
+# two maps in sync.
+_RUST_TARGET_TRIPLE = {
+	("x86", False): "i686-pc-windows-msvc",
+	("x86_64", False): "x86_64-pc-windows-msvc",
+	("arm64", False): "aarch64-pc-windows-msvc",
+	("arm64", True): "arm64ec-pc-windows-msvc",
+}
+rustTriple = _RUST_TARGET_TRIPLE.get((TARGET_ARCH, isArm64EC))
+isRustArch = rustTriple is not None
+uiaEventsStaticLib = None
+if isRustArch:
+	rustWorkspaceDir = Dir("#rust")
+	rustTargetDir = Dir("#build/rust")
+	uiaEventsLibFile = rustTargetDir.File(f"{rustTriple}/release/nvda_uia_events.lib")
+	uiaEventsCrate = Dir("#rust/nvda_uia_events")
+	# Glob so SCons re-runs cargo when any .rs or the manifest changes.
+	uiaEventsSources = env.Glob(uiaEventsCrate.path + "/src/*.rs") + [
+		uiaEventsCrate.File("Cargo.toml"),
+		rustWorkspaceDir.File("Cargo.toml"),
+	]
+
+	def buildUiaEventsStaticLib(
+		target,
+		source,
+		env,
+		rustTriple=rustTriple,
+		rustWorkspaceDir=rustWorkspaceDir,
+		rustTargetDir=rustTargetDir,
+	):
+		result = subprocess.run(
+			[
+				"cargo",
+				"build",
+				"--release",
+				"--target",
+				rustTriple,
+				"--package",
+				"nvda_uia_events",
+				"--target-dir",
+				rustTargetDir.abspath,
+				"--manifest-path",
+				rustWorkspaceDir.File("Cargo.toml").abspath,
+			],
+			capture_output=True,
+			encoding="utf-8",
+			errors="replace",
+		)
+		if result.returncode != 0:
+			print(f"cargo build failed:\n{result.stderr}")
+			return result.returncode
+		for t in target:
+			if not os.path.exists(t.abspath):
+				print(f"cargo built successfully but {t.abspath} was not produced")
+				return 1
+		return 0
+
+	(uiaEventsStaticLib,) = env.Command(uiaEventsLibFile, uiaEventsSources, buildUiaEventsStaticLib)
+Export("uiaEventsStaticLib")
+Export("isRustArch")
 
 acrobatAccessRPCStubs = env.SConscript("acrobatAccess_sconscript")
 Export("acrobatAccessRPCStubs")

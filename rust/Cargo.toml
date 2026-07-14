@@ -1,3 +1,3 @@
 [workspace]
-members = ["nvda_acrobat", "nvda_core", "nvda_crashdump", "nvda_ia2", "nvda_input_hooks", "nvda_lotus_notes", "nvda_mshtml", "nvda_ole", "nvda_screen_curtain", "nvda_tones", "nvda_vbuf", "nvda_wasapi", "nvda_python", "vbuf_bench"]
+members = ["nvda_acrobat", "nvda_core", "nvda_crashdump", "nvda_ia2", "nvda_input_hooks", "nvda_lotus_notes", "nvda_mshtml", "nvda_ole", "nvda_screen_curtain", "nvda_tones", "nvda_uia_events", "nvda_vbuf", "nvda_wasapi", "nvda_python", "vbuf_bench"]
 resolver = "2"
