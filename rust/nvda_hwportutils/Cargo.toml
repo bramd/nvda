@@ -1,0 +1,36 @@
+[package]
+name = "nvda_hwportutils"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# Pure-Rust dependency of `nvda_python`, exposed to Python via PyO3
+# (nvdaRust.hwportutils). Port of source/hwPortUtils.py's SetupAPI/HID/Bluetooth
+# device enumeration, previously done with ctypes.
+crate-type = ["rlib"]
+
+[dependencies.windows-core]
+version = "0.58"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    # SetupDi* device enumeration + SP_* structs + SPDRP/DIGCF/DICS/DIREG.
+    "Win32_Devices_DeviceAndDriverInstallation",
+    # DEVPROPKEY + SetupDiGetDevicePropertyW + DEVPKEY_Device_BusReportedDeviceDesc.
+    "Win32_Devices_Properties",
+    # GUID_DEVINTERFACE_USB_DEVICE.
+    "Win32_Devices_Usb",
+    # HidD_* / HidP_GetCaps / HIDD_ATTRIBUTES / HIDP_CAPS / HidD_GetHidGuid.
+    "Win32_Devices_HumanInterfaceDevice",
+    # CreateFileW (open a HID device to read its attributes); Win32_Security is
+    # required for CreateFileW's SECURITY_ATTRIBUTES parameter.
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+    # BluetoothGetDeviceInfo / BLUETOOTH_DEVICE_INFO.
+    "Win32_Devices_Bluetooth",
+    # RegOpenKeyExW / RegQueryValueExW / RegCloseKey / RegEnumKeyExW (device
+    # reg keys from SetupDiOpenDevRegKey + Toshiba/Widcomm HKCU keys).
+    "Win32_System_Registry",
+]

@@ -329,6 +329,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvda_hwportutils"
+version = "0.1.0"
+dependencies = [
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "nvda_ia2"
 version = "0.1.0"
 dependencies = [
@@ -388,6 +396,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "nvda_crashdump",
+ "nvda_hwportutils",
  "nvda_ole",
  "nvda_onecore_speech",
  "nvda_screen_curtain",

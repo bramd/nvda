@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 nvda_crashdump = { path = "../nvda_crashdump" }
+nvda_hwportutils = { path = "../nvda_hwportutils" }
 nvda_ole = { path = "../nvda_ole" }
 nvda_onecore_speech = { path = "../nvda_onecore_speech" }
 nvda_uwp_ocr = { path = "../nvda_uwp_ocr" }

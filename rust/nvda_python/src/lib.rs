@@ -3,6 +3,7 @@
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
+mod hwportutils;
 mod onecore;
 mod uwp_ocr;
 mod wasapi;
@@ -94,6 +95,17 @@ mod tones_mod {
 }
 
 #[pymodule]
+#[pyo3(name = "hwportutils")]
+mod hwportutils_mod {
+    #[pymodule_export]
+    use super::hwportutils::list_com_ports;
+    #[pymodule_export]
+    use super::hwportutils::list_usb_devices;
+    #[pymodule_export]
+    use super::hwportutils::list_hid_devices;
+}
+
+#[pymodule]
 #[pyo3(name = "onecore")]
 mod onecore_mod {
     #[pymodule_export]
@@ -165,6 +177,8 @@ mod nvda_rust {
     use super::screen_curtain_mod;
     #[pymodule_export]
     use super::tones_mod;
+    #[pymodule_export]
+    use super::hwportutils_mod;
     #[pymodule_export]
     use super::onecore_mod;
     #[pymodule_export]
