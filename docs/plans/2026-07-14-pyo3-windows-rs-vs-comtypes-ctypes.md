@@ -20,12 +20,12 @@ The headline: **the binding really is ~7× faster in Rust — but only on the
 isolated local read, and in every *realistic* UIA pattern that 7× is masked
 by UIA's own cross-boundary marshaling**, which both bindings pay identically.
 
-- **Live reads** are ~570 µs *each* — that is the UIA marshaling of
+* **Live reads** are ~570 µs *each* — that is the UIA marshaling of
   `GetCurrentPropertyValue` to the provider; comtypes-vs-windows-rs is noise.
-- **Cached-walk** (what NVDA actually does) is ~405 ms for 200 elements,
+* **Cached-walk** (what NVDA actually does) is ~405 ms for 200 elements,
   ~99 % of which is the single `FindAllBuildCache` fetch (still a cross-
   boundary call); the local reads it enables are <1 % → again **1.0×**.
-- Only when you fetch once and then read the cache **many** times locally does
+* Only when you fetch once and then read the cache **many** times locally does
   the 7× binding advantage dominate.
 
 **Implications (these correct the estimates further down):**
@@ -51,12 +51,12 @@ after this section is the pre-measurement reasoning, kept for context.
 Short answer: **no — and a Rust-base / Python-subclass split is actively
 counterproductive.** Grounded in the code:
 
-- `NVDAObject` is an `AutoPropertyObject` (baseObject.py): a metaclass
+* `NVDAObject` is an `AutoPropertyObject` (baseObject.py): a metaclass
   synthesizes properties from **`_get_<name>` / `_set_<name>` / `_cache_<name>`
   methods** with cascading base lookup. There are **~976 `_get_`/`_set_`/
   `script_` overrides across `NVDAObjects/` + `appModules/`** (plus every
   add-on) — that is the extension surface.
-- Each object's *actual class* is **composed at runtime** by
+* Each object's *actual class* is **composed at runtime** by
   `DynamicNVDAObjectType`: `findOverlayClasses` + app modules'
   `chooseNVDAObjectOverlayClasses` + global-plugin overlays build a `clsList`,
   a new `Dynamic_*` class is synthesized, and `__class__` is reassigned.
@@ -101,14 +101,14 @@ thing you'd touch, if ever.
 
 ## The footprint (measured)
 
-- **comtypes: ~100 source files.** Concentrated in the generated COM
+* **comtypes: ~100 source files.** Concentrated in the generated COM
   wrappers (`comInterfaces/`, typelib-generated proxies:
   `UIAutomationClient.py`, `IAccessible2Lib.py`, …) and the **hottest code
   in the product** — the accessibility object model
   (`NVDAObjects/UIA/__init__.py`, `NVDAObjects/IAccessible/__init__.py`;
   83 and 96 comtypes/QI/COMError references respectively) plus
   `UIAHandler/` and app modules.
-- **ctypes: ~164 source files.** A dedicated `winBindings/` package
+* **ctypes: ~164 source files.** A dedicated `winBindings/` package
   (31 files: user32, kernel32, gdi32, oleacc, mshtml, magnification, …) of
   hand-written Win32 bindings, plus the object model, synth/braille drivers,
   and `hwIo`. Notably `winBindings/` is **2025-dated** — NVDA is already
@@ -183,12 +183,12 @@ contributor base to work on.
 
 ## Performance — realistic expectation
 
-- **comtypes-heavy hot paths** (UIA/IAccessible property reads + tree walks):
+* **comtypes-heavy hot paths** (UIA/IAccessible property reads + tree walks):
   potentially **large** wins on the moved portion — *if* whole operations
   move to Rust, not 1:1 calls. Same shape as the vbuf ports.
-- **ctypes Win32 calls:** mostly a **wash** per-call; wins only for tight
+* **ctypes Win32 calls:** mostly a **wash** per-call; wins only for tight
   loops moved wholesale.
-- **The PyO3 boundary isn't free** (~sub-µs per crossing), so granular 1:1
+* **The PyO3 boundary isn't free** (~sub-µs per crossing), so granular 1:1
   replacement can be net-neutral or slightly negative. **Coarse-grained**
   "do a whole subtask in Rust" is where it pays.
 

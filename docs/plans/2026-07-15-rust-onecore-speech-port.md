@@ -21,14 +21,14 @@ downstream stays Python.
 
 ## Why it's meatier than uwpOcr (a state machine, not just a wrapper)
 
-- **Token/activation model:** `initialize` creates a `SpeechSynthesizer` and
+* **Token/activation model:** `initialize` creates a `SpeechSynthesizer` and
   returns an opaque token (the synth identity); every call validates it to
   reject use-after-`terminate` and stale async callbacks.
-- **A `shared_timed_mutex` read/write protocol:** `initialize`/`terminate`
+* **A `shared_timed_mutex` read/write protocol:** `initialize`/`terminate`
   take the **write** lock; the async callback takes a **read** lock,
   re-validates the token under it, and fires — so `terminate` blocks while a
   callback is in flight and a callback never fires for a terminated synth.
-- 16 more accessors (voices, current voice id/language, rate/pitch/volume,
+* 16 more accessors (voices, current voice id/language, rate/pitch/volume,
   punctuation silence, two `ApiInformation` feature gates).
 
 windows-rs makes all of this *cleaner* than the C++: `RwLock` for the
@@ -79,18 +79,18 @@ bytes via `IBufferByteAccess`, build the markers string from
 
 ## Phased plan (build + test each)
 
-- **Phase 1 — crate + state machine + accessors (no audio).** New crate
+* **Phase 1 — crate + state machine + accessors (no audio).** New crate
   `nvda_onecore_speech`. Confirm windows-rs `Media_SpeechSynthesis` +
   `Media_Core` (`IMediaMarker`) + `Foundation_Metadata` (`ApiInformation`)
   compile. Implement the `RwLock`/generation state, `initialize`/`terminate`,
   `getVoices`, `getCurrentVoiceId`/`Language`, `setVoice`, get/set
   rate/pitch/volume, `supports*`, punctuation silence. Standalone-testable:
   init → getVoices → getCurrentVoiceId → set/get rate.
-- **Phase 2 — `speak` + async + callback.** The background-thread synthesis,
+* **Phase 2 — `speak` + async + callback.** The background-thread synthesis,
   WAV buffer read, markers, and callback. Standalone-testable: `init(cb)` →
   `speak("<speak>…</speak>")` → callback fires with WAV bytes + markers;
   parse the WAV header + markers to sanity-check.
-- **Phase 3 — flip + build.** The build plumbing already exists (uwpOcr added
+* **Phase 3 — flip + build.** The build plumbing already exists (uwpOcr added
   the archBuild `_localRustLibs` dict + the localWin10 Rust link): add
   `nvda_onecore_speech` to the dict, `/EXPORT` its 18 symbols, delete
   `oneCoreSpeech.cpp`/`.h`. Build x64 `nvdaHelperLocalWin10.dll`, dumpbin the
@@ -100,10 +100,10 @@ bytes via `IBufferByteAccess`, build the markers string from
 
 ## Risks
 
-- WinRT `IMediaMarker` (`Media_Core`) + `ApiInformation` (`Foundation_Metadata`)
+* WinRT `IMediaMarker` (`Media_Core`) + `ApiInformation` (`Foundation_Metadata`)
   feature coverage — verify at Phase 1 compile (low risk; the methods exist).
-- The DLL will have no C++ source once both engines are Rust (only the `.res`
-  + two staticlibs); the MSVC CRT still provides `_DllMainCRTStartup`. Verify
+* The DLL will have no C++ source once both engines are Rust (only the `.res`
+  * two staticlibs); the MSVC CRT still provides `_DllMainCRTStartup`. Verify
   it still links as a DLL at Phase 3 (very low risk).
-- Behaviour is speech — the standalone tests validate the ABI + audio bytes,
+* Behaviour is speech — the standalone tests validate the ABI + audio bytes,
   but real-voice quality/latency/bookmarks need the in-NVDA smoke test.
