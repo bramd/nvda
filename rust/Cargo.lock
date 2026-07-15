@@ -392,6 +392,7 @@ dependencies = [
  "nvda_onecore_speech",
  "nvda_screen_curtain",
  "nvda_tones",
+ "nvda_uwp_ocr",
  "nvda_wasapi",
  "pyo3",
  "pyo3-log",

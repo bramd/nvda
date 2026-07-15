@@ -213,7 +213,9 @@ Export("isNVDACoreArch")
 # Rust static libs linked into the *local* helper DLLs (the injected
 # nvdaHelperRemote.dll builds its own Rust libs in remote/sconscript):
 #   nvda_uia_events -> nvdaHelperLocal.dll (UIA event rate-limiter)
-#   nvda_uwp_ocr    -> nvdaHelperLocalWin10.dll (WinRT OCR)
+# (WinRT OCR + OneCore speech, formerly here as staticlibs for
+# nvdaHelperLocalWin10.dll, are now PyO3 modules in nvdaRust.pyd — that DLL is
+# gone.)
 # NOTE: RUST_TARGET_TRIPLE is duplicated in remote/sconscript — keep the two
 # maps in sync.
 _RUST_TARGET_TRIPLE = {
@@ -226,7 +228,7 @@ rustTriple = _RUST_TARGET_TRIPLE.get((TARGET_ARCH, isArm64EC))
 isRustArch = rustTriple is not None
 # Package name -> the SCons File node for its built staticlib (None on a
 # non-Rust arch). Order is preserved for the env.Command target list.
-_localRustLibs = {"nvda_uia_events": None, "nvda_uwp_ocr": None}
+_localRustLibs = {"nvda_uia_events": None}
 if isRustArch:
 	rustWorkspaceDir = Dir("#rust")
 	rustTargetDir = Dir("#build/rust")
@@ -269,9 +271,7 @@ if isRustArch:
 	_localRustLibs = dict(zip(_localRustLibs, builtLibs))
 
 uiaEventsStaticLib = _localRustLibs["nvda_uia_events"]
-uwpOcrStaticLib = _localRustLibs["nvda_uwp_ocr"]
 Export("uiaEventsStaticLib")
-Export("uwpOcrStaticLib")
 Export("isRustArch")
 
 acrobatAccessRPCStubs = env.SConscript("acrobatAccess_sconscript")
@@ -311,12 +311,6 @@ if signExec:
 env.Install(libInstallDir, localLib)
 
 if isNVDAHelperLocalArch:
-	win10localLib = env.SConscript(
-		"localWin10/sconscript",
-	)
-	if signExec:
-		env.AddPostAction(win10localLib[0], [signExec])
-	env.Install(libInstallDir, win10localLib)
 	UIARemoteLib = env.SConscript("UIARemote/sconscript")
 	if signExec:
 		env.AddPostAction(UIARemoteLib[0], [signExec])

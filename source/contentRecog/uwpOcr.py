@@ -5,28 +5,11 @@
 
 """Recognition of text using the UWP OCR engine included in Windows 10 and later."""
 
-from ctypes import (
-	cast,
-	POINTER,
-)
 import json
-from winBindings.gdi32 import RGBQUAD
-import NVDAHelper
-from NVDAHelper.localWin10 import (
-	uwpOcr_getLanguages,
-	uwpOcr_initialize,
-	uwpOcr_recognize,
-	uwpOcr_terminate,
-	uwpOcr_Callback as _uwpOcr_Callback,
-)
+import nvdaRust
 from . import ContentRecognizer, LinesWordsResult
 import config
 import languageHandler
-from utils import _deprecate
-
-__getattr__ = _deprecate.handleDeprecations(
-	_deprecate.MovedSymbol("uwpOcr_Callback", "NVDAHelper.localWin10"),
-)
 
 
 def getLanguages():
@@ -36,8 +19,7 @@ def getLanguages():
 		for use as NVDA language codes.
 	@rtype: list of str
 	"""
-	langs = uwpOcr_getLanguages()
-	return langs.split(";")[:-1]
+	return nvdaRust.uwp_ocr.getLanguages()
 
 
 def getInitialLanguage():
@@ -110,38 +92,32 @@ class UwpOcr(ContentRecognizer):
 			self.language = language
 		else:
 			self.language = getConfigLanguage()
-		self._dll = NVDAHelper.getHelperLocalWin10Dll()
 
 	def recognize(self, pixels, imgInfo, onResult):
 		self._onResult = onResult
 
-		@_uwpOcr_Callback
 		def callback(result):
-			# If self._onResult is None, recognition was cancelled.
+			# Called on the Rust engine's worker thread once recognition is
+			# done. If self._onResult is None, recognition was cancelled.
 			if self._onResult:
 				if result:
 					data = json.loads(result)
 					self._onResult(LinesWordsResult(data, imgInfo))
 				else:
 					self._onResult(RuntimeError("UWP OCR failed"))
-			uwpOcr_terminate(self._handle)
-			self._callback = None
-			self._handle = None
 
-		self._callback = callback
-		self._handle = uwpOcr_initialize(self.language, callback)
-		if not self._handle:
+		# pixels, as fetched from screenBitmap.captureImage, is a 2d array of
+		# RGBQUAD (BGRA) values; pass its raw bytes to the recogniser.
+		try:
+			nvdaRust.uwp_ocr.recognize(
+				self.language,
+				bytes(pixels),
+				imgInfo.recogWidth,
+				imgInfo.recogHeight,
+				callback,
+			)
+		except RuntimeError:
 			onResult(RuntimeError("UWP OCR initialization failed"))
-			return
-		uwpOcr_recognize(
-			self._handle,
-			# pixels, as fetched from screenBitmap.captureImage is a 2d array of RGBQUAD values.
-			# However uwpOcr_recognize expects a 1d array (pointer).
-			# These are identical in memory, so we can just cast.
-			cast(pixels, POINTER(RGBQUAD)),
-			imgInfo.recogWidth,
-			imgInfo.recogHeight,
-		)
 
 	def cancel(self):
 		self._onResult = None

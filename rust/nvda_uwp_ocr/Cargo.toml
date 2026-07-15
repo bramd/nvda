@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-# `staticlib` so nvdaHelperLocalWin10.dll can link the C-ABI exports
-# (uwpOcr_*). `rlib` so unit tests can build a test binary. Warm-up for the
-# WinRT-engine-in-Rust pattern before oneCoreSpeech.
-crate-type = ["staticlib", "rlib"]
+# `rlib`: this crate is now a pure-Rust dependency of `nvda_python`, which
+# exposes it to Python via PyO3 (nvdaRust.uwp_ocr). It used to be a `staticlib`
+# linked into nvdaHelperLocalWin10.dll via a C ABI (uwpOcr_*), driven from
+# uwpOcr.py by ctypes; that DLL is gone and the seam is now the PyO3 wrapper.
+crate-type = ["rlib"]
 
 [dependencies.windows-core]
 version = "0.58"

@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 nvda_crashdump = { path = "../nvda_crashdump" }
 nvda_ole = { path = "../nvda_ole" }
 nvda_onecore_speech = { path = "../nvda_onecore_speech" }
+nvda_uwp_ocr = { path = "../nvda_uwp_ocr" }
 nvda_screen_curtain = { path = "../nvda_screen_curtain" }
 nvda_tones = { path = "../nvda_tones" }
 nvda_wasapi = { path = "../nvda_wasapi" }

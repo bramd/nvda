@@ -28,7 +28,6 @@ from ctypes import (
 	c_wchar,
 	cast,
 	create_unicode_buffer,
-	windll,
 	wstring_at,
 )
 
@@ -888,13 +887,6 @@ def terminate():
 	localLib.nvdaHelperLocal_terminate()
 
 
-def getHelperLocalWin10Dll():
-	"""Get a ctypes WinDLL instance for the nvdaHelperLocalWin10 dll.
-	This is a C++/CX dll used to provide access to certain UWP functionality.
-	"""
-	return windll[ReadPaths.nvdaHelperLocalWin10Dll]
-
-
 def _bstrReturn(address: int) -> str:
 	"""Handle a BSTR returned from a ctypes function call.
 	This includes freeing the memory.
@@ -910,12 +902,6 @@ def _bstrReturn(address: int) -> str:
 
 
 __getattr__ = _deprecate.handleDeprecations(
-	_deprecate.MovedSymbol(
-		"LOCAL_WIN10_DLL_PATH",
-		"NVDAState",
-		"ReadPaths",
-		"nvdaHelperLocalWin10Dll",
-	),
 	_deprecate.MovedSymbol(
 		"versionedLibPath",
 		"NVDAState",

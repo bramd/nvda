@@ -4,6 +4,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 mod onecore;
+mod uwp_ocr;
 mod wasapi;
 
 /// Generate a beep tone as raw PCM bytes.
@@ -104,6 +105,15 @@ mod onecore_mod {
 }
 
 #[pymodule]
+#[pyo3(name = "uwp_ocr")]
+mod uwp_ocr_mod {
+    #[pymodule_export]
+    use super::uwp_ocr::get_languages;
+    #[pymodule_export]
+    use super::uwp_ocr::recognize;
+}
+
+#[pymodule]
 #[pyo3(name = "wasapi")]
 mod wasapi_mod {
     #[pymodule_export]
@@ -157,6 +167,8 @@ mod nvda_rust {
     use super::tones_mod;
     #[pymodule_export]
     use super::onecore_mod;
+    #[pymodule_export]
+    use super::uwp_ocr_mod;
     #[pymodule_export]
     use super::wasapi_mod;
 }
