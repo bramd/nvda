@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use pyo3::prelude::*;
 
 use nvda_wasapi::device::{self, DeviceChangeCounters};
-use nvda_wasapi::player::{StopHandle, WasapiPlayerInner};
+use nvda_wasapi::player::{DeviceControlHandle, WasapiPlayerInner};
 use nvda_wasapi::silence::SilencePlayer;
 use windows::Win32::Media::Audio::IMMNotificationClient;
 
@@ -72,27 +72,30 @@ impl SendPtr {
 /// WasapiPlayer wraps WasapiPlayerInner for Python.
 ///
 /// The inner player is behind a Mutex so that `&self` methods can be used
-/// (allowing concurrent Python threads). The `stop_handle` provides a
-/// separate, lock-free path to stop playback from another thread while
-/// `feed()` is blocking with the mutex held.
+/// (allowing concurrent Python threads). The `control_handle` provides a
+/// separate, lock-free path to stop/pause/resume playback from another thread
+/// while `feed()` is blocking with the mutex held.
 ///
-/// For blocking methods (`feed`, `sync`, `idle`), we:
+/// For blocking methods (`feed`, `sync`, `idle`) — see `run_blocking` — we:
 /// 1. Lock the mutex
 /// 2. Get a raw pointer to the inner player
 /// 3. Release the GIL via `py.detach()` while keeping the mutex locked
 /// 4. The blocking call runs without the GIL
 /// 5. On return, we re-acquire the GIL and fire callbacks
 ///
-/// For `stop()`, we use the StopHandle which bypasses the mutex entirely,
-/// using only atomic state and thread-safe Windows APIs.
+/// For `stop`/`pause`/`resume`, we use the `control_handle`, which bypasses the
+/// mutex entirely (using only atomic state and thread-safe Windows APIs) — so
+/// they work even while a blocking `feed()` holds the mutex. This matters most
+/// for pause/resume: a paused stream keeps `feed()` blocked in its backpressure
+/// wait, so routing them through the mutex would deadlock.
 ///
-/// The StopHandle is stable across device reopens -- it references the
+/// The `control_handle` is stable across device reopens -- it references the
 /// same atomic play_state and wake_event that persist for the lifetime
 /// of the inner player, so no Mutex is needed around it.
 #[pyclass]
 pub struct WasapiPlayer {
     inner: Mutex<WasapiPlayerInner>,
-    stop_handle: StopHandle,
+    control_handle: DeviceControlHandle,
     /// The Python feed-done callable, invoked by [`WasapiPlayer::fire_pending`]
     /// once per completed feed id.
     callback: Py<PyAny>,
@@ -126,6 +129,42 @@ impl WasapiPlayer {
                 );
             }
         }
+    }
+
+    /// Run a blocking inner-player call (feed/sync/idle) with the GIL released
+    /// but the inner mutex held for the whole call, then deliver any feed-done
+    /// callbacks it queued. The MutexGuard is created here and outlives
+    /// `py.detach()`; the raw pointer handed across the boundary via `SendPtr`
+    /// is sound only because of that (see `SendPtr::as_mut`). Only `stop`/
+    /// `pause`/`resume` (via the control handle) can touch the device while
+    /// this holds the mutex.
+    fn run_blocking<R: Send>(
+        &self,
+        py: Python<'_>,
+        f: impl FnOnce(&mut WasapiPlayerInner) -> windows::core::Result<R> + Send,
+    ) -> PyResult<R> {
+        let result = {
+            let mut player = self.inner.lock().unwrap();
+            let player_ptr = SendPtr(&mut *player as *mut WasapiPlayerInner);
+            py.detach(move || f(unsafe { player_ptr.as_mut() }))
+        };
+        // `inner` is released; deliver callbacks the call queued (see
+        // `pending` / `fire_pending`), never while holding the mutex.
+        self.fire_pending(py);
+        result.map_err(to_os_error)
+    }
+
+    /// Run a quick inner-player call (open/setChannelVolume) that queues no
+    /// callbacks. The GIL is released *before* the inner mutex is acquired
+    /// (GIL-before-lock ordering), preventing a deadlock with `feed()`, which
+    /// holds the mutex and waits for the GIL.
+    fn with_inner<R: Send>(
+        &self,
+        py: Python<'_>,
+        f: impl FnOnce(&mut WasapiPlayerInner) -> windows::core::Result<R> + Send,
+    ) -> PyResult<R> {
+        let inner = &self.inner;
+        py.detach(move || f(&mut inner.lock().unwrap())).map_err(to_os_error)
     }
 }
 
@@ -172,112 +211,69 @@ impl WasapiPlayer {
         )
         .map_err(to_os_error)?;
 
-        let stop_handle = inner.stop_handle();
+        let control_handle = inner.control_handle();
 
         Ok(Self {
             inner: Mutex::new(inner),
-            stop_handle,
+            control_handle,
             callback,
             pending,
         })
     }
 
     fn open(&self, py: Python<'_>) -> PyResult<()> {
-        // Release the GIL before locking inner to prevent deadlock with
-        // feed() which holds inner and waits for the GIL.
-        let inner = &self.inner;
-        py.detach(move || {
-            let mut player = inner.lock().unwrap();
-            player.open(false)
-        })
-        .map_err(to_os_error)
+        self.with_inner(py, |player| player.open(false))
     }
 
     fn feed(&self, py: Python<'_>, data: &[u8]) -> PyResult<u32> {
+        // Copy the audio out of the Python buffer before releasing the GIL:
+        // the feed runs without the GIL held, so it must not read a buffer
+        // Python could free or mutate underneath it.
         let data_owned = data.to_vec();
-        let result = {
-            // IMPORTANT: `player` (MutexGuard) MUST outlive the `py.detach()`
-            // call below. The raw pointer in SendPtr is derived from the guard,
-            // so the guard must stay alive until detach returns. It drops at the
-            // end of this block, after detach completes.
-            let mut player = self.inner.lock().unwrap();
-            let player_ptr = SendPtr(&mut *player as *mut WasapiPlayerInner);
-            // Release the GIL while feeding. The mutex remains locked,
-            // preventing other methods (except stop via StopHandle) from
-            // accessing inner. This matches the C++ behavior where the GIL
-            // is released for all ctypes calls.
-            py.detach(move || unsafe { player_ptr.as_mut().feed(&data_owned, true) })
-        };
-        // `inner` is released; now deliver any feed-done callbacks the inner
-        // player queued during the feed loop (see `pending` / `fire_pending`).
-        self.fire_pending(py);
-        result.map_err(to_os_error)
+        self.run_blocking(py, move |player| player.feed(&data_owned, true))
     }
 
     fn stop(&self) -> PyResult<()> {
-        // The StopHandle is always safe to call from any thread. It calls
+        // The DeviceControlHandle is always safe to call from any thread. It calls
         // IAudioClient::Stop() directly via the shared client slot, so the
         // device halts immediately even when feed() is currently holding
         // the player mutex. (Previously this fell back to a signal-only
         // path when feed() held the mutex, which let up to ~BUFFER_MS of
         // already-queued audio keep playing.)
-        self.stop_handle.stop();
+        self.control_handle.stop();
         Ok(())
     }
 
     fn sync(&self, py: Python<'_>) -> PyResult<()> {
-        let result = {
-            // See feed() for why the MutexGuard must outlive py.detach().
-            let mut player = self.inner.lock().unwrap();
-            let player_ptr = SendPtr(&mut *player as *mut WasapiPlayerInner);
-            py.detach(move || unsafe { player_ptr.as_mut().sync() })
-        };
-        // `inner` released; deliver callbacks the sync fired (see fire_pending).
-        self.fire_pending(py);
-        result.map_err(to_os_error)
+        self.run_blocking(py, |player| player.sync())
     }
 
     fn idle(&self, py: Python<'_>) -> PyResult<()> {
-        let result = {
-            // See feed() for why the MutexGuard must outlive py.detach().
-            let mut player = self.inner.lock().unwrap();
-            let player_ptr = SendPtr(&mut *player as *mut WasapiPlayerInner);
-            py.detach(move || unsafe { player_ptr.as_mut().idle() })
-        };
-        // `inner` released; deliver any callbacks the idle/sync fired.
-        self.fire_pending(py);
-        result.map_err(to_os_error)
+        self.run_blocking(py, |player| player.idle())
     }
 
     fn pause(&self, py: Python<'_>) -> PyResult<()> {
-        // Release the GIL before locking inner to prevent deadlock with feed().
-        let inner = &self.inner;
-        py.detach(move || {
-            let mut player = inner.lock().unwrap();
-            player.pause()
-        })
-        .map_err(to_os_error)
+        // Route through the lock-free DeviceControlHandle rather than locking inner:
+        // pause() is called while feed() is blocked in its backpressure wait
+        // (still holding inner) and the whole point of pausing is that the
+        // device is not draining, so feed() will not release inner until we
+        // resume. Locking inner here would therefore deadlock. The handle
+        // calls IAudioClient::Stop() directly via the shared client slot,
+        // leaving play_state as Playing so resume() can continue. GIL is
+        // released around the COM call for consistency with the other methods.
+        py.detach(|| self.control_handle.pause()).map_err(to_os_error)
     }
 
     fn resume(&self, py: Python<'_>) -> PyResult<()> {
-        // Release the GIL before locking inner to prevent deadlock with feed().
-        let inner = &self.inner;
-        py.detach(move || {
-            let mut player = inner.lock().unwrap();
-            player.resume()
-        })
-        .map_err(to_os_error)
+        // See pause(): route through the lock-free DeviceControlHandle. resume() calling
+        // IAudioClient::Start() is what unblocks a feed() stuck in its
+        // backpressure wait, so it must not itself require the inner mutex.
+        py.detach(|| self.control_handle.resume()).map_err(to_os_error)
     }
 
     #[pyo3(name = "setChannelVolume")]
     fn set_channel_volume(&self, py: Python<'_>, channel: u32, level: f32) -> PyResult<()> {
-        // Release the GIL before locking inner to prevent deadlock with feed().
-        let inner = &self.inner;
-        py.detach(move || {
-            let mut player = inner.lock().unwrap();
-            player.set_channel_volume(channel, level)
-        })
-        .map_err(to_os_error)
+        self.with_inner(py, move |player| player.set_channel_volume(channel, level))
     }
 
     #[pyo3(name = "startTrimmingLeadingSilence")]

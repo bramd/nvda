@@ -18,10 +18,6 @@ pub enum PlayState {
 }
 
 impl PlayState {
-    pub const STOPPED_U8: u8 = 0;
-    pub const PLAYING_U8: u8 = 1;
-    pub const STOPPING_U8: u8 = 2;
-
     pub fn from_u8(v: u8) -> Self {
         match v {
             0 => PlayState::Stopped,

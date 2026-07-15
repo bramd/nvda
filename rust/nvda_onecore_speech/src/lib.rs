@@ -24,7 +24,7 @@ use windows::Foundation::Metadata::ApiInformation;
 use windows::Media::IMediaMarker;
 use windows::Media::SpeechSynthesis::{
     SpeechAppendedSilence, SpeechPunctuationSilence, SpeechSynthesisStream,
-    SpeechSynthesizer,
+    SpeechSynthesizer, VoiceInformation,
 };
 use windows::Storage::Streams::{Buffer, IBuffer, InputStreamOptions};
 use windows::Win32::System::WinRT::IBufferByteAccess;
@@ -203,6 +203,22 @@ fn voices_string() -> String {
     out
 }
 
+/// Store the current voice's `field` (id or language) in the per-thread buffer
+/// and return a pointer valid until the next such call on this thread.
+fn current_voice_field(
+    token: *mut c_void,
+    field: impl Fn(&VoiceInformation) -> windows::core::Result<HSTRING>,
+) -> *const u16 {
+    let s = with_synth(token, String::new(), |synth| {
+        synth
+            .Voice()
+            .and_then(|v| field(&v))
+            .map(|h| h.to_string_lossy())
+            .unwrap_or_default()
+    });
+    store_voice_str(&s)
+}
+
 /// The current voice's id (pointer valid until the next call on this thread).
 ///
 /// # Safety
@@ -212,14 +228,7 @@ fn voices_string() -> String {
 pub unsafe extern "system" fn ocSpeech_getCurrentVoiceId(
     token: *mut c_void,
 ) -> *const u16 {
-    let s = with_synth(token, String::new(), |synth| {
-        synth
-            .Voice()
-            .and_then(|v| v.Id())
-            .map(|h| h.to_string_lossy())
-            .unwrap_or_default()
-    });
-    store_voice_str(&s)
+    current_voice_field(token, |v| v.Id())
 }
 
 /// The current voice's language (see `getCurrentVoiceId` for lifetime).
@@ -230,14 +239,7 @@ pub unsafe extern "system" fn ocSpeech_getCurrentVoiceId(
 pub unsafe extern "system" fn ocSpeech_getCurrentVoiceLanguage(
     token: *mut c_void,
 ) -> *const u16 {
-    let s = with_synth(token, String::new(), |synth| {
-        synth
-            .Voice()
-            .and_then(|v| v.Language())
-            .map(|h| h.to_string_lossy())
-            .unwrap_or_default()
-    });
-    store_voice_str(&s)
+    current_voice_field(token, |v| v.Language())
 }
 
 /// Set the voice by index into `AllVoices()`.
@@ -322,11 +324,43 @@ pub unsafe extern "system" fn ocSpeech_setPunctuationSilence(
     });
 }
 
-/// Assert `Send` for the WinRT objects moved onto the synthesis thread —
-/// agile, as the C++ relies on when it resumes the coroutine on a threadpool
-/// thread.
-struct SendWrap<T>(T);
-unsafe impl<T> Send for SendWrap<T> {}
+/// A queued utterance handed to the single synthesis worker thread.
+struct SpeakRequest {
+    generation: u64,
+    synth: SpeechSynthesizer,
+    callback: OcSpeechCallback,
+    ssml: HSTRING,
+}
+// SAFETY: the WinRT synth is agile (see `AgileSynth`), `callback` is a bare fn
+// pointer, and `HSTRING` is Send — the same cross-thread handoff the C++
+// threadpool relied on when it resumed the coroutine on a pool thread.
+unsafe impl Send for SpeakRequest {}
+
+/// Sender to the lazily-spawned synthesis worker (see [`speak_worker`]).
+static SPEAK_WORKER: std::sync::OnceLock<std::sync::mpsc::Sender<SpeakRequest>> =
+    std::sync::OnceLock::new();
+
+/// The single dedicated synthesis thread. It synthesises each queued utterance
+/// serially and fires its callback. Using one persistent worker (rather than
+/// `thread::spawn` per `speak`) bounds concurrency to match NVDA's serial
+/// usage, processes utterances in queue order, and shrinks the window in which
+/// a stale async result can race a `terminate`. The thread lives for the
+/// process; `fire_callback`'s generation check drops results for a superseded
+/// or terminated synth. `terminate` intentionally does not drain or join the
+/// worker — a synthesis already in flight simply has its result discarded at
+/// the generation gate, which is correct given NVDA's serial usage.
+fn speak_worker() -> &'static std::sync::mpsc::Sender<SpeakRequest> {
+    SPEAK_WORKER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<SpeakRequest>();
+        std::thread::spawn(move || {
+            while let Ok(req) = rx.recv() {
+                let result = synthesize(&req.synth, &req.ssml).ok();
+                fire_callback(req.generation, req.callback, result);
+            }
+        });
+        tx
+    })
+}
 
 /// Read a NUL-terminated wide string into an `HSTRING`.
 unsafe fn wide_to_hstring(p: *const u16) -> HSTRING {
@@ -368,11 +402,14 @@ pub unsafe extern "system" fn ocSpeech_speak(
         return;
     };
     let ssml = unsafe { wide_to_hstring(text) };
-    let payload = SendWrap((synth, ssml));
-    std::thread::spawn(move || {
-        let SendWrap((synth, ssml)) = payload;
-        let result = synthesize(&synth, &ssml).ok();
-        fire_callback(gen, callback, result);
+    // Hand off to the single synthesis worker; it synthesises serially and
+    // fires the callback. Send only fails if the worker thread has died, which
+    // it never does for the process lifetime.
+    let _ = speak_worker().send(SpeakRequest {
+        generation: gen,
+        synth,
+        callback,
+        ssml,
     });
 }
 
@@ -429,10 +466,10 @@ fn fire_callback(
     match result {
         Some((buffer, markers)) => {
             let (ptr, len) = buffer_bytes(&buffer);
-            let mut mwide = markers.as_wide().to_vec();
-            mwide.push(0);
-            // buffer + mwide are held alive across the call.
-            unsafe { cb(ptr, len, mwide.as_ptr()) };
+            // `HSTRING` is always NUL-terminated, so its buffer can be passed
+            // straight to the C callback -- no copy. `buffer` + `markers` are
+            // held alive across the call.
+            unsafe { cb(ptr, len, markers.as_ptr()) };
         }
         None => unsafe { cb(core::ptr::null_mut(), 0, core::ptr::null()) },
     }
