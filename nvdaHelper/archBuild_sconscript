@@ -226,7 +226,7 @@ rustTriple = _RUST_TARGET_TRIPLE.get((TARGET_ARCH, isArm64EC))
 isRustArch = rustTriple is not None
 # Package name -> the SCons File node for its built staticlib (None on a
 # non-Rust arch). Order is preserved for the env.Command target list.
-_localRustLibs = {"nvda_uia_events": None, "nvda_uwp_ocr": None, "nvda_onecore_speech": None}
+_localRustLibs = {"nvda_uia_events": None, "nvda_uwp_ocr": None}
 if isRustArch:
 	rustWorkspaceDir = Dir("#rust")
 	rustTargetDir = Dir("#build/rust")
@@ -270,10 +270,8 @@ if isRustArch:
 
 uiaEventsStaticLib = _localRustLibs["nvda_uia_events"]
 uwpOcrStaticLib = _localRustLibs["nvda_uwp_ocr"]
-oneCoreSpeechStaticLib = _localRustLibs["nvda_onecore_speech"]
 Export("uiaEventsStaticLib")
 Export("uwpOcrStaticLib")
-Export("oneCoreSpeechStaticLib")
 Export("isRustArch")
 
 acrobatAccessRPCStubs = env.SConscript("acrobatAccess_sconscript")

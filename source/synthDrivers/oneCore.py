@@ -17,9 +17,6 @@ from typing import (
 	Union,
 )
 from collections import OrderedDict
-import ctypes
-from ctypes.wintypes import HANDLE
-import comtypes
 import winreg
 import wave
 from synthDriverHandler import (
@@ -38,7 +35,7 @@ import queueHandler
 from speech.types import SpeechSequence
 import speechXml
 import languageHandler
-import NVDAHelper
+import nvdaRust
 
 from speech.commands import (
 	IndexCommand,
@@ -54,7 +51,6 @@ from speech.commands import (
 #: The number of 100-nanosecond units in 1 second.
 HUNDRED_NS_PER_SEC = 10000000  # 1000000000 ns per sec / 100 ns
 WAVE_HEADER_LENGTH = 46
-ocSpeech_Callback = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p)
 
 
 class _OcSsmlConverter(speechXml.SsmlConverter):
@@ -198,11 +194,11 @@ class OneCoreSynthDriver(SynthDriver):
 		return True
 
 	def _get_supportsProsodyOptions(self) -> bool:
-		self.supportsProsodyOptions = self._dll.ocSpeech_supportsProsodyOptions()
+		self.supportsProsodyOptions = nvdaRust.onecore.supportsProsodyOptions()
 		return self.supportsProsodyOptions
 
 	def _get_supportsPunctuationSilence(self) -> bool:
-		self.supportsPunctuationSilence = self._dll.ocSpeech_supportsPunctuationSilence()
+		self.supportsPunctuationSilence = nvdaRust.onecore.supportsPunctuationSilence()
 		return self.supportsPunctuationSilence
 
 	def _get_supportedSettings(self):
@@ -224,11 +220,6 @@ class OneCoreSynthDriver(SynthDriver):
 
 	def __init__(self):
 		super().__init__()
-		self._dll = NVDAHelper.getHelperLocalWin10Dll()
-		self._dll.ocSpeech_initialize.restype = HANDLE
-		self._dll.ocSpeech_getCurrentVoiceLanguage.restype = ctypes.c_wchar_p
-		self._dll.ocSpeech_supportsProsodyOptions.restype = ctypes.c_bool
-		self._dll.ocSpeech_supportsPunctuationSilence.restype = ctypes.c_bool
 		# Set initial values for parameters that can't be queried when prosody is not supported.
 		# This initialises our cache for the value.
 		# When prosody is supported, the values are used for cachign reasons.
@@ -236,27 +227,19 @@ class OneCoreSynthDriver(SynthDriver):
 		self._pitch: int = 50
 		self._volume: int = 100
 
-		if self.supportsProsodyOptions:
-			self._dll.ocSpeech_getPitch.restype = ctypes.c_double
-			self._dll.ocSpeech_getVolume.restype = ctypes.c_double
-			self._dll.ocSpeech_getRate.restype = ctypes.c_double
-		else:
+		if not self.supportsProsodyOptions:
 			log.debugWarning("Prosody options not supported")
-
-		if self.supportsPunctuationSilence:
-			self._dll.ocSpeech_getPunctuationSilence.restype = ctypes.c_bool
-		else:
+		if not self.supportsPunctuationSilence:
 			log.debugWarning("Punctuation silence not supported")
 
 		self._earlyExitCB = False
-		self._callbackInst = ocSpeech_Callback(self._callback)
-		self._ocSpeechToken = HANDLE()
-		self._ocSpeechToken.value = self._dll.ocSpeech_initialize(self._callbackInst)
-		self._dll.ocSpeech_getVoices.restype = comtypes.BSTR
-		self._dll.ocSpeech_getCurrentVoiceId.restype = ctypes.c_wchar_p
+		# The Rust engine calls self._callback (on its worker thread) with the
+		# synthesized WAV + markers for each utterance. Dropping self._oc stops
+		# that worker (see terminate()).
+		self._oc = nvdaRust.onecore.OcSpeech(self._callback)
 		self._player = None
 		# Initialize state.
-		self._queuedSpeech: List[Union[str, Tuple[Callable[[ctypes.POINTER, float], None], float]]] = []
+		self._queuedSpeech: List[Union[str, Tuple[Callable[[float], None], float]]] = []
 
 		self._wasCancelled = False
 		self._isProcessing = False
@@ -288,12 +271,9 @@ class OneCoreSynthDriver(SynthDriver):
 		# prevent any pending callbacks from interacting further with the synth.
 		self._earlyExitCB = True
 		super().terminate()
-		# Terminate the synth, the callback function should no longer be called after this returns.
-		self._dll.ocSpeech_terminate(self._ocSpeechToken)
-		# Drop the ctypes function instance for the callback and handle,
-		# as it is holding a reference to an instance method, which causes a reference cycle.
-		self._ocSpeechToken = None
-		self._callbackInst = None
+		# Drop the Rust engine. Its Drop stops the synthesis worker and releases
+		# the reference it held to self._callback, breaking the reference cycle.
+		self._oc = None
 
 	def cancel(self):
 		# Set a flag to tell the callback not to push more audio.
@@ -343,7 +323,7 @@ class OneCoreSynthDriver(SynthDriver):
 	def _get_pitch(self):
 		if not self.supportsProsodyOptions:
 			return self._pitch
-		rawPitch = self._dll.ocSpeech_getPitch(self._ocSpeechToken)
+		rawPitch = self._oc.getPitch()
 		return self._paramToPercent(rawPitch, self.MIN_PITCH, self.MAX_PITCH)
 
 	def _set_pitch(self, pitch):
@@ -351,12 +331,12 @@ class OneCoreSynthDriver(SynthDriver):
 		if not self.supportsProsodyOptions:
 			return
 		rawPitch = self._percentToParam(pitch, self.MIN_PITCH, self.MAX_PITCH)
-		self._queuedSpeech.append((self._dll.ocSpeech_setPitch, rawPitch))
+		self._queuedSpeech.append((self._oc.setPitch, rawPitch))
 
 	def _get_volume(self) -> int:
 		if not self.supportsProsodyOptions:
 			return self._volume
-		rawVolume = self._dll.ocSpeech_getVolume(self._ocSpeechToken)
+		rawVolume = self._oc.getVolume()
 		return int(rawVolume * 100)
 
 	def _set_volume(self, volume: int):
@@ -364,12 +344,12 @@ class OneCoreSynthDriver(SynthDriver):
 		if not self.supportsProsodyOptions:
 			return
 		rawVolume = volume / 100.0
-		self._queuedSpeech.append((self._dll.ocSpeech_setVolume, rawVolume))
+		self._queuedSpeech.append((self._oc.setVolume, rawVolume))
 
 	def _get_rate(self):
 		if not self.supportsProsodyOptions:
 			return self._rate
-		rawRate = self._dll.ocSpeech_getRate(self._ocSpeechToken)
+		rawRate = self._oc.getRate()
 		maxRate = self.BOOSTED_MAX_RATE if self._rateBoost else self.DEFAULT_MAX_RATE
 		return self._paramToPercent(rawRate, self.MIN_RATE, maxRate)
 
@@ -379,7 +359,7 @@ class OneCoreSynthDriver(SynthDriver):
 			return
 		maxRate = self.BOOSTED_MAX_RATE if self._rateBoost else self.DEFAULT_MAX_RATE
 		rawRate = self._percentToParam(rate, self.MIN_RATE, maxRate)
-		self._queuedSpeech.append((self._dll.ocSpeech_setRate, rawRate))
+		self._queuedSpeech.append((self._oc.setRate, rawRate))
 
 	_rateBoost = False
 
@@ -398,12 +378,12 @@ class OneCoreSynthDriver(SynthDriver):
 	def _get_punctuationSilence(self) -> bool:
 		if not self.supportsPunctuationSilence:
 			return True
-		return self._dll.ocSpeech_getPunctuationSilence(self._ocSpeechToken)
+		return self._oc.getPunctuationSilence()
 
 	def _set_punctuationSilence(self, enable: bool):
 		if not self.supportsPunctuationSilence:
 			return
-		self._dll.ocSpeech_setPunctuationSilence(self._ocSpeechToken, ctypes.c_bool(enable))
+		self._oc.setPunctuationSilence(enable)
 
 	def _processQueue(self):
 		if not self._queuedSpeech and self._player is None:
@@ -436,17 +416,16 @@ class OneCoreSynthDriver(SynthDriver):
 				# Parameter change.
 				# Note that, if prosody otions aren't supported, this code will never be executed.
 				func, value = item
-				value = ctypes.c_double(value)
-				func(self._ocSpeechToken, value)
+				func(value)
 				continue
 			self._wasCancelled = False
 			if isDebugForSynthDriver():
 				log.debug("Begin processing speech")
 			self._isProcessing = True
-			# ocSpeech_speak is async.
+			# OcSpeech.speak is async.
 			# It will call _callback in a background thread once done,
 			# which will eventually process the queue again.
-			self._dll.ocSpeech_speak(self._ocSpeechToken, item)
+			self._oc.speak(item)
 			return
 		if isDebugForSynthDriver():
 			log.debug("Queue empty, done processing")
@@ -464,22 +443,26 @@ class OneCoreSynthDriver(SynthDriver):
 				queueHandler.queueFunction(queueHandler.eventQueue, findAndSetNextSynth, self.name)
 				self._consecutiveSpeechFailures = 0
 
-	def _callback(self, bytes, len, markers):
+	def _callback(self, wavBytes, markers):
+		"""Called on the Rust engine's worker thread once an utterance is
+		synthesized. ``wavBytes`` is the full WAV buffer as a ``bytes`` object,
+		or ``None`` on synthesis failure; ``markers`` is the ``"name:pos|…"``
+		string.
+		"""
 		if self._earlyExitCB:
 			# prevent any pending callbacks from interacting further with the synth.
 			# used during termination.
 			return
-		if len == 0:
-			# Speech failed
+		if not wavBytes:
+			# Speech failed (None or empty buffer).
 			self._handleSpeechFailure()
 			return
 		else:
 			self._consecutiveSpeechFailures = 0
-		# This gets called in a background thread.
-		stream = io.BytesIO(ctypes.string_at(bytes, WAVE_HEADER_LENGTH))
+		stream = io.BytesIO(wavBytes[:WAVE_HEADER_LENGTH])
 		wav = wave.open(stream, "r")
 		self._maybeInitPlayer(wav)
-		data = bytes + WAVE_HEADER_LENGTH
+		data = wavBytes[WAVE_HEADER_LENGTH:]
 		dataLen = wav.getnframes() * wav.getnchannels() * wav.getsampwidth()
 		if markers:
 			markers = markers.split("|")
@@ -500,8 +483,7 @@ class OneCoreSynthDriver(SynthDriver):
 			pos = pos * self._bytesPerSec // HUNDRED_NS_PER_SEC
 			# Push audio up to this marker.
 			self._player.feed(
-				ctypes.c_void_p(data + prevPos),
-				size=pos - prevPos,
+				data[prevPos:pos],
 				onDone=lambda index=index: synthIndexReached.notify(synth=self, index=index),
 			)
 			prevPos = pos
@@ -509,7 +491,7 @@ class OneCoreSynthDriver(SynthDriver):
 			if isDebugForSynthDriver():
 				log.debug("Cancelled, stopped pushing audio")
 		else:
-			self._player.feed(ctypes.c_void_p(data + prevPos), size=dataLen - prevPos)
+			self._player.feed(data[prevPos:dataLen])
 			if isDebugForSynthDriver():
 				log.debug("Done pushing audio")
 		self._processQueue()
@@ -528,7 +510,7 @@ class OneCoreSynthDriver(SynthDriver):
 		# Fetch the full list of voices that OneCore speech knows about.
 		# Note that it may give back voices that are uninstalled or broken.
 		# Refer to _isVoiceValid for information on uninstalled or broken voices.
-		voicesStr = self._dll.ocSpeech_getVoices(self._ocSpeechToken).split("|")
+		voicesStr = self._oc.getVoices()
 		for index, voiceStr in enumerate(voicesStr):
 			voiceInfo = self._getVoiceInfoFromOnecoreVoiceString(voiceStr)
 			# Filter out any invalid voices.
@@ -599,14 +581,14 @@ class OneCoreSynthDriver(SynthDriver):
 		return True
 
 	def _get_voice(self):
-		return self._dll.ocSpeech_getCurrentVoiceId(self._ocSpeechToken)
+		return self._oc.getCurrentVoiceId()
 
 	def _set_voice(self, id):
 		voices = self.availableVoices
 		# Try setting the requested voice
 		for voice in voices.values():
 			if voice.id == id:
-				self._dll.ocSpeech_setVoice(self._ocSpeechToken, voice.onecoreIndex)
+				self._oc.setVoice(voice.onecoreIndex)
 				return
 		raise LookupError("No such voice: %s" % id)
 

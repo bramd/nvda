@@ -389,6 +389,7 @@ dependencies = [
  "log",
  "nvda_crashdump",
  "nvda_ole",
+ "nvda_onecore_speech",
  "nvda_screen_curtain",
  "nvda_tones",
  "nvda_wasapi",

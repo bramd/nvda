@@ -1,70 +1,226 @@
-//! Rust port of NVDA's OneCore speech engine
-//! (`nvdaHelper/localWin10/oneCoreSpeech.cpp`).
+//! Rust engine for NVDA's Windows OneCore speech, wrapping the WinRT
+//! `Windows.Media.SpeechSynthesis` API.
 //!
-//! A C ABI over the WinRT `Windows.Media.SpeechSynthesis` engine, driven by
-//! `source/synthDrivers/oneCore.py` via ctypes (`windll` == `__stdcall`).
-//! `speak` is asynchronous: it synthesises an utterance on a background
-//! thread and delivers, in one callback per utterance, a full WAV buffer +
-//! a `"text:time|…"` markers string. Everything downstream (SSML, queueing,
-//! marker→byte conversion, feeding the Rust WasapiPlayer) stays in Python.
+//! This crate is pure Rust with no PyO3 dependency; the `nvda_python` crate
+//! exposes it to Python as a `#[pyclass]` (`nvdaRust.onecore.OcSpeech`, see
+//! `nvda_python/src/onecore.rs`). It replaced the earlier C-ABI seam that
+//! `source/synthDrivers/oneCore.py` drove via ctypes.
 //!
-//! Phase 1: the token/activation state machine + the accessors. `speak`
-//! (the async synthesis) lands in Phase 2.
+//! `speak` is asynchronous: it synthesises an utterance on a dedicated worker
+//! thread and delivers, in one callback per utterance, a full WAV buffer + a
+//! `"text:time|…"` markers string. Everything downstream (SSML, queueing,
+//! marker→byte conversion, feeding the WasapiPlayer) stays in Python.
 
 #![allow(non_snake_case)]
 
-use std::cell::RefCell;
-use std::ffi::c_void;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
+use std::sync::Arc;
 
-use windows::core::{Interface, BSTR, HSTRING};
+use windows::core::{Interface, HSTRING};
 use windows::Foundation::Collections::IVectorView;
 use windows::Foundation::Metadata::ApiInformation;
 use windows::Media::IMediaMarker;
 use windows::Media::SpeechSynthesis::{
     SpeechAppendedSilence, SpeechPunctuationSilence, SpeechSynthesisStream,
-    SpeechSynthesizer, VoiceInformation,
+    SpeechSynthesizer,
 };
 use windows::Storage::Streams::{Buffer, IBuffer, InputStreamOptions};
 use windows::Win32::System::WinRT::IBufferByteAccess;
 
-/// `void (*)(BYTE* data, int length, const wchar_t* markers)` — one call per
-/// utterance with the whole WAV buffer + a `"text:time|…"` markers string,
-/// or `(NULL, 0, NULL)` on failure.
-pub type OcSpeechCallback =
-    Option<unsafe extern "system" fn(*mut u8, i32, *const u16)>;
+/// Callback invoked once per utterance with the synthesized result: `Some`
+/// (a complete WAV buffer) on success or `None` on failure, plus the
+/// `"text:time|…"` markers string. Called on the worker thread.
+pub type ResultCallback = Box<dyn Fn(Option<&[u8]>, &str) + Send>;
 
-/// The live synth, wrapped so it can live in the global state and be used
-/// from the Python thread and background callback threads. WinRT synth
-/// objects are agile (the C++ shares one via `shared_ptr` across the GIL
-/// thread + threadpool threads); this asserts that.
+/// The live synth, made Send + Sync so it can be shared between the Python
+/// (accessor) thread and the background synthesis worker. WinRT synth objects
+/// are agile (the C++ shared one via `shared_ptr` across the GIL thread + a
+/// threadpool thread); this asserts that.
 struct AgileSynth(SpeechSynthesizer);
 unsafe impl Send for AgileSynth {}
 unsafe impl Sync for AgileSynth {}
 
-/// The single active activation. The "token" handed to the caller is
-/// `generation` — a monotonic id — so a stale async callback or a call after
-/// `terminate` is detected by comparing the token to the current generation.
-struct Active {
-    generation: u64,
+/// The OneCore speech engine: one activation owning a WinRT synthesizer and a
+/// dedicated synthesis worker thread. Dropping it stops the worker.
+pub struct OcSpeech {
     synth: AgileSynth,
-    callback: OcSpeechCallback,
+    /// SSML sender to the worker; `None` after the engine is dropped.
+    tx: Option<Sender<HSTRING>>,
+    /// Set on teardown so an in-flight synthesis skips its callback.
+    cancelled: Arc<AtomicBool>,
 }
 
-/// Global state, guarded like the C++ `shared_timed_mutex`:
-/// `initialize`/`terminate` take the write lock; accessors + the async
-/// callback take the read lock (so `terminate` blocks while a callback is in
-/// flight, and a callback never fires for a terminated synth).
-static STATE: RwLock<Option<Active>> = RwLock::new(None);
-static NEXT_GEN: AtomicU64 = AtomicU64::new(1);
+/// Generate the prosody getter/setter pair for a `SpeechSynthesizerOptions`
+/// property (rate/pitch/volume). Kept as a macro to avoid naming the options
+/// type. Only meaningful when [`supports_prosody_options`] is true.
+macro_rules! option_accessors {
+    ($get:ident, $set:ident, $getMethod:ident, $setMethod:ident) => {
+        pub fn $get(&self) -> f64 {
+            self.synth.0.Options().and_then(|o| o.$getMethod()).unwrap_or(0.0)
+        }
+        pub fn $set(&self, value: f64) {
+            let _ = self.synth.0.Options().and_then(|o| o.$setMethod(value));
+        }
+    };
+}
 
-thread_local! {
-    /// Backs the `getCurrentVoiceId` / `getCurrentVoiceLanguage` returns:
-    /// the C++ returned `c_str()` of a *local* hstring (a dangling pointer
-    /// that only works because the caller copies immediately); we hold the
-    /// last value here until the next call on this thread.
-    static VOICE_STR: RefCell<Vec<u16>> = const { RefCell::new(Vec::new()) };
+impl OcSpeech {
+    /// Create the engine. `callback` is invoked (on the worker thread) once per
+    /// [`speak`](Self::speak) with the WAV buffer + markers.
+    pub fn new(callback: ResultCallback) -> windows::core::Result<Self> {
+        let synth = SpeechSynthesizer::new()?;
+        prevent_end_utterance_silence(&synth);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel::<HSTRING>();
+
+        // The worker owns its own clone of the (agile) synth so it stays alive
+        // for the synthesis even if the OcSpeech is dropped mid-utterance.
+        let worker_synth = AgileSynth(synth.clone());
+        let worker_cancelled = Arc::clone(&cancelled);
+        // Detached (never joined): the worker may be inside `callback`
+        // acquiring Python's GIL, and joining while the dropping thread holds
+        // the GIL would deadlock. A dropped sender ends the loop; the
+        // `cancelled` flag drops the result of any synthesis already running.
+        std::thread::spawn(move || {
+            let AgileSynth(synth) = worker_synth;
+            while let Ok(ssml) = rx.recv() {
+                if worker_cancelled.load(Ordering::Acquire) {
+                    continue;
+                }
+                let result = synthesize(&synth, &ssml).ok();
+                if worker_cancelled.load(Ordering::Acquire) {
+                    continue;
+                }
+                match &result {
+                    Some((buffer, markers)) => {
+                        let (ptr, len) = buffer_bytes(buffer);
+                        let wav = if ptr.is_null() {
+                            None
+                        } else {
+                            // SAFETY: ptr/len describe the live IBuffer; the
+                            // slice does not outlive `buffer` (kept in `result`).
+                            Some(unsafe {
+                                std::slice::from_raw_parts(ptr, len as usize)
+                            })
+                        };
+                        callback(wav, &markers.to_string_lossy());
+                    }
+                    None => callback(None, ""),
+                }
+            }
+        });
+
+        Ok(Self {
+            synth: AgileSynth(synth),
+            tx: Some(tx),
+            cancelled,
+        })
+    }
+
+    /// Queue an SSML utterance for asynchronous synthesis. Returns immediately;
+    /// the result arrives via the callback passed to [`new`](Self::new).
+    pub fn speak(&self, ssml: &str) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(HSTRING::from(ssml));
+        }
+    }
+
+    // --- voice selection ---
+
+    /// Available voices as `"Id:Language:DisplayName"` strings (the system
+    /// voice list; may include uninstalled/broken voices the caller filters).
+    pub fn voices(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let Ok(all) = SpeechSynthesizer::AllVoices() else {
+            return out;
+        };
+        for i in 0..all.Size().unwrap_or(0) {
+            let Ok(v) = all.GetAt(i) else { continue };
+            let id = v.Id().map(|h| h.to_string_lossy()).unwrap_or_default();
+            let lang = v.Language().map(|h| h.to_string_lossy()).unwrap_or_default();
+            let name = v.DisplayName().map(|h| h.to_string_lossy()).unwrap_or_default();
+            out.push(format!("{id}:{lang}:{name}"));
+        }
+        out
+    }
+
+    pub fn current_voice_id(&self) -> String {
+        self.voice_field(|v| v.Id())
+    }
+
+    pub fn current_voice_language(&self) -> String {
+        self.voice_field(|v| v.Language())
+    }
+
+    /// Select the voice by index into `AllVoices()`.
+    pub fn set_voice(&self, index: u32) {
+        if let Ok(voices) = SpeechSynthesizer::AllVoices() {
+            if let Ok(v) = voices.GetAt(index) {
+                let _ = self.synth.0.SetVoice(&v);
+            }
+        }
+    }
+
+    fn voice_field(
+        &self,
+        field: impl Fn(
+            &windows::Media::SpeechSynthesis::VoiceInformation,
+        ) -> windows::core::Result<HSTRING>,
+    ) -> String {
+        self.synth
+            .0
+            .Voice()
+            .and_then(|v| field(&v))
+            .map(|h| h.to_string_lossy())
+            .unwrap_or_default()
+    }
+
+    // --- prosody (only effective when supports_prosody_options()) ---
+
+    option_accessors!(pitch, set_pitch, AudioPitch, SetAudioPitch);
+    option_accessors!(volume, set_volume, AudioVolume, SetAudioVolume);
+    option_accessors!(rate, set_rate, SpeakingRate, SetSpeakingRate);
+
+    /// `true` iff punctuation silence is at the default (spoken) level.
+    pub fn punctuation_silence(&self) -> bool {
+        self.synth
+            .0
+            .Options()
+            .and_then(|o| o.PunctuationSilence())
+            .map(|p| p == SpeechPunctuationSilence::Default)
+            .unwrap_or(false)
+    }
+
+    /// Set punctuation silence: default (spoken) vs. min.
+    pub fn set_punctuation_silence(&self, silence: bool) {
+        let mode = if silence {
+            SpeechPunctuationSilence::Default
+        } else {
+            SpeechPunctuationSilence::Min
+        };
+        let _ = self.synth.0.Options().and_then(|o| o.SetPunctuationSilence(mode));
+    }
+}
+
+impl Drop for OcSpeech {
+    fn drop(&mut self) {
+        // Stop the worker without joining (see the spawn comment): mark
+        // cancelled so an in-flight synthesis skips its callback, and drop the
+        // sender so the worker's recv() returns Err and it exits.
+        self.cancelled.store(true, Ordering::Release);
+        self.tx = None;
+    }
+}
+
+/// `true` iff the API can set rate/pitch/volume live (UniversalApiContract >= 5).
+pub fn supports_prosody_options() -> bool {
+    is_universal_api_contract(5, 0)
+}
+
+/// `true` iff punctuation-silence control is available (contract >= 6).
+pub fn supports_punctuation_silence() -> bool {
+    is_universal_api_contract(6, 0)
 }
 
 fn is_universal_api_contract(major: u16, minor: u16) -> bool {
@@ -84,333 +240,6 @@ fn prevent_end_utterance_silence(synth: &SpeechSynthesizer) {
             let _ = opts.SetAppendedSilence(SpeechAppendedSilence::Min);
         }
     }
-}
-
-/// Run `f` with the active synth iff `token` is the current generation,
-/// under a read lock; otherwise return `default`.
-fn with_synth<R>(
-    token: *mut c_void,
-    default: R,
-    f: impl FnOnce(&SpeechSynthesizer) -> R,
-) -> R {
-    let gen = token as usize as u64;
-    let guard = STATE.read().unwrap();
-    match guard.as_ref() {
-        Some(a) if gen != 0 && a.generation == gen => f(&a.synth.0),
-        _ => default,
-    }
-}
-
-/// Store `s` in the per-thread buffer (NUL-terminated) and return a pointer
-/// valid until the next call on this thread.
-fn store_voice_str(s: &str) -> *const u16 {
-    VOICE_STR.with(|buf| {
-        let mut b = buf.borrow_mut();
-        *b = s.encode_utf16().chain(std::iter::once(0)).collect();
-        b.as_ptr()
-    })
-}
-
-/// `true` iff the API can set rate/pitch/volume live (UniversalApiContract >= 5).
-#[no_mangle]
-pub extern "system" fn ocSpeech_supportsProsodyOptions() -> bool {
-    is_universal_api_contract(5, 0)
-}
-
-/// `true` iff punctuation-silence control is available (contract >= 6).
-#[no_mangle]
-pub extern "system" fn ocSpeech_supportsPunctuationSilence() -> bool {
-    is_universal_api_contract(6, 0)
-}
-
-/// Activate the engine with `callback` and return an opaque token. Only one
-/// activation may be live; returns NULL if one already is (the caller must
-/// `terminate` first) or if the synth can't be created.
-///
-/// # Safety
-/// `callback` must stay valid until the returned token is terminated.
-#[no_mangle]
-pub unsafe extern "system" fn ocSpeech_initialize(
-    callback: OcSpeechCallback,
-) -> *mut c_void {
-    let mut guard = STATE.write().unwrap();
-    if guard.is_some() {
-        // Matches the C++ `activate` requiring a terminated state first.
-        return core::ptr::null_mut();
-    }
-    let synth = match SpeechSynthesizer::new() {
-        Ok(s) => s,
-        Err(_) => return core::ptr::null_mut(),
-    };
-    prevent_end_utterance_silence(&synth);
-    let generation = NEXT_GEN.fetch_add(1, Ordering::Relaxed);
-    *guard = Some(Active {
-        generation,
-        synth: AgileSynth(synth),
-        callback,
-    });
-    generation as usize as *mut c_void
-}
-
-/// Invalidate `token` and drop the synth + callback. Blocks (via the write
-/// lock) until any in-flight callback finishes.
-///
-/// # Safety
-/// `token` must be a token from `ocSpeech_initialize`.
-#[no_mangle]
-pub unsafe extern "system" fn ocSpeech_terminate(token: *mut c_void) {
-    let gen = token as usize as u64;
-    let mut guard = STATE.write().unwrap();
-    if guard.as_ref().is_some_and(|a| a.generation == gen) {
-        *guard = None;
-    }
-}
-
-/// Available voices as `"Id:Language:DisplayName|…"`, `SysAllocString`'d
-/// (the caller frees it). Empty BSTR on an invalid token.
-///
-/// # Safety
-/// Returns an owned `BSTR`; the caller must `SysFreeString` it.
-#[no_mangle]
-pub unsafe extern "system" fn ocSpeech_getVoices(token: *mut c_void) -> *mut u16 {
-    let s = with_synth(token, String::new(), |_| voices_string());
-    let wide: Vec<u16> = s.encode_utf16().collect();
-    BSTR::from_wide(&wide).unwrap_or_default().into_raw() as *mut u16
-}
-
-// `AllVoices` is a static WinRT property (the system voice list), matching the
-// C++ `synth->AllVoices()`.
-fn voices_string() -> String {
-    let mut out = String::new();
-    let Ok(all) = SpeechSynthesizer::AllVoices() else {
-        return out;
-    };
-    let n = all.Size().unwrap_or(0);
-    for i in 0..n {
-        let Ok(v) = all.GetAt(i) else { continue };
-        let id = v.Id().map(|h| h.to_string_lossy()).unwrap_or_default();
-        let lang = v.Language().map(|h| h.to_string_lossy()).unwrap_or_default();
-        let name = v.DisplayName().map(|h| h.to_string_lossy()).unwrap_or_default();
-        out.push_str(&id);
-        out.push(':');
-        out.push_str(&lang);
-        out.push(':');
-        out.push_str(&name);
-        if i != n - 1 {
-            out.push('|');
-        }
-    }
-    out
-}
-
-/// Store the current voice's `field` (id or language) in the per-thread buffer
-/// and return a pointer valid until the next such call on this thread.
-fn current_voice_field(
-    token: *mut c_void,
-    field: impl Fn(&VoiceInformation) -> windows::core::Result<HSTRING>,
-) -> *const u16 {
-    let s = with_synth(token, String::new(), |synth| {
-        synth
-            .Voice()
-            .and_then(|v| field(&v))
-            .map(|h| h.to_string_lossy())
-            .unwrap_or_default()
-    });
-    store_voice_str(&s)
-}
-
-/// The current voice's id (pointer valid until the next call on this thread).
-///
-/// # Safety
-/// The returned pointer is only valid until the next `getCurrentVoiceId` /
-/// `getCurrentVoiceLanguage` call on the same thread; copy it immediately.
-#[no_mangle]
-pub unsafe extern "system" fn ocSpeech_getCurrentVoiceId(
-    token: *mut c_void,
-) -> *const u16 {
-    current_voice_field(token, |v| v.Id())
-}
-
-/// The current voice's language (see `getCurrentVoiceId` for lifetime).
-///
-/// # Safety
-/// Same as `ocSpeech_getCurrentVoiceId`.
-#[no_mangle]
-pub unsafe extern "system" fn ocSpeech_getCurrentVoiceLanguage(
-    token: *mut c_void,
-) -> *const u16 {
-    current_voice_field(token, |v| v.Language())
-}
-
-/// Set the voice by index into `AllVoices()`.
-///
-/// # Safety
-/// `token` must be a valid token.
-#[no_mangle]
-pub unsafe extern "system" fn ocSpeech_setVoice(token: *mut c_void, index: i32) {
-    with_synth(token, (), |synth| {
-        if let Ok(voices) = SpeechSynthesizer::AllVoices() {
-            if let Ok(v) = voices.GetAt(index as u32) {
-                let _ = synth.SetVoice(&v);
-            }
-        }
-    });
-}
-
-macro_rules! option_getter {
-    ($name:ident, $method:ident) => {
-        /// # Safety
-        /// `token` must be a valid token.
-        #[no_mangle]
-        pub unsafe extern "system" fn $name(token: *mut c_void) -> f64 {
-            with_synth(token, 0.0, |s| {
-                s.Options().and_then(|o| o.$method()).unwrap_or(0.0)
-            })
-        }
-    };
-}
-macro_rules! option_setter {
-    ($name:ident, $method:ident) => {
-        /// # Safety
-        /// `token` must be a valid token.
-        #[no_mangle]
-        pub unsafe extern "system" fn $name(token: *mut c_void, value: f64) {
-            with_synth(token, (), |s| {
-                let _ = s.Options().and_then(|o| o.$method(value));
-            });
-        }
-    };
-}
-
-option_getter!(ocSpeech_getPitch, AudioPitch);
-option_setter!(ocSpeech_setPitch, SetAudioPitch);
-option_getter!(ocSpeech_getVolume, AudioVolume);
-option_setter!(ocSpeech_setVolume, SetAudioVolume);
-option_getter!(ocSpeech_getRate, SpeakingRate);
-option_setter!(ocSpeech_setRate, SetSpeakingRate);
-
-/// `true` iff punctuation silence is at the default (spoken) level.
-///
-/// # Safety
-/// `token` must be a valid token.
-#[no_mangle]
-pub unsafe extern "system" fn ocSpeech_getPunctuationSilence(
-    token: *mut c_void,
-) -> bool {
-    with_synth(token, false, |s| {
-        s.Options()
-            .and_then(|o| o.PunctuationSilence())
-            .map(|p| p == SpeechPunctuationSilence::Default)
-            .unwrap_or(false)
-    })
-}
-
-/// Set punctuation silence: default (spoken) vs. min.
-///
-/// # Safety
-/// `token` must be a valid token.
-#[no_mangle]
-pub unsafe extern "system" fn ocSpeech_setPunctuationSilence(
-    token: *mut c_void,
-    silence: bool,
-) {
-    with_synth(token, (), |s| {
-        let mode = if silence {
-            SpeechPunctuationSilence::Default
-        } else {
-            SpeechPunctuationSilence::Min
-        };
-        let _ = s.Options().and_then(|o| o.SetPunctuationSilence(mode));
-    });
-}
-
-/// A queued utterance handed to the single synthesis worker thread.
-struct SpeakRequest {
-    generation: u64,
-    synth: SpeechSynthesizer,
-    callback: OcSpeechCallback,
-    ssml: HSTRING,
-}
-// SAFETY: the WinRT synth is agile (see `AgileSynth`), `callback` is a bare fn
-// pointer, and `HSTRING` is Send — the same cross-thread handoff the C++
-// threadpool relied on when it resumed the coroutine on a pool thread.
-unsafe impl Send for SpeakRequest {}
-
-/// Sender to the lazily-spawned synthesis worker (see [`speak_worker`]).
-static SPEAK_WORKER: std::sync::OnceLock<std::sync::mpsc::Sender<SpeakRequest>> =
-    std::sync::OnceLock::new();
-
-/// The single dedicated synthesis thread. It synthesises each queued utterance
-/// serially and fires its callback. Using one persistent worker (rather than
-/// `thread::spawn` per `speak`) bounds concurrency to match NVDA's serial
-/// usage, processes utterances in queue order, and shrinks the window in which
-/// a stale async result can race a `terminate`. The thread lives for the
-/// process; `fire_callback`'s generation check drops results for a superseded
-/// or terminated synth. `terminate` intentionally does not drain or join the
-/// worker — a synthesis already in flight simply has its result discarded at
-/// the generation gate, which is correct given NVDA's serial usage.
-fn speak_worker() -> &'static std::sync::mpsc::Sender<SpeakRequest> {
-    SPEAK_WORKER.get_or_init(|| {
-        let (tx, rx) = std::sync::mpsc::channel::<SpeakRequest>();
-        std::thread::spawn(move || {
-            while let Ok(req) = rx.recv() {
-                let result = synthesize(&req.synth, &req.ssml).ok();
-                fire_callback(req.generation, req.callback, result);
-            }
-        });
-        tx
-    })
-}
-
-/// Read a NUL-terminated wide string into an `HSTRING`.
-unsafe fn wide_to_hstring(p: *const u16) -> HSTRING {
-    if p.is_null() {
-        return HSTRING::new();
-    }
-    let mut len = 0usize;
-    while unsafe { *p.add(len) } != 0 {
-        len += 1;
-    }
-    HSTRING::from_wide(unsafe { core::slice::from_raw_parts(p, len) })
-        .unwrap_or_default()
-}
-
-/// Synthesise `text` (SSML) asynchronously and deliver the result through the
-/// callback. Returns immediately. Port of C++ `ocSpeech_speak` + the
-/// `fire_and_forget speak` coroutine.
-///
-/// # Safety
-/// `token` must be a valid token; `text` a NUL-terminated wide SSML string.
-#[no_mangle]
-pub unsafe extern "system" fn ocSpeech_speak(
-    token: *mut c_void,
-    text: *const u16,
-) {
-    // Snapshot (generation, synth clone, callback) under a brief read lock,
-    // then release it before the slow WinRT async runs.
-    let gen = token as usize as u64;
-    let snapshot = {
-        let guard = STATE.read().unwrap();
-        match guard.as_ref() {
-            Some(a) if gen != 0 && a.generation == gen => {
-                Some((a.synth.0.clone(), a.callback))
-            }
-            _ => None,
-        }
-    };
-    let Some((synth, callback)) = snapshot else {
-        return;
-    };
-    let ssml = unsafe { wide_to_hstring(text) };
-    // Hand off to the single synthesis worker; it synthesises serially and
-    // fires the callback. Send only fails if the worker thread has died, which
-    // it never does for the process lifetime.
-    let _ = speak_worker().send(SpeakRequest {
-        generation: gen,
-        synth,
-        callback,
-        ssml,
-    });
 }
 
 /// Synthesise to a stream and read the whole WAV buffer + markers.
@@ -447,34 +276,6 @@ fn markers_string(markers: &IVectorView<IMediaMarker>) -> HSTRING {
         s.push_str(&time.to_string());
     }
     HSTRING::from(s)
-}
-
-/// Fire the callback, re-validating the token under a read lock first — so a
-/// concurrent `terminate` (write lock) blocks until this returns, and a
-/// callback for a superseded/terminated synth is dropped (C++
-/// `protectedCallback_`).
-fn fire_callback(
-    gen: u64,
-    callback: OcSpeechCallback,
-    result: Option<(IBuffer, HSTRING)>,
-) {
-    let guard = STATE.read().unwrap();
-    if guard.as_ref().is_none_or(|a| a.generation != gen) {
-        return;
-    }
-    let Some(cb) = callback else { return };
-    match result {
-        Some((buffer, markers)) => {
-            let (ptr, len) = buffer_bytes(&buffer);
-            // `HSTRING` is always NUL-terminated, so its buffer can be passed
-            // straight to the C callback -- no copy. `buffer` + `markers` are
-            // held alive across the call.
-            unsafe { cb(ptr, len, markers.as_ptr()) };
-        }
-        None => unsafe { cb(core::ptr::null_mut(), 0, core::ptr::null()) },
-    }
-    // `guard` (read lock) stays held across the callback, blocking terminate.
-    drop(guard);
 }
 
 /// Raw byte pointer + length of a WinRT `IBuffer` (via `IBufferByteAccess`).
