@@ -31,27 +31,27 @@ whole point: it keeps UIA core from ever blocking on Python.
 
 ## Why it's a strong Rust target
 
-- **Modern & hot** — `enhancedEventProcessing` defaults to *enabled*; every
+* **Modern & hot** — `enhancedEventProcessing` defaults to *enabled*; every
   focus / property / notification / text-position change in every UIA app
   flows through this. (Unlike the GDI/OCM code, which UIA has superseded.)
-- **The best Rust-fit shape yet** — a concurrent de-duplicating queue. Rust
+* **The best Rust-fit shape yet** — a concurrent de-duplicating queue. Rust
   turns the error-prone parts into compile-time guarantees: the `std::variant`
-  + `concept`/`supports_alternative` template machinery → a plain `enum`; the
+  * `concept`/`supports_alternative` template machinery → a plain `enum`; the
   manual `QueryInterface`/`AddRef`/`Release` → windows-rs `#[implement]`; the
   hand-managed `jthread`/mutex/condvar → `Mutex`+`Condvar` with `Send`/`Sync`
   checked by the compiler (data races and dropped/duplicated events are
   exactly the bugs that matter here).
-- **Genuinely unit-testable** — the coalescing-key + ordered-dedup core is
+* **Genuinely unit-testable** — the coalescing-key + ordered-dedup core is
   pure logic; there are **no tests today**, so the port establishes coverage.
 
 ## Capability checks (done)
 
-- windows-rs 0.58 exposes all 5 `IUIAutomation*EventHandler_Impl` traits
+* windows-rs 0.58 exposes all 5 `IUIAutomation*EventHandler_Impl` traits
   (`Win32/UI/Accessibility/impl.rs`) → **`#[implement]` works** once the
   `windows` crate's `implement` feature is enabled. `GetRuntimeId`,
   `Add*EventHandler`, `NotificationKind`/`NotificationProcessing` are all
   present.
-- The C ABI Python depends on (`NVDAHelper/localLib.py:491-504`) is two flat
+* The C ABI Python depends on (`NVDAHelper/localLib.py:491-504`) is two flat
   exports from **nvdaHelperLocal.dll** (`.def:71-72`):
   `rateLimitedUIAEventHandler_create(IUnknown* existing, void** out)` and
   `rateLimitedUIAEventHandler_terminate(void* handle)`. The port must preserve
@@ -72,10 +72,11 @@ the `.def` exports + ctypes unchanged, so Python needs no change.
 callback-thread → queue → flush-thread. windows-rs COM types are `!Send`. The
 C++ moves them across threads with raw pointers, relying on UIA objects being
 *agile*. Two options:
-- **(a) documented `unsafe impl Send` newtype** asserting that agility —
+
+* **(a) documented `unsafe impl Send` newtype** asserting that agility —
   reproduces today's shipping behavior exactly, zero overhead. **Recommended**
   for a faithful port.
-- **(b) `AgileReference<T>`** (RoGetAgileReference; `runtimeobject.lib` is
+* **(b) `AgileReference<T>`** (RoGetAgileReference; `runtimeobject.lib` is
   already linked) — correct-by-construction cross-apartment marshaling, slight
   per-object cost, subtly different behavior.
 This is the one decision worth an explicit review call.
@@ -99,20 +100,20 @@ frees the object. This ordering is the careful part.
 
 ## Phased plan (build + commit each)
 
-- **Phase 0 — build spike.** New crate `nvda_uia_events` (staticlib+rlib;
+* **Phase 0 — build spike.** New crate `nvda_uia_events` (staticlib+rlib;
   `windows` features `implement` + `Win32_UI_Accessibility` + variant/SAFEARRAY
   bits). Wire the **first Rust staticlib into nvdaHelperLocal.dll** — replicate
   the proven `remote/sconscript` cargo integration for `local/sconscript`.
   Prove an empty `#[implement]`-of-5-interfaces object compiles and the DLL
   links. De-risks the two novel bits (local-DLL Rust + `#[implement]`).
-- **Phase 1 — pure dedup core + unit tests.** The `EventRecord` enum,
+* **Phase 1 — pure dedup core + unit tests.** The `EventRecord` enum,
   `generate_coalescing_key`, and the ordered-dedup queue (last-write-wins,
   move-to-back). Full unit tests with synthetic keys — no COM, no threads.
-- **Phase 2 — COM `#[implement]` + threading + C ABI.** The 5 handler vtables
+* **Phase 2 — COM `#[implement]` + threading + C ABI.** The 5 handler vtables
   (queue on receipt), the D2 Send-wrapped records, the flush thread (D4),
   emit-back-into-the-existing-handler, `GetRuntimeId` (D5), and the two
   `#[no_mangle]` `create`/`terminate` exports matching the current ABI.
-- **Phase 3 — flip + delete C++.** Point `local/sconscript` at the Rust crate;
+* **Phase 3 — flip + delete C++.** Point `local/sconscript` at the Rust crate;
   keep the two `.def` exports; delete the five C++ files. Build
   nvdaHelperLocal.dll. **Manual smoke test** in a UIA app (modern Notepad /
   Edge / Office) with `enhancedEventProcessing` on (default): confirm events
@@ -120,14 +121,14 @@ frees the object. This ordering is the careful part.
 
 ## Risk summary
 
-- ~~`#[implement]` for UIA handlers~~ — **confirmed supported** (enable the
+* ~~`#[implement]` for UIA handlers~~ — **confirmed supported** (enable the
   `implement` feature).
-- **Cross-thread COM (`!Send`)** — D2; faithful port uses a documented `Send`
+* **Cross-thread COM (`!Send`)** — D2; faithful port uses a documented `Send`
   wrapper matching the C++ agility assumption. Main review point.
-- **Refcount-cycle / terminate-join ordering** — D4; flush thread holds an
+* **Refcount-cycle / terminate-join ordering** — D4; flush thread holds an
   `Arc`, never a strong COM ref; `terminate()` joins before final release.
-- **First Rust in nvdaHelperLocal.dll** — new build integration; Phase 0 spike.
-- **No tests today** — Phase 1 builds the pure-logic coverage; the COM/thread
+* **First Rust in nvdaHelperLocal.dll** — new build integration; Phase 0 spike.
+* **No tests today** — Phase 1 builds the pure-logic coverage; the COM/thread
   path needs the manual NVDA smoke test. (Also confirm the local DLL's target
   arch(es) so both are rebuilt.)
 

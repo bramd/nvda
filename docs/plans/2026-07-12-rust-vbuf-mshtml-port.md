@@ -10,9 +10,9 @@ shared `nvda_vbuf::backend::run_raw_update` orchestration is reused.
 Yes. IE is retired but the Trident/MSHTML engine ships with Win 11, and
 NVDA's MSHTML backend attaches wherever an MSHTML document appears:
 
-- **Edge IE Mode** — the most representative, highest-traffic path.
-- **HTML Help (`.chm`)** — the content pane is an embedded MSHTML control.
-- **HTA apps** (`mshta.exe`) — still run and render via MSHTML.
+* **Edge IE Mode** — the most representative, highest-traffic path.
+* **HTML Help (`.chm`)** — the content pane is an embedded MSHTML control.
+* **HTA apps** (`mshta.exe`) — still run and render via MSHTML.
 
 Any of these exercises `virtualBuffers/MSHTML.py` + the C++
 `MshtmlVBufBackend_t`. A small hand-written `.hta` or `.chm` is the
@@ -20,12 +20,12 @@ easiest deterministic smoke-test fixture.
 
 ## What's reused (proven on gecko + acrobat)
 
-- `nvda_vbuf::storage::Buffer`, the backend-agnostic vbufRemote read
+* `nvda_vbuf::storage::Buffer`, the backend-agnostic vbufRemote read
   routing (`getRustStorageBuffer()`), and `run_raw_update`.
-- The **aggregate-staticlib** trick: a new `nvda_mshtml` crate rides
+* The **aggregate-staticlib** trick: a new `nvda_mshtml` crate rides
   inside `nvda_ia2.lib` (force-linked via `extern crate`) so `nvda_vbuf`
   is bundled once — no duplicate `#[no_mangle]` symbols.
-- The thin-C++-adapter + flip shape (override `update()` /
+* The thin-C++-adapter + flip shape (override `update()` /
   `getRustStorageBuffer()`, route the change machinery's storage tail to
   Rust, keep the render-thread machinery C++).
 
@@ -81,29 +81,29 @@ Acrobat crash).
 
 ## Staged plan (mirrors acrobat)
 
-- **Stage 1 — bindings.** `nvda_mshtml` crate + `interfaces.rs`. IID +
+* **Stage 1 — bindings.** `nvda_mshtml` crate + `interfaces.rs`. IID +
   vtable-size tests. Biggest single chunk; do it carefully.
-- **Stage 2 — fillVBuf port.** Port the ~600-line render + node.cpp
+* **Stage 2 — fillVBuf port.** Port the ~600-line render + node.cpp
   helpers into `nvda_mshtml::fill_vbuf`, driving the bindings, into a Rust
   `storage::Buffer`. Table/list/preformatted/atomic-node features.
-- **Stage 3 — backend adapter + change sink.** `MshtmlBackendState` +
+* **Stage 3 — backend adapter + change sink.** `MshtmlBackendState` +
   `mshtml_backend_*` externs (create/destroy/get_buffer/clear/update/
   invalidate). Keep `CDispatchChangeSink` in C++ but route its storage
   tail (node lookup + `invalidateSubtree`) to Rust. Reduce `mshtml.cpp`
   to the thin adapter; aggregate `nvda_mshtml` into `nvda_ia2.lib`.
-- **Stage 4 — flip + smoke test.** Override `update()` /
+* **Stage 4 — flip + smoke test.** Override `update()` /
   `getRustStorageBuffer()`. Smoke-test via Edge IE Mode / a `.chm` /
   a `.hta`: linear reading, headings/links quick-nav, a table, a form,
   and a dynamically-updating page (to exercise the change sink).
 
 ## Risks
 
-- **Vtable-offset fidelity** across ~15 interfaces — the main risk, per
+* **Vtable-offset fidelity** across ~15 interfaces — the main risk, per
   the Acrobat crash. Derive strictly from `MsHTML.h` `*Vtbl` structs;
   size-assert every interface; smoke-test early.
-- **Change-sink correctness** — dynamic DOM updates are where MSHTML
+* **Change-sink correctness** — dynamic DOM updates are where MSHTML
   bugs hide; needs a dynamic test page.
-- **fillVBuf feature completeness** — tables, list indices, preformatted
+* **fillVBuf feature completeness** — tables, list indices, preformatted
   text, atomic nodes: each needs a faithful port + a matching test case.
 
 ## Effort
